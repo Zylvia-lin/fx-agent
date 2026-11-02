@@ -26,12 +26,14 @@ uv run ruff check src tests scripts
 
 只读冒烟检查固定连接 `127.0.0.1:8100`；可通过 `HOUDINI_PORT` 指定其他端口。它会实际启动本项目 MCP、握手、列工具并读取场景，不创建或修改节点。
 
-默认数据目录为 `%LOCALAPPDATA%/fx-agent`，可用绝对路径环境变量 `FX_AGENT_DATA_ROOT` 覆盖。状态查询不创建该目录，持久化功能后续接入。
+默认数据目录为 `%LOCALAPPDATA%/fx-agent`，可用绝对路径环境变量 `FX_AGENT_DATA_ROOT` 覆盖。建议安装时显式配置固定绝对目录，特别是在隔离执行环境中。`fx_status` 不创建该目录，检查点操作会在其中创建 SQLite 数据库。
 
 ## 插件状态
 
 已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。当前验证范围为本机代码、MCP 协议和只读连接；桌面端插件安装与新聊天激活尚未验证。暂不替换旧的 `fxhoudini` 配置，也不要同时启用两份重复工具。
 
-记忆、检查点、工程与素材归档正在后续迭代中实现。Nuke 尚未接入。
+已提供 `fx_save_checkpoint`、`fx_get_checkpoint`、`fx_get_context`：按项目和镜头保存进度，使用修订号防止旧状态覆盖，摘要按 JSON 字符预算返回并支持内容哈希去重。检查点只记录工程路径，不等于工程副本或实时验证。
+
+经验记忆、工程与素材归档正在后续迭代中实现。Nuke 尚未接入。
 
 运行数据、工程、缓存和本机配置不提交至代码仓库。
