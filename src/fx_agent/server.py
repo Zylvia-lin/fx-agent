@@ -5,6 +5,7 @@ from functools import lru_cache
 from importlib.metadata import version
 
 from fx_agent import __version__
+from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
 from fx_agent.config import data_root
 from fx_agent.store import Store
 
@@ -75,5 +76,47 @@ def get_server():
         return await asyncio.to_thread(
             lambda: Store(data_root()).get_context(project_id, shot_id, since_hash, max_chars)
         )
+
+    @mcp.tool()
+    async def fx_archive_case(
+        project_id: str,
+        shot_id: str,
+        title: str,
+        files: list[ArtifactInput],
+        max_total_bytes: int = 512 * 1024 * 1024,
+    ) -> dict:
+        """Archive independent copies of explicit HIP, images and dependency files.
+
+        Reads saved files, not unsaved scene edits. No automatic dependency
+        discovery or reproducibility claim. Default copy limit is 512 MiB.
+        Roles: project, reference, preview, dependency. Sources must be absolute.
+        """
+        manifest = await create_case_async(
+            data_root(),
+            project_id=project_id,
+            shot_id=shot_id,
+            title=title,
+            files=files,
+            max_total_bytes=max_total_bytes,
+        )
+        return {key: value for key, value in manifest.items() if key != "files"} | {
+            "file_count": len(manifest["files"])
+        }
+
+    @mcp.tool()
+    async def fx_get_case(case_id: str, project_id: str, detail: bool = False) -> dict:
+        """Read a case summary, or expand its file manifest with detail=true."""
+        return await asyncio.to_thread(
+            lambda: (
+                CaseArchive(data_root()).get(case_id, project_id)
+                if detail
+                else CaseArchive(data_root()).summary(case_id, project_id)
+            )
+        )
+
+    @mcp.tool()
+    async def fx_validate_case(case_id: str, project_id: str) -> dict:
+        """Validate copied file checksums. Does not open HIP or verify visual reproduction."""
+        return await asyncio.to_thread(lambda: CaseArchive(data_root()).verify(case_id, project_id))
 
     return mcp
