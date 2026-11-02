@@ -45,6 +45,20 @@ uv run ruff check src tests scripts
 
 当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、全局经验共享、语义向量检索、自动查全依赖或模板自动学习。Nuke 尚未接入。
 
+## 对话与制作反馈学习
+
+配套 `fx-learning` Skill 在用户提出长期规范、纠错和最终确认时触发相应流程：
+
+- `fx_record_user_rule`：带原话与版本的全局/项目规范；规则卡可翻页，`fx_get_user_rule` 展开全文。
+- `fx_record_feedback`：问题、调整、原因、结果与用户反馈，保留修订历史。
+- `fx_get_learning_history` / `fx_get_feedback`：先摘要和游标，再单条完整轨迹。
+- `fx_finalize_learning`：当前 accepted 结果关联 HIP 与预览后，提炼带适用条件的方案。默认项目内跨镜头复用，也可限定当前镜头；不自动跨项目扩散。
+- `fx_dream_memory`：预览和快照一致后整理完全重复检索卡，原文、来源与案例保留，可 reset。
+
+该流程由 Codex 提炼和调用，服务不直接抓取所有聊天，不启动第二个模型或自动训练权重。规则文本持久化不代表程序校验自动改写。超过 500 条活动记忆时首版暂停新的 Dream 合并，仍可预览与重置。
+
+合成对照中重复卡片从 2 降到 1、返回字符从 539 降到 300，保留两个来源；这不证明真实 FX 制作耗时下降。开源候选取舍见 [评估报告](docs/开源MCP候选评估.md)，完整机制见 [自我迭代方案](docs/自我迭代与开源借鉴方案.md)。
+
 工程读取使用 `$HIP/...`；File Cache 使用 `$HIP/geo/$OS/$OS.$F4.bgeo.sc`。新增桥接前置检查与缓存输出核对，详见 [工程制作规范](docs/工程制作规范.md)。上游 `import_file` 因路径语义不兼容暂拒绝，使用 `build_network` 创建相应读取节点。该检查不构成任意 Python、HDA 或手动操作的全局沙箱。
 
 运行验证和未完成项见 [docs/开发记录.md](docs/开发记录.md) 与 [docs/testing](docs/testing)。

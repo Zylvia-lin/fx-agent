@@ -3,7 +3,9 @@
 import hashlib
 import json
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
+from sqlite3 import Connection
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -38,7 +40,9 @@ class Experience(BaseModel):
 class MemoryStore(Store):
     """Share the versioned database while keeping admission separate from state."""
 
-    def submit(self, **values) -> dict:
+    def submit(
+        self, *, _db: Connection | None = None, _origin_feedback_id: str = "", **values
+    ) -> dict:
         """Return an explainable admission decision and retain provenance."""
         request = Experience(**values)
         if request.kind != "preference" and (not request.reason or not request.applies_when):
@@ -78,9 +82,12 @@ class MemoryStore(Store):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
 
         content = request.model_dump(exclude={"source_ref"})
+        if _origin_feedback_id:
+            content["origin_feedback_id"] = _origin_feedback_id
         digest = hashlib.sha256(compact(content).encode()).hexdigest()
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.connection() if _db is None else nullcontext(_db) as db:
+            if _db is None:
+                db.execute("BEGIN IMMEDIATE")
             duplicate = db.execute(
                 "SELECT memory_id,status FROM memories WHERE project_id=? AND content_hash=?",
                 (request.project_id, digest),
@@ -116,6 +123,8 @@ class MemoryStore(Store):
                 "visual_verified": False,
                 "reproduction_status": "not_tested",
             }
+            if _origin_feedback_id:
+                record["origin_feedback_id"] = _origin_feedback_id
             search_text = " ".join(
                 [request.title, request.method, request.reason, request.applies_when, request.kind]
             ).casefold()
@@ -154,7 +163,15 @@ class MemoryStore(Store):
             ).fetchone()
         if row is None:
             raise ValueError("Memory does not belong to the requested project or does not exist")
-        return json.loads(row["payload"]) | {"status": row["status"]}
+        result = json.loads(row["payload"]) | {"status": row["status"]}
+        with self.connection() as db:
+            related = db.execute(
+                "SELECT duplicate_id FROM memory_aliases WHERE project_id=? AND canonical_id=? ORDER BY duplicate_id",
+                (project_id, memory_id),
+            ).fetchall()
+        if related:
+            result["related_memory_ids"] = [item["duplicate_id"] for item in related]
+        return result
 
     def search(
         self,
@@ -181,6 +198,9 @@ class MemoryStore(Store):
             "project_id=?",
             "status IN ('active','candidate')" if include_candidates else "status='active'",
         ]
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM memory_aliases a JOIN memories c ON c.memory_id=a.canonical_id WHERE a.duplicate_id=memories.memory_id AND a.project_id=memories.project_id AND c.project_id=memories.project_id AND c.shot_id=memories.shot_id AND c.status='active')"
+        )
         params = [project_id]
         if shot_id:
             clauses.append("(shot_id='' OR shot_id=?)")

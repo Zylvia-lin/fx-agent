@@ -41,7 +41,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -50,7 +50,7 @@ class Store:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             schema = db.execute("PRAGMA user_version").fetchone()[0]
-            if schema not in (0, 1, self.SCHEMA_VERSION):
+            if schema not in (0, 1, 2, self.SCHEMA_VERSION):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -64,6 +64,21 @@ class Store:
                 "search_text TEXT NOT NULL, UNIQUE(project_id,content_hash))"
             )
             db.execute("CREATE INDEX IF NOT EXISTS memories_scope ON memories(project_id,status)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS user_rules (scope TEXT,rule_key TEXT,revision INTEGER,payload TEXT NOT NULL,PRIMARY KEY(scope,rule_key,revision))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS learning_feedback (feedback_id TEXT PRIMARY KEY,project_id TEXT,shot_id TEXT,attempt_id TEXT,revision INTEGER,payload TEXT NOT NULL,UNIQUE(project_id,shot_id,attempt_id,revision))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS learning_results (feedback_id TEXT PRIMARY KEY,memory_id TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS memory_aliases (duplicate_id TEXT PRIMARY KEY,canonical_id TEXT NOT NULL,project_id TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS dream_runs (run_id TEXT PRIMARY KEY,project_id TEXT,snapshot TEXT,mode TEXT,payload TEXT NOT NULL)"
+            )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
 
     @contextmanager
