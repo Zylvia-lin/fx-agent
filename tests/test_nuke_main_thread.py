@@ -19,7 +19,8 @@ def test_bridge_returns_main_thread_values_and_retains_errors(monkeypatch):
         GUI=True, executeInMainThreadWithResult=lambda callback, args: callback(*args)
     )
     vendor = SimpleNamespace(
-        NukeMCPServer=OriginalBridge, _get_nuke=lambda: host, start=lambda port: None
+        NukeMCPServer=OriginalBridge,
+        _get_nuke=lambda: host,
     )
     monkeypatch.setitem(sys.modules, "fx_agent_nuke_addon", vendor)
     path = Path(__file__).resolve().parents[1] / "integrations/nuke/fx_agent_nuke.py"
@@ -27,9 +28,9 @@ def test_bridge_returns_main_thread_values_and_retains_errors(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     bridge = OriginalBridge()
-    module.start(8187)
+    module._install_dispatch(vendor)
     assert bridge._run_in_nuke(lambda: {"type": "handshake"}) == {"type": "handshake"}
-    module.start(8187)  # Hot reload does not wrap itself recursively.
+    module._install_dispatch(vendor)  # Hot reload does not wrap itself recursively.
     assert bridge._run_in_nuke(lambda x: x + 1, 5) == 6
 
     def fail():
