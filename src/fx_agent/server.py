@@ -3,10 +3,12 @@
 import asyncio
 from functools import lru_cache
 from importlib.metadata import version
+from typing import Literal
 
 from fx_agent import __version__
 from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
 from fx_agent.config import data_root
+from fx_agent.handoff import RenderIssue, RenderIssues
 from fx_agent.learning import Feedback, LearningStore, UserRule
 from fx_agent.memory import Experience, MemoryStore
 from fx_agent.production import ProductionBridge, check_path, production_rules
@@ -37,7 +39,11 @@ def get_server():
             "upstream_version": version("fxhoudinimcp"),
             "data_root": str(data_root()),
             "houdini_status_tool": "get_houdini_connection_status",
-            "nuke": "not_integrated",
+            "nuke": {
+                "mcp_name": "fx-nuke",
+                "target_version": "15.2",
+                "connection_status_tool": "get_nuke_connection_status",
+            },
             "production_rules_version": production_rules()["version"],
         }
 
@@ -77,10 +83,11 @@ def get_server():
         scene_path: str,
         next_steps: list[str],
         expected_revision: int,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         """Persist reported progress. Revision 0 creates; stale updates are rejected.
 
-        This records a path, not an archived HIP or verified live scene.
+        This records a path, not an archived HIP/NK or verified live scene.
         """
         return await asyncio.to_thread(
             lambda: Store(data_root()).save_checkpoint(
@@ -90,20 +97,27 @@ def get_server():
                 scene_path=scene_path,
                 next_steps=next_steps,
                 expected_revision=expected_revision,
+                software=software,
             )
         )
 
     @mcp.tool()
-    async def fx_get_checkpoint(project_id: str, shot_id: str) -> dict:
+    async def fx_get_checkpoint(
+        project_id: str, shot_id: str, software: Literal["houdini", "nuke"] = "houdini"
+    ) -> dict:
         """Read complete saved progress for a shot; recheck the live scene before editing."""
         checkpoint = await asyncio.to_thread(
-            lambda: Store(data_root()).get_checkpoint(project_id, shot_id)
+            lambda: Store(data_root()).get_checkpoint(project_id, shot_id, software)
         )
         return {"checkpoint": checkpoint, "requires_live_verification": True}
 
     @mcp.tool()
     async def fx_get_context(
-        project_id: str, shot_id: str, since_hash: str = "", max_chars: int = 6000
+        project_id: str,
+        shot_id: str,
+        since_hash: str = "",
+        max_chars: int = 6000,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         """Get saved progress within a JSON character budget; matching hash omits repeats.
 
@@ -111,7 +125,9 @@ def get_server():
         scene check and not an exact tokenizer budget.
         """
         return await asyncio.to_thread(
-            lambda: Store(data_root()).get_context(project_id, shot_id, since_hash, max_chars)
+            lambda: Store(data_root()).get_context(
+                project_id, shot_id, since_hash, max_chars, software
+            )
         )
 
     @mcp.tool()
@@ -122,7 +138,7 @@ def get_server():
         files: list[ArtifactInput],
         max_total_bytes: int = 512 * 1024 * 1024,
     ) -> dict:
-        """Archive independent copies of explicit HIP, images and dependency files.
+        """Archive independent copies of explicit HIP/NK, images and dependency files.
 
         Reads saved files, not unsaved scene edits. No automatic dependency
         discovery or reproducibility claim. Default copy limit is 512 MiB.
@@ -161,7 +177,7 @@ def get_server():
         """Screen milestone knowledge, keeping inferences as non-default candidates.
 
         Codex must truthfully label source_type. User statements are not visual
-        verification. Project-dependent entries need an archived HIP. To correct
+        verification. Project-dependent entries need an archived project for their software. To correct
         an old entry, submit a distinct explicit user statement with supersedes.
         """
         return await asyncio.to_thread(
@@ -176,6 +192,7 @@ def get_server():
         include_candidates: bool = False,
         limit: int = 5,
         max_chars: int = 3000,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         """Recall project-scoped experience cards within a JSON character budget.
 
@@ -185,7 +202,7 @@ def get_server():
         """
         return await asyncio.to_thread(
             lambda: MemoryStore(data_root()).search(
-                project_id, query, shot_id, include_candidates, limit, max_chars
+                project_id, query, shot_id, include_candidates, limit, max_chars, software
             )
         )
 
@@ -237,6 +254,7 @@ def get_server():
         effect_type: str = "",
         max_chars: int = 6000,
         before_cursor: int = 0,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         """Read scoped correction history within a character budget, newest first.
 
@@ -245,7 +263,7 @@ def get_server():
         """
         return await asyncio.to_thread(
             lambda: LearningStore(data_root()).history(
-                project_id, shot_id, effect_type, max_chars, before_cursor
+                project_id, shot_id, effect_type, max_chars, before_cursor, software
             )
         )
 
@@ -291,6 +309,52 @@ def get_server():
         """
         return await asyncio.to_thread(
             lambda: LearningStore(data_root()).dream(project_id, mode, expected_snapshot)
+        )
+
+    @mcp.tool()
+    async def fx_report_render_issue(issue: RenderIssue) -> dict:
+        """Record Nuke-observed render input problems; does not launch Houdini or render."""
+        return await asyncio.to_thread(
+            lambda: RenderIssues(data_root()).report(**issue.model_dump())
+        )
+
+    @mcp.tool()
+    async def fx_get_render_issue(issue_id: str, project_id: str, revision: int = 0) -> dict:
+        """Read one revision (0=latest) and up to 20 compact history summaries."""
+        return await asyncio.to_thread(
+            lambda: RenderIssues(data_root()).get(issue_id, project_id, revision)
+        )
+
+    @mcp.tool()
+    async def fx_list_render_issues(
+        project_id: str,
+        shot_id: str,
+        max_chars: int = 3000,
+        before_cursor: int = 0,
+        status: str = "all",
+    ) -> dict:
+        """List bounded issue cards; expand an issue only when needed."""
+        return await asyncio.to_thread(
+            lambda: RenderIssues(data_root()).list(
+                project_id, shot_id, max_chars, before_cursor, status
+            )
+        )
+
+    @mcp.tool()
+    async def fx_update_render_issue(
+        issue_id: str,
+        project_id: str,
+        actor: Literal["houdini", "nuke"],
+        status: Literal["open", "investigating", "awaiting_nuke_review", "closed"],
+        summary: str,
+        evidence: list[str],
+        expected_revision: int,
+    ) -> dict:
+        """Houdini investigates; Nuke reviews before closure. Evidence is caller-reported."""
+        return await asyncio.to_thread(
+            lambda: RenderIssues(data_root()).update(
+                issue_id, project_id, actor, status, summary, evidence, expected_revision
+            )
         )
 
     return mcp

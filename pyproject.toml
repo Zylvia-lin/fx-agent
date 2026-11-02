@@ -26,6 +26,9 @@ dev = [
     "pytest-cov>=5,<8",
     "ruff>=0.8,<1",
 ]
+nuke = [
+    "nuke-mcp",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fx_agent"]
@@ -44,3 +47,6 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["E501"]
+
+[tool.uv.sources]
+nuke-mcp = { git = "https://github.com/kleer001/nuke-mcp.git", rev = "6cbed80a2f35b997263fc51c988c5bb1405657fd" }

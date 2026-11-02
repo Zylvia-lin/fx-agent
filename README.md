@@ -1,6 +1,6 @@
 # FX Agent
 
-供编程助手调用的本地 FX Agent：整合 Houdini 工具、制作记忆与工程案例归档，后续接入 Nuke。
+供编程助手调用的本地 FX Agent：整合 Houdini 工具、制作记忆与工程案例归档，并提供 Nuke 15.2 独立合成入口。
 
 当前宿主助手负责规划、操作与效果判断，Agent 提供 MCP 能力、工作流与共享记忆，不另建模型调度器。Codex 插件是可选分发方式，不再是安装前提。
 
@@ -33,7 +33,7 @@ uv run ruff check src tests scripts
 
 ## 接入状态
 
-已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。支持通过 `scripts/install_codex.py` 将当前工程全局注册到 Codex，替换旧 `fxhoudini` 注册和 Houdini 启动包，并将两个全局工作流目录链接至仓库。根目录插件清单作为可选适配保留；请勿同时启用重复入口。其他宿主的安装器尚未实现，不能据此宣称已兼容所有客户端。
+已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。支持通过 `scripts/install_codex.py` 将当前工程全局注册到 Codex，替换旧 `fxhoudini` 注册和 Houdini 启动包，并将三个全局工作流目录链接至仓库。根目录插件清单作为可选适配保留；请勿同时启用重复入口。其他宿主的安装器尚未实现，不能据此宣称已兼容所有客户端。
 
 已提供 `fx_save_checkpoint`、`fx_get_checkpoint`、`fx_get_context`：按项目和镜头保存进度，使用修订号防止旧状态覆盖，摘要按 JSON 字符预算返回并支持内容哈希去重。检查点只记录工程路径，不等于工程副本或实时验证。
 
@@ -45,7 +45,7 @@ uv run ruff check src tests scripts
 
 用户纠正通过 `supersedes` 建立新修订；旧聊天、跨镜头替代和并发重复纠正受到保护。历史内容可以作为新修订恢复，相同请求重试保持幂等。
 
-当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、全局经验共享、语义向量检索、自动查全依赖或模板自动学习。Nuke 尚未接入。
+当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、全局经验共享、语义向量检索、自动查全依赖或模板自动学习。Nuke 15.2 接入与验证范围见 [Nuke接入与独立学习](docs/Nuke接入与独立学习.md)。
 
 ## 对话与制作反馈学习
 

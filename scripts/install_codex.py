@@ -3,44 +3,18 @@
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
-import tomllib
 from datetime import datetime
 from pathlib import Path
+
+from fx_agent.install_config import replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def codex_config(original: str, root: Path, data: Path, port: int) -> str:
     """Replace only the two FX server tables; reject unsupported TOML layouts."""
-    before = tomllib.loads(original)
-    kept = []
-    dropping = False
-    for line in original.splitlines(keepends=True):
-        if line.lstrip().startswith("["):
-            header = line.strip().split("#", 1)[0].strip()
-            dropping = bool(
-                re.fullmatch(
-                    r"""\[mcp_servers\.(?:fxhoudini|fx-agent|"fxhoudini"|"fx-agent"|'fxhoudini'|'fx-agent')(?:\.env)?\]""",
-                    header,
-                )
-            )
-        if not dropping:
-            kept.append(line)
-    retained = "".join(kept).rstrip()
-    parsed = tomllib.loads(retained)
-    expected_servers = {
-        k: v for k, v in before.get("mcp_servers", {}).items() if k not in {"fxhoudini", "fx-agent"}
-    }
-    expected = {k: v for k, v in before.items() if k != "mcp_servers"}
-    if expected_servers:
-        expected["mcp_servers"] = expected_servers
-    if parsed.get("mcp_servers") == {}:
-        parsed.pop("mcp_servers")
-    if parsed != expected:
-        raise ValueError("不支持的 FX 配置格式，已停止；请保留原配置并手动迁移。")
 
     def quote(value: Path) -> str:
         return json.dumps(str(value), ensure_ascii=False)  # TOML basic strings
@@ -59,9 +33,7 @@ FXHOUDINIMCP_AUTO_LAYOUT = "0"
 NO_PROXY = "localhost,127.0.0.1,::1"
 PYTHONUTF8 = "1"
 '''
-    result = (retained + "\n\n" if retained else "") + block
-    tomllib.loads(result)
-    return result
+    return replace_servers(original, {"fxhoudini", "fx-agent"}, block)
 
 
 def houdini_package(port: int, existing: Path | None = None) -> str:
@@ -121,7 +93,7 @@ def main() -> None:
         ),
     }
     links = {}
-    for name in ("fx-workflow", "fx-learning"):
+    for name in ("fx-workflow", "fx-learning", "nuke-workflow"):
         link = Path.home() / ".agents/skills" / name
         target = ROOT / "skills" / name
         if os.path.lexists(link):

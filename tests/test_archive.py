@@ -147,7 +147,7 @@ def test_archive_rejects_invalid_source_roles_and_relative_paths(tmp_path):
     archive = archive_at(tmp_path / "data")
     with pytest.raises(ValueError, match="absolute"):
         create(archive, hip, image, files=[{"path": "draft.hip", "role": "project"}])
-    with pytest.raises(ValueError, match="Houdini project"):
+    with pytest.raises(ValueError, match="Project must have"):
         create(archive, hip, image, files=[{"path": str(image), "role": "project"}])
     with pytest.raises(ValueError):
         create(archive, hip, image, files=[{"path": str(image), "role": "executable"}])

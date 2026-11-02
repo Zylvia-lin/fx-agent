@@ -19,6 +19,7 @@ class Experience(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
+    software: Literal["houdini", "nuke"] = "houdini"
     shot_id: str = Field(default="", max_length=128)
     kind: Literal["preference", "workflow", "render", "lighting", "compositing", "troubleshooting"]
     title: str = Field(min_length=1, max_length=200)
@@ -57,9 +58,13 @@ class MemoryStore(Store):
             if not archive.verify(request.case_id, request.project_id)["valid"]:
                 raise ValueError("Case archive failed checksum validation")
             if request.project_dependent and not any(
-                item["role"] == "project" for item in case["files"]
+                item["role"] == "project"
+                and item["archive_path"].startswith(f"projects/{request.software}/")
+                for item in case["files"]
             ):
-                raise ValueError("Project-dependent experience requires an archived project")
+                raise ValueError(
+                    "Project-dependent experience requires an archived project for its software"
+                )
 
         status, evidence, reason = "candidate", "unverified", "inference_requires_evidence"
         if request.project_dependent and case is None:
@@ -82,6 +87,8 @@ class MemoryStore(Store):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
 
         content = request.model_dump(exclude={"source_ref"})
+        if request.software == "houdini":
+            content.pop("software")  # Preserve content hashes of existing Houdini memories.
         if _origin_feedback_id:
             content["origin_feedback_id"] = _origin_feedback_id
         digest = hashlib.sha256(compact(content).encode()).hexdigest()
@@ -113,6 +120,8 @@ class MemoryStore(Store):
                 if previous["status"] not in ("active", "candidate"):
                     raise ValueError("Correction target is not a current memory revision")
                 old = json.loads(previous["payload"])
+                if old.get("software", "houdini") != request.software:
+                    raise ValueError("Correction must keep the same software scope")
                 if all(old[key] == value for key, value in content.items() if key != "supersedes"):
                     raise ValueError("Correction must contain a new, distinct replacement")
             memory_id = uuid.uuid4().hex
@@ -164,6 +173,7 @@ class MemoryStore(Store):
         if row is None:
             raise ValueError("Memory does not belong to the requested project or does not exist")
         result = json.loads(row["payload"]) | {"status": row["status"]}
+        result.setdefault("software", "houdini")
         with self.connection() as db:
             related = db.execute(
                 "SELECT duplicate_id FROM memory_aliases WHERE project_id=? AND canonical_id=? ORDER BY duplicate_id",
@@ -181,9 +191,12 @@ class MemoryStore(Store):
         include_candidates: bool = False,
         limit: int = 5,
         max_chars: int = 3000,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         """Literal multilingual substring matching, scoped before ranking and expansion."""
         project_id = scope_id.validate_python(project_id)
+        if software not in ("houdini", "nuke"):
+            raise ValueError("Invalid software")
         if shot_id:
             shot_id = scope_id.validate_python(shot_id)
         if not 1 <= limit <= 20 or not 512 <= max_chars <= 12000 or len(query) > 200:
@@ -196,12 +209,13 @@ class MemoryStore(Store):
             raise ValueError("Search query has too many terms")
         clauses = [
             "project_id=?",
+            "COALESCE(json_extract(payload,'$.software'),'houdini')=?",
             "status IN ('active','candidate')" if include_candidates else "status='active'",
         ]
         clauses.append(
             "NOT EXISTS (SELECT 1 FROM memory_aliases a JOIN memories c ON c.memory_id=a.canonical_id WHERE a.duplicate_id=memories.memory_id AND a.project_id=memories.project_id AND c.project_id=memories.project_id AND c.shot_id=memories.shot_id AND c.status='active')"
         )
-        params = [project_id]
+        params = [project_id, software]
         if shot_id:
             clauses.append("(shot_id='' OR shot_id=?)")
             params.append(shot_id)
@@ -217,9 +231,18 @@ class MemoryStore(Store):
             ).fetchall()
         for row in rows[:limit]:
             record = json.loads(row["payload"]) | {"status": row["status"]}
+            record.setdefault("software", "houdini")
             card = {
                 key: record[key]
-                for key in ("memory_id", "title", "kind", "status", "evidence_status", "case_id")
+                for key in (
+                    "memory_id",
+                    "software",
+                    "title",
+                    "kind",
+                    "status",
+                    "evidence_status",
+                    "case_id",
+                )
             } | {"summary": record["method"][:240]}
             result["items"].append(card)
             if len(compact(result)) > max_chars:

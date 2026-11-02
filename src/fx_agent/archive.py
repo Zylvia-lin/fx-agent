@@ -172,8 +172,13 @@ class CaseArchive:
             source = path.resolve(strict=True)
             if not source.is_file():
                 raise ValueError(f"Source is not a file: {source}")
-            if item.role == "project" and source.suffix.lower() not in (".hip", ".hiplc", ".hipnc"):
-                raise ValueError("Houdini project must have a .hip, .hiplc or .hipnc suffix")
+            if item.role == "project" and source.suffix.lower() not in (
+                ".hip",
+                ".hiplc",
+                ".hipnc",
+                ".nk",
+            ):
+                raise ValueError("Project must have a .hip, .hiplc, .hipnc or .nk suffix")
             total += source.stat().st_size
             sources.append((item, source))
         if total > request.max_total_bytes:
@@ -187,7 +192,12 @@ class CaseArchive:
             copied_bytes = 0
             for index, (item, source) in enumerate(sources):
                 check_cancelled(cancellation)
-                relative = f"{ROLES[item.role]}/{index:04d}_{source.name}"
+                folder = (
+                    "projects/nuke"
+                    if item.role == "project" and source.suffix.lower() == ".nk"
+                    else ROLES[item.role]
+                )
+                relative = f"{folder}/{index:04d}_{source.name}"
                 destination = contained(staging, relative)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # Repeat preflight immediately before opening a possibly changed source.

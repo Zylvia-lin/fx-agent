@@ -29,6 +29,7 @@ class UserRule(BaseModel):
 class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
+    software: Literal["houdini", "nuke"] = "houdini"
     shot_id: Identifier
     effect_type: Identifier
     attempt_id: Identifier
@@ -158,11 +159,18 @@ class LearningStore(MemoryStore):
                 item["role"] for item in case["files"]
             }:
                 raise ValueError("Accepted case requires project and preview files")
+            projects = [item for item in case["files"] if item["role"] == "project"]
+            if projects and not any(
+                item["role"] == "project"
+                and item["archive_path"].startswith(f"projects/{request.software}/")
+                for item in projects
+            ):
+                raise ValueError("Case project belongs to another software")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
-                "SELECT feedback_id,revision FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? ORDER BY revision DESC LIMIT 1",
-                (request.project_id, request.shot_id, request.attempt_id),
+                "SELECT feedback_id,revision FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? AND software=? ORDER BY revision DESC LIMIT 1",
+                (request.project_id, request.shot_id, request.attempt_id, request.software),
             ).fetchone()
             current = previous["revision"] if previous else 0
             if current != request.expected_revision:
@@ -173,7 +181,7 @@ class LearningStore(MemoryStore):
                 "created_at": datetime.now(UTC).isoformat(),
             }
             db.execute(
-                "INSERT INTO learning_feedback VALUES (?,?,?,?,?,?)",
+                "INSERT INTO learning_feedback VALUES (?,?,?,?,?,?,?)",
                 (
                     record["feedback_id"],
                     request.project_id,
@@ -181,12 +189,13 @@ class LearningStore(MemoryStore):
                     request.attempt_id,
                     current + 1,
                     compact(record),
+                    request.software,
                 ),
             )
             if previous:
                 db.execute(
-                    "UPDATE memories SET status='disabled' WHERE memory_id IN (SELECT r.memory_id FROM learning_results r JOIN learning_feedback f ON f.feedback_id=r.feedback_id WHERE f.project_id=? AND f.shot_id=? AND f.attempt_id=?)",
-                    (request.project_id, request.shot_id, request.attempt_id),
+                    "UPDATE memories SET status='disabled' WHERE memory_id IN (SELECT r.memory_id FROM learning_results r JOIN learning_feedback f ON f.feedback_id=r.feedback_id WHERE f.project_id=? AND f.shot_id=? AND f.attempt_id=? AND f.software=?)",
+                    (request.project_id, request.shot_id, request.attempt_id, request.software),
                 )
         return record
 
@@ -197,6 +206,7 @@ class LearningStore(MemoryStore):
         effect_type: str = "",
         max_chars: int = 6000,
         before_cursor: int = 0,
+        software: Literal["houdini", "nuke"] = "houdini",
     ) -> dict:
         project_id, shot_id = (
             scope_id.validate_python(project_id),
@@ -204,12 +214,23 @@ class LearningStore(MemoryStore):
         )
         if not 1024 <= max_chars <= 12000 or before_cursor < 0:
             raise ValueError("max_chars must be 1024..12000")
+        if software not in ("houdini", "nuke"):
+            raise ValueError("Invalid software")
         with self.connection() as db:
             rows = db.execute(
                 "SELECT rowid AS cursor,payload FROM learning_feedback WHERE project_id=? AND shot_id=? "
                 "AND (?='' OR json_extract(payload,'$.effect_type')=?) "
+                "AND software=? "
                 "AND (?=0 OR rowid<?) ORDER BY rowid DESC LIMIT 101",
-                (project_id, shot_id, effect_type, effect_type, before_cursor, before_cursor),
+                (
+                    project_id,
+                    shot_id,
+                    effect_type,
+                    effect_type,
+                    software,
+                    before_cursor,
+                    before_cursor,
+                ),
             ).fetchall()
         result = {
             "items": [],
@@ -278,8 +299,13 @@ class LearningStore(MemoryStore):
                 raise ValueError("Feedback not found in this project")
             feedback = json.loads(row["payload"])
             latest = db.execute(
-                "SELECT feedback_id FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? ORDER BY revision DESC LIMIT 1",
-                (project_id, feedback["shot_id"], feedback["attempt_id"]),
+                "SELECT feedback_id FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? AND software=? ORDER BY revision DESC LIMIT 1",
+                (
+                    project_id,
+                    feedback["shot_id"],
+                    feedback["attempt_id"],
+                    feedback.get("software", "houdini"),
+                ),
             ).fetchone()[0]
             if latest != feedback_id:
                 raise ValueError("Feedback is not the current revision")
@@ -289,6 +315,7 @@ class LearningStore(MemoryStore):
                 _db=db,
                 _origin_feedback_id=feedback_id,
                 project_id=project_id,
+                software=feedback.get("software", "houdini"),
                 shot_id=feedback["shot_id"] if reuse_scope == "shot" else "",
                 kind="workflow",
                 title=f"{feedback['effect_type']}：{feedback['problem'][:60]}",
@@ -345,10 +372,12 @@ class LearningStore(MemoryStore):
         groups = {}
         for row in rows:
             memory = json.loads(row["payload"])
+            memory.setdefault("software", "houdini")
             key = compact(
                 [
                     memory[name]
                     for name in (
+                        "software",
                         "shot_id",
                         "kind",
                         "title",

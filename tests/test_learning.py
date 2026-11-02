@@ -343,4 +343,4 @@ def test_schema_two_database_is_upgraded_without_losing_checkpoint(tmp_path):
     assert store.get_checkpoint("p", "s") == checkpoint
     assert store.record_rule(**rule())["revision"] == 1
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
