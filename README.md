@@ -62,6 +62,38 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 当前是 Codex 在阶段边界主动调用记忆工具，不是后台监听所有聊天。完整工程和图片归档仅覆盖明确提供的文件，不自动查全所有外部依赖。
 
+### 模块准则与总结经验
+
+原 Houdini MCP 的模块工作流准则已经保留：旧安装与当前依赖的36份Markdown比对无缺失、无内容变化，其中31份是工作流指南。这些是制作基线，不计作个人学习记忆。
+
+总结经验按功能模块分类，支持多个标签，例如：
+
+| 模块 | 标签 | 对应原准则主题 |
+| --- | --- | --- |
+| SOP 建模、属性、变形 | `sop` | `model` |
+| 粒子 / POP | `particles` | `dopparticles` |
+| 烟雾、火焰、爆炸 | `pyro` | `pyro` |
+| 流体 / FLIP | `flip` | `fluid` |
+| 破碎 / 刚体 | `rbd` | `destruction` |
+| 海洋与海浪 | `ocean` | `ocean` |
+
+其余模块可通过 `fx_get_module_catalog` 查询。比如程序化卷浪可标记 `sop + ocean`，不因为外观像水就归为 FLIP；已有无标签记录保持“未分类”，不猜测归类。
+
+最终方案经用户确认、工程及预览归档并完成经验提炼后，**会自动更新对应模块的 MD 补充文档**：
+
+```text
+data/modules/<项目标识的SHA-256>/houdini/sop.md
+data/modules/<项目标识的SHA-256>/houdini/ocean.md
+```
+
+文档写入精炼方法、适用条件、原因和证据ID，不重复复制完整聊天。后续工作流读取“原模块准则＋当前项目模块补充”，必要时才展开单条经验。反馈撤销旧方案时，模块MD也会移除旧总结；区块外的手写备注保留。
+
+原依赖内的MD不直接修改，避免重装或升级丢失学习成果。补充文档与记忆库一起迁移，当前遵守原有项目范围，不把某个镜头或项目的参数自动推广到其他项目。未分类、仅当前镜头适用、未确认或尚未提炼的方案不写成通用模块准则。
+
+若工具返回 `module_guides.state=pending_rebuild`，说明经验已保存但MD未同步；调用 `fx_refresh_module_guides` 重建，不要把它当作经验丢失。读取模块补充用 `fx_get_module_knowledge`，默认总预算4000字符；检索经验和纠错也可按模块过滤。实际调用细节见 [模块工作流与学习同步](docs/模块工作流与学习同步.md)。
+
+本功能增加了MCP工具和参数；当前制作结束后重启Codex加载新版。`fx_status` 返回 `module_taxonomy_version=1` 时表示新版本已加载，不需要重启或改动Houdini工程。
+
 续作时提供相同项目名和镜头名：
 
 > 继续“广告A”的 sh010。先读取上次进度和相关记忆，再检查当前工程现场，说明上次做到哪里，然后继续。

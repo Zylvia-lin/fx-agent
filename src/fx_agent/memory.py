@@ -8,9 +8,11 @@ from datetime import UTC, datetime
 from sqlite3 import Connection
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from fx_agent.archive import CaseArchive
+from fx_agent.module_guides import refresh_guides
+from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.store import Identifier, Store, compact, scope_id
 
 
@@ -20,6 +22,12 @@ class Experience(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
     software: Literal["houdini", "nuke"] = "houdini"
+    modules: list[str] = Field(
+        default_factory=lambda: ["unclassified"],
+        min_length=1,
+        max_length=4,
+        description="Functional module IDs from fx_get_module_catalog, e.g. sop, particles, pyro, flip, rbd. Classify new experience explicitly.",
+    )
     shot_id: str = Field(default="", max_length=128)
     kind: Literal["preference", "workflow", "render", "lighting", "compositing", "troubleshooting"]
     title: str = Field(min_length=1, max_length=200)
@@ -36,6 +44,11 @@ class Experience(BaseModel):
     @classmethod
     def valid_shot(cls, value: str) -> str:
         return scope_id.validate_python(value) if value else ""
+
+    @model_validator(mode="after")
+    def valid_modules(self):
+        self.modules = normalize_modules(self.modules, self.software)
+        return self
 
 
 class MemoryStore(Store):
@@ -89,6 +102,8 @@ class MemoryStore(Store):
         content = request.model_dump(exclude={"source_ref"})
         if request.software == "houdini":
             content.pop("software")  # Preserve content hashes of existing Houdini memories.
+        if request.modules == ["unclassified"]:
+            content.pop("modules")
         if _origin_feedback_id:
             content["origin_feedback_id"] = _origin_feedback_id
         digest = hashlib.sha256(compact(content).encode()).hexdigest()
@@ -120,9 +135,12 @@ class MemoryStore(Store):
                 if previous["status"] not in ("active", "candidate"):
                     raise ValueError("Correction target is not a current memory revision")
                 old = json.loads(previous["payload"])
+                old.setdefault("modules", ["unclassified"])
                 if old.get("software", "houdini") != request.software:
                     raise ValueError("Correction must keep the same software scope")
-                if all(old[key] == value for key, value in content.items() if key != "supersedes"):
+                if old["modules"] == request.modules and all(
+                    old[key] == value for key, value in content.items() if key != "supersedes"
+                ):
                     raise ValueError("Correction must contain a new, distinct replacement")
             memory_id = uuid.uuid4().hex
             record = request.model_dump() | {
@@ -154,13 +172,16 @@ class MemoryStore(Store):
                     "UPDATE memories SET status='superseded' WHERE memory_id=?",
                     (request.supersedes,),
                 )
-        return {
+        result = {
             "decision": "admitted" if status == "active" else "candidate",
             "memory_id": memory_id,
             "status": status,
             "reason": reason,
             "evidence_status": evidence,
         }
+        if _db is None and request.supersedes:
+            result["module_guides"] = refresh_guides(self.root, request.project_id)
+        return result
 
     def get(self, memory_id: str, project_id: str) -> dict:
         """Read full history, including a superseded entry, in the project scope."""
@@ -174,6 +195,7 @@ class MemoryStore(Store):
             raise ValueError("Memory does not belong to the requested project or does not exist")
         result = json.loads(row["payload"]) | {"status": row["status"]}
         result.setdefault("software", "houdini")
+        result.setdefault("modules", ["unclassified"])
         with self.connection() as db:
             related = db.execute(
                 "SELECT duplicate_id FROM memory_aliases WHERE project_id=? AND canonical_id=? ORDER BY duplicate_id",
@@ -192,18 +214,20 @@ class MemoryStore(Store):
         limit: int = 5,
         max_chars: int = 3000,
         software: Literal["houdini", "nuke"] = "houdini",
+        module: str = "",
     ) -> dict:
         """Literal multilingual substring matching, scoped before ranking and expansion."""
         project_id = scope_id.validate_python(project_id)
         if software not in ("houdini", "nuke"):
             raise ValueError("Invalid software")
+        selected_module = normalize_modules([module], software)[0] if module else ""
         if shot_id:
             shot_id = scope_id.validate_python(shot_id)
         if not 1 <= limit <= 20 or not 512 <= max_chars <= 12000 or len(query) > 200:
             raise ValueError("Invalid search limit, max_chars or query length")
         tokens = query.casefold().split()
         result = {"items": [], "budget_unit": "json_characters", "truncated": False}
-        if not tokens:
+        if not tokens and not selected_module:
             return result
         if len(tokens) > 16:
             raise ValueError("Search query has too many terms")
@@ -216,6 +240,9 @@ class MemoryStore(Store):
             "NOT EXISTS (SELECT 1 FROM memory_aliases a JOIN memories c ON c.memory_id=a.canonical_id WHERE a.duplicate_id=memories.memory_id AND a.project_id=memories.project_id AND c.project_id=memories.project_id AND c.shot_id=memories.shot_id AND c.status='active')"
         )
         params = [project_id, software]
+        if selected_module:
+            clauses.append(MODULE_MATCH_SQL)
+            params.append(selected_module)
         if shot_id:
             clauses.append("(shot_id='' OR shot_id=?)")
             params.append(shot_id)
@@ -232,11 +259,13 @@ class MemoryStore(Store):
         for row in rows[:limit]:
             record = json.loads(row["payload"]) | {"status": row["status"]}
             record.setdefault("software", "houdini")
+            record.setdefault("modules", ["unclassified"])
             card = {
                 key: record[key]
                 for key in (
                     "memory_id",
                     "software",
+                    "modules",
                     "title",
                     "kind",
                     "status",

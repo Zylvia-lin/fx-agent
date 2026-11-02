@@ -19,6 +19,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 1. 保存用户指出的问题表现，查询真实工程与参数，不猜测已执行了什么。
 2. 用 `fx_record_feedback` 记录 effect_type、唯一 attempt_id、问题、实际调整、原因、结果、用户原话与来源。
+   同时明确 modules（最多4个），如 sop、particles、pyro、flip、rbd；不确定时读 `fx_get_module_catalog`，不能用 unclassified 代替新记录的认真分类。旧记录未归类则保持未分类，除非有事实支持更正。
 3. 未执行或未验证的结果标 pending；有所改善但未最终确认标 improved；失败标 failed。用户没有反对不等于 accepted。
 4. 同一尝试更新用 expected_revision。新的观察不覆盖历史，修改旧反馈会停用由其旧版本派生的方案，避免下次重复旧错。
 5. 阅读纠错轨迹用 `fx_get_learning_history`，游标按 `next_cursor` 翻页；需要精确参数、原话或完整结果时用 `fx_get_feedback`，不能用截短卡片代替原文提炼。
@@ -29,12 +30,14 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 2. 归档最终 HIP、必要依赖、相关图片及结果预览，用实际 case_id 关联。只有工程文件或只有参考图不够，尚未复制的内容不能声称已归档。
 3. 将本次最终反馈更新为 accepted；从完整轨迹中区分失败尝试与实际采用的有效方案。
 4. 调用 `fx_finalize_learning`，提炼可复用步骤、关键参数、原因、适用条件与失败注意项；由服务检查当前反馈、范围与归档，并关联来源。
+   反馈中的 modules 会继承到最终经验。项目范围的已接受方案会自动更新 data/modules 下对应模块 MD 的自动区块；上游指南不修改。它写入提炼方法、条件与证据 ID，不复制整段聊天。未分类、镜头限定、未最终提炼的记录不推广成项目模块准则。
+   检查返回 module_guides.state：pending_rebuild 表示经验已经保存、MD 未同步，需要说明原因并调用 `fx_refresh_module_guides(project_id)` 修复；不能当作整次事务回滚重写历史。撤销或纠正已提炼方案也会更新文档。
 5. 默认 reuse_scope=project，让同项目的其他镜头能检索。只对当前镜头成立时选择 shot。当前不自动跨项目扩散经验。
 6. 用户接受画面不代表每条因果解释都已证明；标明哪些是观察、哪些是待验证解释。归档文件校验也不等于完整可复现。
 
 ## 再次制作同类效果
 
-先读当前规范，再以效果类型和问题关键词调用 `fx_search_memory`。先读摘要，选中后 `fx_get_memory`，需要时展开其反馈轨迹、related_memory_ids 和归档案例。比较新镜头的尺度、时长、渲染器和输入条件，再从既有成功方案起步，不能机械套用旧数值。
+先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的项目模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
 
 ## 阶段结束时整理记忆
 

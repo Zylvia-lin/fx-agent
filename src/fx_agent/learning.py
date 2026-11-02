@@ -6,10 +6,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from fx_agent.archive import CaseArchive
 from fx_agent.memory import MemoryStore
+from fx_agent.module_guides import refresh_guides
+from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.production import production_rules
 from fx_agent.store import Identifier, compact, scope_id
 
@@ -30,6 +32,12 @@ class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
     software: Literal["houdini", "nuke"] = "houdini"
+    modules: list[str] = Field(
+        default_factory=lambda: ["unclassified"],
+        min_length=1,
+        max_length=4,
+        description="Functional module IDs from fx_get_module_catalog; final learning inherits these tags.",
+    )
     shot_id: Identifier
     effect_type: Identifier
     attempt_id: Identifier
@@ -42,6 +50,11 @@ class Feedback(BaseModel):
     source_ref: str = Field(min_length=1, max_length=512)
     case_id: str = ""
     expected_revision: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_modules(self):
+        self.modules = normalize_modules(self.modules, self.software)
+        return self
 
 
 class LearningStore(MemoryStore):
@@ -142,7 +155,9 @@ class LearningStore(MemoryStore):
             ).fetchone()
         if row is None:
             raise ValueError("Feedback not found in this project")
-        return json.loads(row["payload"])
+        result = json.loads(row["payload"])
+        result.setdefault("modules", ["unclassified"])
+        return result
 
     def record_feedback(self, **values) -> dict:
         request = Feedback(**values)
@@ -197,6 +212,8 @@ class LearningStore(MemoryStore):
                     "UPDATE memories SET status='disabled' WHERE memory_id IN (SELECT r.memory_id FROM learning_results r JOIN learning_feedback f ON f.feedback_id=r.feedback_id WHERE f.project_id=? AND f.shot_id=? AND f.attempt_id=? AND f.software=?)",
                     (request.project_id, request.shot_id, request.attempt_id, request.software),
                 )
+        if previous:
+            return record | {"module_guides": refresh_guides(self.root, request.project_id)}
         return record
 
     def history(
@@ -207,6 +224,7 @@ class LearningStore(MemoryStore):
         max_chars: int = 6000,
         before_cursor: int = 0,
         software: Literal["houdini", "nuke"] = "houdini",
+        module: str = "",
     ) -> dict:
         project_id, shot_id = (
             scope_id.validate_python(project_id),
@@ -216,18 +234,21 @@ class LearningStore(MemoryStore):
             raise ValueError("max_chars must be 1024..12000")
         if software not in ("houdini", "nuke"):
             raise ValueError("Invalid software")
+        selected_module = normalize_modules([module], software)[0] if module else ""
         with self.connection() as db:
             rows = db.execute(
                 "SELECT rowid AS cursor,payload FROM learning_feedback WHERE project_id=? AND shot_id=? "
                 "AND (?='' OR json_extract(payload,'$.effect_type')=?) "
                 "AND software=? "
-                "AND (?=0 OR rowid<?) ORDER BY rowid DESC LIMIT 101",
+                + ("AND " + MODULE_MATCH_SQL + " " if selected_module else "")
+                + "AND (?=0 OR rowid<?) ORDER BY rowid DESC LIMIT 101",
                 (
                     project_id,
                     shot_id,
                     effect_type,
                     effect_type,
                     software,
+                    *((selected_module,) if selected_module else ()),
                     before_cursor,
                     before_cursor,
                 ),
@@ -240,6 +261,7 @@ class LearningStore(MemoryStore):
         }
         for row in rows[:100]:
             record = json.loads(row["payload"])
+            record.setdefault("modules", ["unclassified"])
             card = {
                 key: (
                     value[:160]
@@ -316,6 +338,7 @@ class LearningStore(MemoryStore):
                 _origin_feedback_id=feedback_id,
                 project_id=project_id,
                 software=feedback.get("software", "houdini"),
+                modules=feedback.get("modules", ["unclassified"]),
                 shot_id=feedback["shot_id"] if reuse_scope == "shot" else "",
                 kind="workflow",
                 title=f"{feedback['effect_type']}：{feedback['problem'][:60]}",
@@ -338,7 +361,7 @@ class LearningStore(MemoryStore):
                 "INSERT OR IGNORE INTO learning_results VALUES (?,?)",
                 (feedback_id, result["memory_id"]),
             )
-        return result
+        return result | {"module_guides": refresh_guides(self.root, project_id)}
 
     def _dream_plan(self, db, project_id: str) -> dict:
         rows = db.execute(
@@ -373,11 +396,13 @@ class LearningStore(MemoryStore):
         for row in rows:
             memory = json.loads(row["payload"])
             memory.setdefault("software", "houdini")
+            memory.setdefault("modules", ["unclassified"])
             key = compact(
                 [
                     memory[name]
                     for name in (
                         "software",
+                        "modules",
                         "shot_id",
                         "kind",
                         "title",

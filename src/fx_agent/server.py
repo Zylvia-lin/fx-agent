@@ -11,6 +11,8 @@ from fx_agent.config import data_root
 from fx_agent.handoff import RenderIssue, RenderIssues
 from fx_agent.learning import Feedback, LearningStore, UserRule
 from fx_agent.memory import Experience, MemoryStore
+from fx_agent.module_guides import ModuleGuides, refresh_guides
+from fx_agent.modules import module_catalog
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.store import Store, scope_id
 
@@ -45,7 +47,43 @@ def get_server():
                 "connection_status_tool": "get_nuke_connection_status",
             },
             "production_rules_version": production_rules()["version"],
+            "module_taxonomy_version": 1,
         }
+
+    @mcp.tool()
+    async def fx_get_module_catalog(software: Literal["houdini", "nuke"] = "houdini") -> dict:
+        """List functional memory tags and upstream guide topics, not guide full texts.
+
+        Houdini baselines remain in get_workflow_guide; select only the relevant
+        guide. Never relabel upstream documentation as a learned successful case.
+        """
+        return module_catalog(software)
+
+    @mcp.tool()
+    async def fx_get_module_knowledge(
+        project_id: str,
+        module: str,
+        software: Literal["houdini", "nuke"] = "houdini",
+        max_chars: int = 4000,
+    ) -> dict:
+        """Read the current project's module workflow MD supplement within a budget.
+
+        Read the mapped upstream guide separately. Only accepted, finalized,
+        project-reusable lessons enter generated sections; manual notes remain
+        unverified references. get refreshes derived MDs from authoritative DB.
+        """
+        return await asyncio.to_thread(
+            lambda: ModuleGuides(data_root()).get(project_id, module, software, max_chars)
+        )
+
+    @mcp.tool()
+    async def fx_refresh_module_guides(project_id: str) -> dict:
+        """Rebuild project module MDs; preserve text outside managed sections.
+
+        pending_rebuild means the SQLite learning record remains saved, but
+        Markdown synchronization needs repair. Never silently claim it updated.
+        """
+        return await asyncio.to_thread(lambda: refresh_guides(data_root(), project_id))
 
     @mcp.tool()
     async def fx_get_production_rules(
@@ -193,6 +231,7 @@ def get_server():
         limit: int = 5,
         max_chars: int = 3000,
         software: Literal["houdini", "nuke"] = "houdini",
+        module: str = "",
     ) -> dict:
         """Recall project-scoped experience cards within a JSON character budget.
 
@@ -202,7 +241,7 @@ def get_server():
         """
         return await asyncio.to_thread(
             lambda: MemoryStore(data_root()).search(
-                project_id, query, shot_id, include_candidates, limit, max_chars, software
+                project_id, query, shot_id, include_candidates, limit, max_chars, software, module
             )
         )
 
@@ -255,6 +294,7 @@ def get_server():
         max_chars: int = 6000,
         before_cursor: int = 0,
         software: Literal["houdini", "nuke"] = "houdini",
+        module: str = "",
     ) -> dict:
         """Read scoped correction history within a character budget, newest first.
 
@@ -263,7 +303,7 @@ def get_server():
         """
         return await asyncio.to_thread(
             lambda: LearningStore(data_root()).history(
-                project_id, shot_id, effect_type, max_chars, before_cursor, software
+                project_id, shot_id, effect_type, max_chars, before_cursor, software, module
             )
         )
 
