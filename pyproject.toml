@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fx-agent"
+version = "0.1.0"
+description = "Codex-operated Houdini FX workstation with persistent production knowledge"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fxhoudinimcp==2.25.0",
+    # The upstream SDK adapter uses private registration internals. Validate
+    # the 2.x transition separately rather than changing it during integration.
+    "mcp>=1.14.0,<2",
+]
+
+[project.scripts]
+fx-agent = "fx_agent.__main__:main"
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<2",
+    "pytest-cov>=5,<8",
+    "ruff>=0.8,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fx_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["live: read-only verification against an explicitly enabled local Houdini session"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

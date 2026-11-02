@@ -1,0 +1,30 @@
+# Local environments and generated artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+.cache/
+.tmp/
+
+# Runtime data and credentials never belong in the source repository
+.env
+.env.*
+!.env.example
+data/
+*.sqlite3
+*.sqlite3-*
+*.hip
+*.hiplc
+*.hipnc
+*.bgeo*
+*.vdb
+*.exr
+
+# Machine-specific configuration
+.fx-agent.local.json

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fx-agent",
+  "version": "0.1.0",
+  "description": "Codex 操作的 Houdini FX 制作工作台，逐步接入制作记忆与案例归档。",
+  "author": {"name": "Zylvia-lin"},
+  "repository": "https://github.com/Zylvia-lin/fx-agent"
+}
