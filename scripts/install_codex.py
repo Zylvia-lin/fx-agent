@@ -95,7 +95,7 @@ def houdini_package(port: int, existing: Path | None = None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--houdini-pref", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, default=Path.home() / ".fx-agent")
+    parser.add_argument("--data-root", type=Path, default=ROOT / "data")
     parser.add_argument("--port", type=int, default=8186)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
