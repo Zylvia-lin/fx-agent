@@ -8,6 +8,7 @@ from fx_agent import __version__
 from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
 from fx_agent.config import data_root
 from fx_agent.memory import Experience, MemoryStore
+from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.store import Store
 
 
@@ -20,7 +21,12 @@ def get_server():
     during this initial integration; the installed plugin identity is fx-agent.
     """
     from fxhoudinimcp import prompts, resources, tools  # noqa: F401
+    from fxhoudinimcp import server as upstream_server
     from fxhoudinimcp.server import mcp
+
+    # The pinned lifespan resolves this constructor at startup; progress and
+    # request-context behavior remain upstream-owned.
+    upstream_server.HoudiniBridge = ProductionBridge
 
     @mcp.tool()
     async def fx_status() -> dict:
@@ -31,7 +37,18 @@ def get_server():
             "data_root": str(data_root()),
             "houdini_status_tool": "get_houdini_connection_status",
             "nuke": "not_integrated",
+            "production_rules_version": production_rules()["version"],
         }
+
+    @mcp.tool()
+    async def fx_get_production_rules() -> dict:
+        """Read fixed $HIP input and File Cache rules, before consulting learned recipes."""
+        return production_rules()
+
+    @mcp.tool()
+    async def fx_check_production_path(value: str, purpose: str = "read") -> dict:
+        """Validate a proposed raw file path; not a live scene or dependency audit."""
+        return check_path(value, purpose)
 
     @mcp.tool()
     async def fx_save_checkpoint(

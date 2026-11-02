@@ -7,11 +7,12 @@ description: 使用 FX Agent 插件操作 Houdini，检查连接、查询节点�
 
 由 Codex 规划和判断，调用插件提供的软件工具。全程使用中文沟通。
 
-1. 先调用 `fx_status`，明确项目与镜头后调用 `fx_get_context`，再用 `get_houdini_connection_status` 核对真实会话与工程。多会话时确认目标，不能猜测后修改。
+1. 先调用 `fx_status` 与 `fx_get_production_rules`，明确项目与镜头后调用 `fx_get_context`，再用 `get_houdini_connection_status` 核对真实会话与工程。多会话时确认目标，不能猜测后修改。
 2. 读取 `get_workflow_guide("discipline")`，再按当前任务读取相关指南。现有文档查询与节点卡片仍是软件版本事实来源。
    按当前目标调用 `fx_search_memory`，限定项目和当前镜头，使用少量关键词。默认不读取候选；只在诊断假设时显式查询候选并说明尚未验证。需要实施细节再 `fx_get_memory`，不能把旧经验当作当前工程事实。
 3. 参考工程先只读检查，试验使用工作副本；参考画面的观察与制作方法推断分开表达。
 4. 先明确草稿目标；优先原生节点和批量工具。参数、接口和连接从实际查询获得。
+   文件读取必须使用 `$HIP/...`。外部素材先复制入工程再引用，不能只改路径文本。File Cache 统一 `$HIP/geo/$OS/$OS.$F4.bgeo.sc`，使用 Explicit/file，不改派生 sopoutput。需要预检时调用 `fx_check_production_path`。缓存前保存 HIP，并检查缓存命名冲突。
 5. 修改后 `verify_network`；到视觉阶段读取并实际查看截图或预览，动态效果检查多个时间点。工具没有报错不等于画面符合参考。
 6. 保留上游的进度、缓存、渲染和取消流程，不用任意 Python 替代已有专用工具。不移动既有节点或自动排版。
 7. 阶段结束调用 `fx_save_checkpoint`，保存实际工程路径、完成摘要与下一步。首次 `expected_revision=0`，后续使用读取到的修订号；冲突先读取新版本，不盲目覆盖。此工具不复制 HIP，也不替代工程保存。

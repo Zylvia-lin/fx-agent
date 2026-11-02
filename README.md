@@ -45,6 +45,8 @@ uv run ruff check src tests scripts
 
 当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、全局经验共享、语义向量检索、自动查全依赖或模板自动学习。Nuke 尚未接入。
 
+工程读取使用 `$HIP/...`；File Cache 使用 `$HIP/geo/$OS/$OS.$F4.bgeo.sc`。新增桥接前置检查与缓存输出核对，详见 [工程制作规范](docs/工程制作规范.md)。上游 `import_file` 因路径语义不兼容暂拒绝，使用 `build_network` 创建相应读取节点。该检查不构成任意 Python、HDA 或手动操作的全局沙箱。
+
 运行验证和未完成项见 [docs/开发记录.md](docs/开发记录.md) 与 [docs/testing](docs/testing)。
 
 运行数据、工程、缓存和本机配置不提交至代码仓库。
