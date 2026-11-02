@@ -2,6 +2,7 @@
 
 import importlib.util
 import socket
+import sys
 import tomllib
 from pathlib import Path
 
@@ -52,3 +53,49 @@ def test_bad_vendor_checksum_is_never_published(tmp_path):
     ):
         installer.prepare_vendor(tmp_path / "vendor")
     assert not (tmp_path / "vendor").exists()
+
+
+def test_nuke_only_setup_requires_the_current_shared_memory_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(sys, "argv", ["install_nuke.py", "--require-shared-agent"])
+    monkeypatch.setattr(installer, "port_available", lambda port: True)
+    with pytest.raises(SystemExit) as exited:
+        installer.main()
+    assert exited.value.code == 2
+    config = tmp_path / ".codex/config.toml"
+    config.parent.mkdir()
+    config.write_text('[mcp_servers.fx-agent.env]\nFX_AGENT_DATA_ROOT="C:/other/data"\n')
+    with pytest.raises(SystemExit):
+        installer.main()
+    import json
+
+    env = "[mcp_servers.fx-agent.env]\nFX_AGENT_DATA_ROOT=" + json.dumps(str(ROOT / "data")) + "\n"
+    valid_command = "command=" + json.dumps(str(ROOT / ".venv/Scripts/python.exe")) + "\n"
+    for settings in (
+        "",  # An env subtable alone is not a launchable server.
+        valid_command + 'args=["-m","fx_agent"]\nenabled=false\n',
+        'command="other-program"\nargs=["-m","fx_agent"]\n',
+        'command=".venv/Scripts/python.exe"\nargs=["-m","fx_agent"]\n',
+        valid_command + 'args=["-m","other_module"]\n',
+    ):
+        config.write_text("[mcp_servers.fx-agent]\n" + settings + env)
+        with pytest.raises(SystemExit):
+            installer.main()
+    config.write_text("[mcp_servers.fx-agent]\n" + valid_command + 'args=["-m","fx_agent"]\n' + env)
+    installer.main()  # Preview only; no user files changed.
+    config.write_text(
+        "[mcp_servers.fx-agent]\n"
+        + valid_command
+        + 'args=["-m","fx_agent"]\n'
+        + '[mcp_servers.fx-agent.env]\nFX_AGENT_DATA_ROOT="data"\n'
+    )
+    with pytest.raises(SystemExit):
+        installer.main()
+
+
+@pytest.mark.parametrize("port", [8100, 8186, 54321])
+def test_original_mcp_ports_are_rejected_before_configuration_changes(port, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["install_nuke.py", "--port", str(port)])
+    with pytest.raises(SystemExit) as exited:
+        installer.main()
+    assert exited.value.code == 2

@@ -104,6 +104,11 @@ def prepare_vendor(destination: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8187)
+    parser.add_argument(
+        "--require-shared-agent",
+        action="store_true",
+        help="仅更新Nuke时，要求当前工程共享记忆入口已安装",
+    )
     parser.add_argument("--prepare", action="store_true", help="仅下载并校验桥接，不修改用户配置")
     parser.add_argument("--apply", action="store_true", help="下载桥接并注册当前工程和Nuke启动脚本")
     parser.add_argument(
@@ -112,12 +117,26 @@ def main() -> None:
     args = parser.parse_args()
     if sum((args.prepare, args.apply, args.register_disabled)) > 1:
         parser.error("--prepare、--apply和--register-disabled只能选择一个。")
-    if not 1 <= args.port <= 65535 or args.port in (8186, 54321):
-        parser.error("Nuke端口必须独立，不能使用Houdini的8186或原Nuke MCP默认54321。")
+    if not 1 <= args.port <= 65535 or args.port in (8100, 8186, 54321):
+        parser.error("Nuke端口必须独立，不能使用Houdini的8186或原MCP默认8100、54321。")
     if Path(sys.executable).resolve() != ROOT / ".venv/Scripts/python.exe":
         parser.error("请使用当前工程的.venv/Scripts/python.exe运行。")
     config, menu = Path.home() / ".codex/config.toml", Path.home() / ".nuke/menu.py"
     original = config.read_text(encoding="utf-8") if config.exists() else ""
+    if args.require_shared_agent:
+        shared = tomllib.loads(original).get("mcp_servers", {}).get("fx-agent", {})
+        configured = shared.get("env", {}).get("FX_AGENT_DATA_ROOT", "")
+        if (
+            not configured
+            or not Path(configured).is_absolute()
+            or Path(configured).resolve() != (ROOT / "data").resolve()
+            or shared.get("enabled", True) is not True
+            or not Path(shared.get("command", "")).is_absolute()
+            or Path(shared.get("command", "")).resolve()
+            != (ROOT / ".venv/Scripts/python.exe").resolve()
+            or shared.get("args") != ["-m", "fx_agent"]
+        ):
+            parser.error("请先使用 Both 或 Houdini 安装当前工程的共享 Agent 入口。")
     houdini_port = (
         tomllib.loads(original)
         .get("mcp_servers", {})

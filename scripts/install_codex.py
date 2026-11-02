@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def codex_config(original: str, root: Path, data: Path, port: int) -> str:
     """Replace only the two FX server tables; reject unsupported TOML layouts."""
+    nuke_args = tomllib.loads(original).get("mcp_servers", {}).get("fx-nuke", {}).get("args", [])
+    if isinstance(nuke_args, list):
+        nuke_port = ""
+        for index, argument in enumerate(nuke_args):
+            if argument == "--port" and index + 1 < len(nuke_args):
+                nuke_port = str(nuke_args[index + 1])
+            elif isinstance(argument, str) and argument.startswith("--port="):
+                nuke_port = argument.split("=", 1)[1]
+        if nuke_port.isdecimal() and int(nuke_port) == port:
+            raise ValueError("Houdini端口与已注册Nuke端口冲突，请选择其他端口。")
 
     def quote(value: Path) -> str:
         return json.dumps(str(value), ensure_ascii=False)  # TOML basic strings

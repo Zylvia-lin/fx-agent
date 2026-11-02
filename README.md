@@ -8,6 +8,8 @@
 
 首次安装与升级见 [Windows Codex 全局安装](docs/全局安装与首次连接.md)。当前仓库路径作为代码入口，固定数据目录作为所有客户端共用的状态源。
 
+Windows 可直接双击根目录 `Install-FX-Agent.bat`，一键安装 Houdini/Nuke 桥接与 Codex 全局入口；PowerShell 参数和预览方式见 [一键安装](docs/一键安装.md)。安装前保存工程并关闭对应软件/桥接。
+
 ## 本地开发与运行
 
 需要 Python 3.12+、`uv`，以及已安装并运行 Houdini 端桥接插件的 Houdini。当前固定复用 `fxhoudinimcp==2.25.0`；安装器会备份并替换旧 MCP 注册，保留旧虚拟环境供回退。
