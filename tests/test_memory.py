@@ -96,6 +96,50 @@ def test_archived_project_is_traceable_but_does_not_claim_visual_verification(tm
         store.get(result["memory_id"], "其他项目")
 
 
+def test_observation_needs_archived_output_and_corrupt_evidence_is_rejected(tmp_path):
+    archive = importlib.import_module("fx_agent.archive").CaseArchive(tmp_path)
+    hip, preview = tmp_path / "scene.hip", tmp_path / "preview.png"
+    hip.write_bytes(b"fixture hip")
+    preview.write_bytes(b"fixture preview")
+    case = archive.create(
+        project_id="广告A",
+        shot_id="sh010",
+        title="draft",
+        files=[{"path": str(hip), "role": "project"}, {"path": str(preview), "role": "preview"}],
+    )
+    store = memories(tmp_path)
+    result = store.submit(
+        **experience(
+            case_id=case["case_id"],
+            source_type="observed",
+            project_dependent=True,
+        )
+    )
+    assert result["decision"] == "admitted"
+    assert result["evidence_status"] == "codex_observation_with_archive"
+    with pytest.raises(ValueError, match="shot"):
+        store.submit(**experience(case_id=case["case_id"], shot_id="sh020"))
+    from pathlib import Path
+
+    (Path(case["case_path"]) / case["files"][1]["archive_path"]).write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="checksum"):
+        store.submit(**experience(case_id=case["case_id"]))
+
+
+def test_project_dependent_memory_cannot_use_a_reference_only_case(tmp_path):
+    archive = importlib.import_module("fx_agent.archive").CaseArchive(tmp_path)
+    image = tmp_path / "reference.png"
+    image.write_bytes(b"fixture")
+    case = archive.create(
+        project_id="广告A",
+        shot_id="sh010",
+        title="reference",
+        files=[{"path": str(image), "role": "reference"}],
+    )
+    with pytest.raises(ValueError, match="archived project"):
+        memories(tmp_path).submit(**experience(case_id=case["case_id"], project_dependent=True))
+
+
 def test_user_correction_supersedes_old_memory_and_retains_history(tmp_path):
     store = memories(tmp_path)
     first = store.submit(**experience(source_type="user"))
@@ -103,11 +147,67 @@ def test_user_correction_supersedes_old_memory_and_retains_history(tmp_path):
         **experience(source_type="user", method="修正后的灯光方法。", supersedes=first["memory_id"])
     )
     assert replacement["decision"] == "admitted"
+    repeated = store.submit(
+        **experience(source_type="user", method="修正后的灯光方法。", supersedes=first["memory_id"])
+    )
+    assert repeated["decision"] == "duplicate"
+    assert repeated["memory_id"] == replacement["memory_id"]
     assert store.get(first["memory_id"], "广告A")["status"] == "superseded"
     items = store.search("广告A", "逆光")["items"]
     assert [item["memory_id"] for item in items] == [replacement["memory_id"]]
     with pytest.raises(ValueError, match="user"):
         store.submit(**experience(supersedes=replacement["memory_id"]))
+    with pytest.raises(ValueError, match="project"):
+        store.submit(**experience(source_type="user", supersedes="missing-memory"))
+    with pytest.raises(ValueError, match="current"):
+        store.submit(
+            **experience(source_type="user", method="过期纠正", supersedes=first["memory_id"])
+        )
+    with pytest.raises(ValueError, match="distinct"):
+        store.submit(
+            **experience(
+                source_type="user", method="修正后的灯光方法。", supersedes=replacement["memory_id"]
+            )
+        )
+    reverted = store.submit(**experience(source_type="user", supersedes=replacement["memory_id"]))
+    assert reverted["decision"] == "admitted"
+    assert store.get(replacement["memory_id"], "广告A")["status"] == "superseded"
+    assert store.get(reverted["memory_id"], "广告A")["method"] == experience()["method"]
+
+
+def test_correction_cannot_silently_move_memory_to_another_shot(tmp_path):
+    store = memories(tmp_path)
+    original = store.submit(**experience(source_type="user"))
+    with pytest.raises(ValueError, match="shot"):
+        store.submit(
+            **experience(
+                source_type="user",
+                shot_id="sh020",
+                method="另一镜头做法",
+                supersedes=original["memory_id"],
+            )
+        )
+    assert store.get(original["memory_id"], "广告A")["status"] == "active"
+
+
+def test_competing_corrections_only_replace_the_current_revision_once(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = memories(tmp_path)
+    first = store.submit(**experience(source_type="user"))
+
+    def replace(method):
+        try:
+            return store.submit(
+                **experience(source_type="user", method=method, supersedes=first["memory_id"])
+            )["decision"]
+        except ValueError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(replace, ["修正一", "修正二"]))
+    assert sorted(results) == ["admitted", "conflict"]
+    assert len(store.search("广告A", "逆光")["items"]) == 1
 
 
 def test_search_is_bounded_literal_and_does_not_cross_shots(tmp_path):
@@ -124,6 +224,52 @@ def test_search_is_bounded_literal_and_does_not_cross_shots(tmp_path):
     assert len(json.dumps(results, ensure_ascii=False, separators=(",", ":"))) <= 900
     with pytest.raises(ValueError):
         store.search("广告A", "逆光", limit=1000)
+
+
+def test_search_uses_a_consistent_snapshot_when_correction_happens_mid_read(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    store = memories(tmp_path)
+    first = store.submit(**experience(source_type="user"))
+    original_connection = store.connection
+    corrected = False
+
+    class CursorAfterCorrection:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchall(self):
+            nonlocal corrected
+            rows = self.cursor.fetchall()
+            if not corrected:
+                corrected = True
+                store.submit(
+                    **experience(
+                        source_type="user", method="并发修正版", supersedes=first["memory_id"]
+                    )
+                )
+            return rows
+
+    class Connection:
+        def __init__(self, db):
+            self.db = db
+
+        def execute(self, sql, *args):
+            cursor = self.db.execute(sql, *args)
+            if sql.startswith("SELECT") and "status='active'" in sql:
+                return CursorAfterCorrection(cursor)
+            return cursor
+
+    @contextmanager
+    def connection():
+        with original_connection() as db:
+            yield Connection(db)
+
+    monkeypatch.setattr(store, "connection", connection)
+    result = store.search("广告A", "逆光")
+    assert corrected
+    assert all(item["status"] == "active" for item in result["items"])
+    assert store.get(first["memory_id"], "广告A")["status"] == "superseded"
 
 
 def test_database_upgrade_preserves_existing_checkpoint(tmp_path):

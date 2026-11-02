@@ -81,6 +81,15 @@ def test_data_root_is_explicit_and_independent_of_working_directory(tmp_path, mo
         config.data_root()
 
 
+def test_default_data_root_is_stable_when_localappdata_is_sandboxed(tmp_path, monkeypatch):
+    config = importlib.import_module("fx_agent.config")
+    monkeypatch.delenv("FX_AGENT_DATA_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "sandbox-one"))
+    original = config.data_root()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "sandbox-two"))
+    assert config.data_root() == original
+
+
 @pytest.mark.asyncio
 async def test_server_preserves_upstream_tools_and_rejects_unknown_arguments():
     server = importlib.import_module("fx_agent.server").get_server()

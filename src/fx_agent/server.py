@@ -7,6 +7,7 @@ from importlib.metadata import version
 from fx_agent import __version__
 from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
 from fx_agent.config import data_root
+from fx_agent.memory import Experience, MemoryStore
 from fx_agent.store import Store
 
 
@@ -118,5 +119,43 @@ def get_server():
     async def fx_validate_case(case_id: str, project_id: str) -> dict:
         """Validate copied file checksums. Does not open HIP or verify visual reproduction."""
         return await asyncio.to_thread(lambda: CaseArchive(data_root()).verify(case_id, project_id))
+
+    @mcp.tool()
+    async def fx_submit_experience(experience: Experience) -> dict:
+        """Screen milestone knowledge, keeping inferences as non-default candidates.
+
+        Codex must truthfully label source_type. User statements are not visual
+        verification. Project-dependent entries need an archived HIP. To correct
+        an old entry, submit a distinct explicit user statement with supersedes.
+        """
+        return await asyncio.to_thread(
+            lambda: MemoryStore(data_root()).submit(**experience.model_dump())
+        )
+
+    @mcp.tool()
+    async def fx_search_memory(
+        project_id: str,
+        query: str,
+        shot_id: str = "",
+        include_candidates: bool = False,
+        limit: int = 5,
+        max_chars: int = 3000,
+    ) -> dict:
+        """Recall project-scoped experience cards within a JSON character budget.
+
+        Chinese/English literal terms are supported; space-separated terms must
+        all match. No semantic embedding or cross-project sharing in this version.
+        Superseded entries never appear. Candidates are opt-in.
+        """
+        return await asyncio.to_thread(
+            lambda: MemoryStore(data_root()).search(
+                project_id, query, shot_id, include_candidates, limit, max_chars
+            )
+        )
+
+    @mcp.tool()
+    async def fx_get_memory(memory_id: str, project_id: str) -> dict:
+        """Expand one scoped memory's method, conditions, provenance and case reference."""
+        return await asyncio.to_thread(lambda: MemoryStore(data_root()).get(memory_id, project_id))
 
     return mcp

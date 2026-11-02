@@ -20,13 +20,14 @@ uv run fx-agent
 
 ```powershell
 uv run python scripts/check_houdini.py
+New-Item -ItemType Directory -Path .tmp -Force | Out-Null
 uv run pytest --basetemp=.tmp/pytest
 uv run ruff check src tests scripts
 ```
 
 只读冒烟检查固定连接 `127.0.0.1:8100`；可通过 `HOUDINI_PORT` 指定其他端口。它会实际启动本项目 MCP、握手、列工具并读取场景，不创建或修改节点。
 
-默认数据目录为 `%LOCALAPPDATA%/fx-agent`，可用绝对路径环境变量 `FX_AGENT_DATA_ROOT` 覆盖。建议安装时显式配置固定绝对目录，特别是在隔离执行环境中。`fx_status` 不创建该目录，检查点操作会在其中创建 SQLite 数据库。
+默认数据目录为用户主目录下的 `.fx-agent`，可用绝对路径环境变量 `FX_AGENT_DATA_ROOT` 覆盖。默认值不使用可能被沙箱逐次替换的 `LOCALAPPDATA`。建议安装时显式配置固定绝对目录。`fx_status` 不创建该目录，持久化操作会在其中创建 SQLite 数据库或案例文件。
 
 ## 插件状态
 
@@ -38,6 +39,12 @@ uv run ruff check src tests scripts
 
 归档默认单批上限 512 MiB，可显式设置 `max_total_bytes`。当前只验证提供的文件副本，不自动发现所有依赖，不包含未保存的 Houdini 内存修改，也不声明工程可打开或视觉可复现。取消不能撤销取消请求前已完成发布的案例。
 
-经验记忆与自动模板学习继续迭代。Nuke 尚未接入。
+已提供 `fx_submit_experience`、`fx_search_memory`、`fx_get_memory`：阶段候选由 Codex 提炼，服务按规则筛选、去重和持久化。推测默认不召回；明确用户陈述与有归档输出的观察有独立来源标记，均不冒充视觉验证。工程相关经验需要归档 HIP。检索按项目和可选镜头隔离，先返回受字符预算限制的摘要，支持中文与英文关键词。
+
+用户纠正通过 `supersedes` 建立新修订；旧聊天、跨镜头替代和并发重复纠正受到保护。历史内容可以作为新修订恢复，相同请求重试保持幂等。
+
+当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、全局经验共享、语义向量检索、自动查全依赖或模板自动学习。Nuke 尚未接入。
+
+运行验证和未完成项见 [docs/开发记录.md](docs/开发记录.md) 与 [docs/testing](docs/testing)。
 
 运行数据、工程、缓存和本机配置不提交至代码仓库。

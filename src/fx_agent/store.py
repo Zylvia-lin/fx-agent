@@ -41,7 +41,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -50,13 +50,20 @@ class Store:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             schema = db.execute("PRAGMA user_version").fetchone()[0]
-            if schema not in (0, self.SCHEMA_VERSION):
+            if schema not in (0, 1, self.SCHEMA_VERSION):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
                 "project_id TEXT NOT NULL, shot_id TEXT NOT NULL, revision INTEGER NOT NULL, "
                 "payload TEXT NOT NULL, PRIMARY KEY(project_id, shot_id))"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS memories ("
+                "memory_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, shot_id TEXT NOT NULL, "
+                "status TEXT NOT NULL, content_hash TEXT NOT NULL, payload TEXT NOT NULL, "
+                "search_text TEXT NOT NULL, UNIQUE(project_id,content_hash))"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS memories_scope ON memories(project_id,status)")
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
 
     @contextmanager

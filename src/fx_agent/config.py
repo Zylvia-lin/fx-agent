@@ -12,6 +12,6 @@ def data_root() -> Path:
         if not path.is_absolute():
             raise ValueError("FX_AGENT_DATA_ROOT must be an absolute path")
         return path.resolve()
-    local = os.getenv("LOCALAPPDATA")
-    base = Path(local) if local else Path.home() / ".local" / "share"
-    return (base / "fx-agent").resolve()
+    # Codex can virtualize LOCALAPPDATA per execution. A profile-relative default
+    # survives those runs; an explicit absolute root is preferred for installation.
+    return (Path.home() / ".fx-agent").resolve()
