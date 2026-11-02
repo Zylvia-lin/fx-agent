@@ -1,14 +1,16 @@
 # FX Agent
 
-供 Codex 操作的本地 FX 制作插件：整合 Houdini 工具、制作记忆与工程案例归档，后续接入 Nuke。
+供编程助手调用的本地 FX Agent：整合 Houdini 工具、制作记忆与工程案例归档，后续接入 Nuke。
 
-Codex 负责规划、操作与效果判断，插件提供 MCP 能力与配套 Skill，不另建模型调度器。
+当前宿主助手负责规划、操作与效果判断，Agent 提供 MCP 能力、工作流与共享记忆，不另建模型调度器。Codex 插件是可选分发方式，不再是安装前提。
 
 开发设计见 [docs/开发方案.md](docs/开发方案.md)，复用基线见 [docs/上游依赖.md](docs/上游依赖.md)。
 
+首次安装与升级见 [Windows Codex 全局安装](docs/全局安装与首次连接.md)。当前仓库路径作为代码入口，固定数据目录作为所有客户端共用的状态源。
+
 ## 本地开发与运行
 
-需要 Python 3.12+、`uv`，以及已安装并运行 Houdini 端桥接插件的 Houdini。当前固定复用 `fxhoudinimcp==2.25.0`；旧 MCP 环境不会被修改。
+需要 Python 3.12+、`uv`，以及已安装并运行 Houdini 端桥接插件的 Houdini。当前固定复用 `fxhoudinimcp==2.25.0`；安装器会备份并替换旧 MCP 注册，保留旧虚拟环境供回退。
 
 ```powershell
 uv sync --frozen
@@ -25,13 +27,13 @@ uv run pytest --basetemp=.tmp/pytest
 uv run ruff check src tests scripts
 ```
 
-只读冒烟检查固定连接 `127.0.0.1:8100`；可通过 `HOUDINI_PORT` 指定其他端口。它会实际启动本项目 MCP、握手、列工具并读取场景，不创建或修改节点。
+只读冒烟检查固定连接 `127.0.0.1:8186`；可通过 `HOUDINI_PORT` 指定其他端口。它会实际启动本项目 MCP、握手、列工具并读取场景，不创建或修改节点。
 
 默认数据目录为用户主目录下的 `.fx-agent`，可用绝对路径环境变量 `FX_AGENT_DATA_ROOT` 覆盖。默认值不使用可能被沙箱逐次替换的 `LOCALAPPDATA`。建议安装时显式配置固定绝对目录。`fx_status` 不创建该目录，持久化操作会在其中创建 SQLite 数据库或案例文件。
 
-## 插件状态
+## 接入状态
 
-已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。当前验证范围为本机代码、MCP 协议和只读连接；桌面端插件安装与新聊天激活尚未验证。暂不替换旧的 `fxhoudini` 配置，也不要同时启用两份重复工具。
+已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。支持通过 `scripts/install_codex.py` 将当前工程全局注册到 Codex，替换旧 `fxhoudini` 注册和 Houdini 启动包，并将两个全局工作流目录链接至仓库。根目录插件清单作为可选适配保留；请勿同时启用重复入口。其他宿主的安装器尚未实现，不能据此宣称已兼容所有客户端。
 
 已提供 `fx_save_checkpoint`、`fx_get_checkpoint`、`fx_get_context`：按项目和镜头保存进度，使用修订号防止旧状态覆盖，摘要按 JSON 字符预算返回并支持内容哈希去重。检查点只记录工程路径，不等于工程副本或实时验证。
 

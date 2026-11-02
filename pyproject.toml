@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fx-agent"
 version = "0.1.0"
-description = "Codex-operated Houdini FX workstation with persistent production knowledge"
+description = "Host-operated Houdini FX agent with persistent production knowledge"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
