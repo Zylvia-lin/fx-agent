@@ -42,16 +42,24 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 6
 
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "memory.sqlite3"
         with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
             schema = db.execute("PRAGMA user_version").fetchone()[0]
-            if schema not in (0, 1, 2, 3, self.SCHEMA_VERSION):
+            if schema == self.SCHEMA_VERSION:
+                return
+            if schema not in (0, 1, 2, 3, 4, 5):
+                raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
+            db.execute("BEGIN IMMEDIATE")
+            # A concurrent initializer may have upgraded while we waited for the lock.
+            schema = db.execute("PRAGMA user_version").fetchone()[0]
+            if schema == self.SCHEMA_VERSION:
+                return
+            if schema not in (0, 1, 2, 3, 4, 5):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -81,6 +89,15 @@ class Store:
                 "CREATE TABLE IF NOT EXISTS dream_runs (run_id TEXT PRIMARY KEY,project_id TEXT,snapshot TEXT,mode TEXT,payload TEXT NOT NULL)"
             )
             db.execute(
+                "CREATE TABLE IF NOT EXISTS knowledge_sources (memory_id TEXT NOT NULL,source_id TEXT NOT NULL,source_payload TEXT NOT NULL,PRIMARY KEY(memory_id,source_id))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS import_runs (import_id TEXT PRIMARY KEY,payload TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS memory_conflicts (memory_id TEXT NOT NULL,import_id TEXT NOT NULL,PRIMARY KEY(memory_id,import_id))"
+            )
+            db.execute(
                 "CREATE TABLE IF NOT EXISTS render_issues (issue_id TEXT,project_id TEXT,shot_id TEXT,revision INTEGER,payload TEXT NOT NULL,PRIMARY KEY(issue_id,revision))"
             )
             for table, columns, definition in (
@@ -100,6 +117,32 @@ class Store:
                     db.execute(f"CREATE TABLE {table} ({definition})")
                     db.execute(f"INSERT INTO {table} SELECT {columns},'houdini' FROM {table}_v3")
                     db.execute(f"DROP TABLE {table}_v3")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS knowledge_state (id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)"
+            )
+            db.execute("INSERT OR IGNORE INTO knowledge_state VALUES (1,lower(hex(randomblob(32))))")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS module_guide_state (software TEXT,module TEXT,token TEXT NOT NULL,content_hash TEXT NOT NULL,lesson_count INTEGER NOT NULL,conflict_ids TEXT NOT NULL,PRIMARY KEY(software,module))"
+            )
+            # Triggers also observe writes made by other processes and roll back with their transaction.
+            for table in (
+                "memories", "memory_aliases", "knowledge_sources", "memory_conflicts",
+                "learning_feedback", "learning_results",
+            ):
+                for event in ("INSERT", "UPDATE", "DELETE"):
+                    db.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS knowledge_{table}_{event.lower()} AFTER {event} ON {table} "
+                        "BEGIN UPDATE knowledge_state SET token=lower(hex(randomblob(32))) WHERE id=1; END"
+                    )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS memories_dream_title ON memories(json_extract(payload,'$.title'),status)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS knowledge_sources_source ON knowledge_sources(source_id,memory_id)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS learning_results_memory ON learning_results(memory_id)"
+            )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
 
     @contextmanager

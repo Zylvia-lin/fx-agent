@@ -10,13 +10,15 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from fx_agent.config import DEFAULT_HOUDINI_PORT
+
 
 async def main(mcp_only: bool = False) -> None:
     root = Path(__file__).resolve().parents[1]
     env = {
         **os.environ,
         "HOUDINI_HOST": "127.0.0.1",
-        "HOUDINI_PORT": os.getenv("HOUDINI_PORT", "8186"),
+        "HOUDINI_PORT": os.getenv("HOUDINI_PORT", str(DEFAULT_HOUDINI_PORT)),
         "NO_PROXY": "localhost,127.0.0.1,::1",
         "PYTHONUTF8": "1",
     }

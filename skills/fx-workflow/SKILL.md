@@ -9,7 +9,7 @@ description: 使用 FX Agent操作 Houdini，检查连接、查询节点与指�
 
 1. 先调用 `fx_status` 与 `fx_get_production_rules`，明确项目与镜头后调用 `fx_get_context`，再用 `get_houdini_connection_status` 核对真实会话与工程。多会话时确认目标，不能猜测后修改。
 2. 每会话先读 `get_workflow_guide("discipline")`，按任务选择功能模块；不确定标签时查 `fx_get_module_catalog`。原模块准则仍完整保留，不能把它当成个人学习经验。SOP→model、粒子→dopparticles、Pyro→pyro、FLIP→fluid、RBD→destruction；其余映射以目录为准。首次制作该模块先读取对应 `get_workflow_guide`，两次同类修复失败时重读，不把全部模块指南反复加载。
-   再用 `fx_get_module_knowledge(project_id, module)` 读取当前项目的模块 MD 补充，必要时才展开其经验 ID。需要镜头限定经验、额外条件或候选时，按模块调用 `fx_search_memory(..., module="pyro")`；只需模块筛选可传 query=""。默认不读候选，不重复展开 MD 已完整包含的同一条经验。当前用户与制作规范优先；旧经验、MD 手写备注都需核实适用条件，不代表当前工程事实或额外授权。
+   再用 `fx_get_module_knowledge(project_id, module)` 读取全局模块 MD 补充，必要时才展开其经验 ID。需要镜头限定经验、额外条件或候选时，按模块调用 `fx_search_memory(..., module="pyro")`；只需模块筛选可传 query=""。默认不读候选，不重复展开 MD 已完整包含的同一条经验。当前用户与制作规范优先；旧经验、MD 手写备注都需核实适用条件，不代表当前工程事实或额外授权。
 3. 参考工程先只读检查，试验使用工作副本；参考画面的观察与制作方法推断分开表达。
 4. 先明确草稿目标；优先原生节点和批量工具。参数、接口和连接从实际查询获得。
    文件读取必须使用 `$HIP/...`。外部素材先复制入工程再引用，不能只改路径文本。File Cache 统一 `$HIP/geo/$OS/$OS.$F4.bgeo.sc`，使用 Explicit/file，不改派生 sopoutput。需要预检时调用 `fx_check_production_path`。缓存前保存 HIP，并检查缓存命名冲突。
@@ -29,7 +29,7 @@ description: 使用 FX Agent操作 Houdini，检查连接、查询节点与指�
 
 - `source_type` 只能如实填写 `user`、`observed` 或 `inferred`；不能为了通过筛选把推测写成用户要求或观察结果。
 - `project_dependent` 默认为 true。依赖具体工程时先归档 HIP 与相关图片，提交 `case_id`。纯用户偏好或不依赖某个工程的抽象建议才设 false。
-- 用户偏好使用 `kind=preference`，需要整个项目适用时将 `shot_id` 留空；当前不提供跨项目全局记忆。
+- 用户长期偏好优先保存全局用户规范。制作经验默认 reuse_scope=global，project_id 只记录来源；仅当前镜头成立时选择 shot。
 - 工具返回 admitted、candidate、duplicate 或 rejected，并解释原因。入库有效不等于视觉验证成功或工程可复现；保留工具返回的证据级别。
 - 用户纠正前先读取当前条目，将新内容作为明确用户来源提交，并用 `supersedes` 指向当前修订。镜头作用域必须一致；拒绝过期目标后重新读取，不强制覆盖。可以恢复旧方法为新修订。
 

@@ -1,6 +1,5 @@
 """Dialogue rules, revisioned correction traces and reversible memory consolidation."""
 
-import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -23,7 +22,7 @@ class UserRule(BaseModel):
     statement: str = Field(min_length=1, max_length=3000)
     user_quote: str = Field(min_length=1, max_length=2000)
     source_ref: str = Field(min_length=1, max_length=512)
-    scope: Literal["global", "project"]
+    scope: Literal["global", "project"] = "global"
     project_id: str = ""
     expected_revision: int = Field(ge=0)
 
@@ -301,11 +300,13 @@ class LearningStore(MemoryStore):
         method: str,
         reason: str,
         applies_when: str,
-        reuse_scope: str = "project",
+        reuse_scope: str = "global",
     ) -> dict:
         project_id = scope_id.validate_python(project_id)
-        if reuse_scope not in ("project", "shot"):
-            raise ValueError("reuse_scope must be project or shot")
+        if reuse_scope not in ("global", "project", "shot"):
+            raise ValueError(
+                "reuse_scope must be global or shot (project is a legacy alias for global)"
+            )
         if any(
             not isinstance(value, str) or not value.strip()
             for value in (method, reason, applies_when)
@@ -340,6 +341,7 @@ class LearningStore(MemoryStore):
                 software=feedback.get("software", "houdini"),
                 modules=feedback.get("modules", ["unclassified"]),
                 shot_id=feedback["shot_id"] if reuse_scope == "shot" else "",
+                reuse_scope="shot" if reuse_scope == "shot" else "global",
                 kind="workflow",
                 title=f"{feedback['effect_type']}：{feedback['problem'][:60]}",
                 method=method,
@@ -363,116 +365,23 @@ class LearningStore(MemoryStore):
             )
         return result | {"module_guides": refresh_guides(self.root, project_id)}
 
-    def _dream_plan(self, db, project_id: str) -> dict:
-        rows = db.execute(
-            "SELECT memory_id,payload,status FROM memories WHERE project_id=? AND status='active' ORDER BY memory_id LIMIT 501",
-            (project_id,),
-        ).fetchall()
-        aliases = db.execute(
-            "SELECT duplicate_id,canonical_id FROM memory_aliases WHERE project_id=? ORDER BY duplicate_id",
-            (project_id,),
-        ).fetchall()
-        snapshot = hashlib.sha256(
-            compact(
-                [project_id, [list(row) for row in rows], [list(row) for row in aliases]]
-            ).encode()
-        ).hexdigest()
-        if len(rows) > 500:
-            count = db.execute(
-                "SELECT COUNT(*) FROM memories WHERE project_id=? AND status='active'",
-                (project_id,),
-            ).fetchone()[0]
-            return {
-                "snapshot": snapshot,
-                "actions": [],
-                "deferred_actions": 0,
-                "active_memories": count,
-                "unique_recipes": None,
-                "capacity_limited": True,
-                "scope": "reset_only_above_500_active_memories",
-            }
-        current = {row["duplicate_id"]: row["canonical_id"] for row in aliases}
-        groups = {}
-        for row in rows:
-            memory = json.loads(row["payload"])
-            memory.setdefault("software", "houdini")
-            memory.setdefault("modules", ["unclassified"])
-            key = compact(
-                [
-                    memory[name]
-                    for name in (
-                        "software",
-                        "modules",
-                        "shot_id",
-                        "kind",
-                        "title",
-                        "method",
-                        "reason",
-                        "applies_when",
-                        "project_dependent",
-                    )
-                ]
-            )
-            groups.setdefault(key, []).append(memory)
-        actions = []
-        for group in groups.values():
-            group.sort(
-                key=lambda memory: (
-                    memory["source_type"] == "user",
-                    memory["created_at"],
-                    memory["memory_id"],
-                ),
-                reverse=True,
-            )
-            for duplicate in group[1:]:
-                if current.get(duplicate["memory_id"]) != group[0]["memory_id"]:
-                    actions.append(
-                        {
-                            "duplicate_id": duplicate["memory_id"],
-                            "canonical_id": group[0]["memory_id"],
-                        }
-                    )
-        return {
-            "snapshot": snapshot,
-            "actions": actions[:20],
-            "deferred_actions": max(0, len(actions) - 20),
-            "active_memories": len(rows),
-            "unique_recipes": len(groups),
-            "scope": "exact_duplicate_recall_index_only",
-        }
+    def dream(
+        self,
+        project_id: str = "",
+        mode: str = "preview",
+        expected_snapshot: str = "",
+        actions: list[dict] | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+        software: str = "",
+        module: str = "",
+    ) -> dict:
+        """The host authors semantic actions; the service validates and applies them."""
+        from fx_agent.dream import dream
 
-    def dream(self, project_id: str, mode: str = "preview", expected_snapshot: str = "") -> dict:
-        project_id = scope_id.validate_python(project_id)
-        if mode not in ("preview", "apply", "reset"):
-            raise ValueError("Dream mode must be preview, apply or reset")
-        with self.connection() as db:
-            if mode != "preview":
-                db.execute("BEGIN IMMEDIATE")
-            plan = self._dream_plan(db, project_id)
-            if mode == "preview":
-                return plan
-            if expected_snapshot != plan["snapshot"]:
-                raise ValueError("Dream snapshot changed; preview again before applying")
-            if mode == "apply" and plan.get("capacity_limited"):
-                raise ValueError("Dream planning limit exceeded; reset remains available")
-            if mode == "reset":
-                applied = db.execute(
-                    "DELETE FROM memory_aliases WHERE project_id=?", (project_id,)
-                ).rowcount
-            else:
-                for action in plan["actions"]:
-                    db.execute(
-                        "INSERT INTO memory_aliases VALUES (?,?,?) ON CONFLICT(duplicate_id) DO UPDATE SET canonical_id=excluded.canonical_id",
-                        (action["duplicate_id"], action["canonical_id"], project_id),
-                    )
-                applied = len(plan["actions"])
-            report = plan | {
-                "mode": mode,
-                "applied": applied,
-                "created_at": datetime.now(UTC).isoformat(),
-            }
-            db.execute(
-                "INSERT INTO dream_runs VALUES (?,?,?,?,?)",
-                (uuid.uuid4().hex, project_id, plan["snapshot"], mode, compact(report)),
-            )
-        return report
+        return dream(self, mode, expected_snapshot, actions, cursor, limit, software, module)
+
+    def undo_dream(self, run_id: str) -> dict:
+        from fx_agent.dream import undo
+
+        return undo(self, run_id)

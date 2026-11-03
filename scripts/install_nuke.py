@@ -117,8 +117,8 @@ def main() -> None:
     args = parser.parse_args()
     if sum((args.prepare, args.apply, args.register_disabled)) > 1:
         parser.error("--prepare、--apply和--register-disabled只能选择一个。")
-    if not 1 <= args.port <= 65535 or args.port in (8100, 8186, 54321):
-        parser.error("Nuke端口必须独立，不能使用Houdini的8186或原MCP默认8100、54321。")
+    if not 1 <= args.port <= 65535 or args.port in (8100, 8186, 18186, 54321):
+        parser.error("Nuke端口必须独立，不能使用Houdini的18186、旧8186或原MCP默认8100、54321。")
     if Path(sys.executable).resolve() != ROOT / ".venv/Scripts/python.exe":
         parser.error("请使用当前工程的.venv/Scripts/python.exe运行。")
     config, menu = Path.home() / ".codex/config.toml", Path.home() / ".nuke/menu.py"
@@ -142,7 +142,7 @@ def main() -> None:
         .get("mcp_servers", {})
         .get("fx-agent", {})
         .get("env", {})
-        .get("HOUDINI_PORT", "8186")
+        .get("HOUDINI_PORT", "18186")
     )
     if str(args.port) == str(houdini_port):
         parser.error("Nuke端口与当前Houdini配置冲突。")

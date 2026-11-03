@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+DEFAULT_HOUDINI_PORT = 18186
+
 
 def data_root() -> Path:
     """Read the configured absolute data path without creating any files."""

@@ -59,7 +59,7 @@ def test_finalization_updates_corresponding_module_mds_and_bounded_retrieval(tmp
         assert Path(doc["path"]).is_relative_to(store.root / "modules")
         assert Path(doc["path"]).name == module + ".md"
         assert len(compact(guides.get("p", module, max_chars=1024))) <= 1024
-    assert not guides.get("other-project", "sop")["available"]
+    assert guides.get("other-project", "sop")["available"]
 
 
 def test_feedback_revision_removes_stale_lesson_but_preserves_manual_notes(tmp_path):

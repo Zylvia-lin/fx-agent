@@ -287,9 +287,10 @@ def test_dream_index_can_be_reset_after_the_project_grows_past_plan_limit(tmp_pa
     for number in range(501):
         store.submit(**experience(project_id="p", source_type="user", title=f"经验 {number}"))
     plan = store.dream("p")
-    assert plan["capacity_limited"]
-    with pytest.raises(ValueError, match="limit"):
-        store.dream("p", mode="apply", expected_snapshot=plan["snapshot"])
+    assert plan["truncated"]
+    assert plan["next_cursor"] > 0
+    assert store.dream(cursor=plan["next_cursor"])["items"]
+    assert store.dream("p", mode="apply", expected_snapshot=plan["snapshot"])["applied"] == 0
     assert store.dream("p", mode="reset", expected_snapshot=plan["snapshot"])["applied"] == 0
 
 
@@ -343,4 +344,4 @@ def test_schema_two_database_is_upgraded_without_losing_checkpoint(tmp_path):
     assert store.get_checkpoint("p", "s") == checkpoint
     assert store.record_rule(**rule())["revision"] == 1
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION

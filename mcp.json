@@ -8,7 +8,7 @@
       "cwd": "${PLUGIN_ROOT}",
       "env": {
         "HOUDINI_HOST": "127.0.0.1",
-        "HOUDINI_PORT": "8186",
+        "HOUDINI_PORT": "18186",
         "FXHOUDINIMCP_AUTO_LAYOUT": "0",
         "NO_PROXY": "localhost,127.0.0.1,::1"
       }

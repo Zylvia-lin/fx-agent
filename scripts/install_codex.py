@@ -9,6 +9,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
+from fx_agent.config import DEFAULT_HOUDINI_PORT
 from fx_agent.install_config import replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +80,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--houdini-pref", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, default=ROOT / "data")
-    parser.add_argument("--port", type=int, default=8186)
+    parser.add_argument("--port", type=int, default=DEFAULT_HOUDINI_PORT)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     if os.name != "nt":

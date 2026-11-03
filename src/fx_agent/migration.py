@@ -10,7 +10,7 @@ from pathlib import Path
 from fx_agent.archive import CaseArchive, copy_verified
 
 
-def migrate_data(source: Path, target: Path) -> dict:
+def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = False) -> dict:
     """Keep the source intact; stop archive writers before calling this operation."""
     source, target = source.resolve(strict=True), target.resolve()
     if source.is_relative_to(target) or target.is_relative_to(source):
@@ -20,7 +20,11 @@ def migrate_data(source: Path, target: Path) -> dict:
     database = source / "memory.sqlite3"
     if not database.is_file():
         raise FileNotFoundError(database)
-    files = list(source.rglob("*"))
+    files = [
+        path
+        for path in source.rglob("*")
+        if not (exclude_import_history and path.relative_to(source).parts[0] == "imports")
+    ]
     if any(path.is_symlink() or path.is_junction() for path in files):
         raise ValueError("Migration source contains links; refusing to copy external data")
     target.parent.mkdir(parents=True, exist_ok=True)

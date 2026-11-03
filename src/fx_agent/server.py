@@ -1,13 +1,17 @@
 """Extend the pinned upstream server, preserving its tools and request context."""
 
 import asyncio
+import os
 from functools import lru_cache
 from importlib.metadata import version
+from pathlib import Path
 from typing import Literal
 
 from fx_agent import __version__
 from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
-from fx_agent.config import data_root
+from fx_agent.config import DEFAULT_HOUDINI_PORT, data_root
+from fx_agent.data_import import import_data, import_records, resolve_memory
+from fx_agent.dream import DreamAction
 from fx_agent.handoff import RenderIssue, RenderIssues
 from fx_agent.learning import Feedback, LearningStore, UserRule
 from fx_agent.memory import Experience, MemoryStore
@@ -25,6 +29,7 @@ def get_server():
     signatures remain upstream-owned. The wire server identity stays FXHoudini
     during this initial integration; the installed plugin identity is fx-agent.
     """
+    os.environ.setdefault("HOUDINI_PORT", str(DEFAULT_HOUDINI_PORT))
     from fxhoudinimcp import prompts, resources, tools  # noqa: F401
     from fxhoudinimcp import server as upstream_server
     from fxhoudinimcp.server import mcp
@@ -61,15 +66,15 @@ def get_server():
 
     @mcp.tool()
     async def fx_get_module_knowledge(
-        project_id: str,
-        module: str,
+        project_id: str = "",
+        module: str = "",
         software: Literal["houdini", "nuke"] = "houdini",
         max_chars: int = 4000,
     ) -> dict:
-        """Read the current project's module workflow MD supplement within a budget.
+        """Read the global module workflow supplement within a budget.
 
         Read the mapped upstream guide separately. Only accepted, finalized,
-        project-reusable lessons enter generated sections; manual notes remain
+        globally reusable lessons enter generated sections; manual notes remain
         unverified references. get refreshes derived MDs from authoritative DB.
         """
         return await asyncio.to_thread(
@@ -77,8 +82,8 @@ def get_server():
         )
 
     @mcp.tool()
-    async def fx_refresh_module_guides(project_id: str) -> dict:
-        """Rebuild project module MDs; preserve text outside managed sections.
+    async def fx_refresh_module_guides(project_id: str = "") -> dict:
+        """Rebuild global module MDs; preserve text outside managed sections.
 
         pending_rebuild means the SQLite learning record remains saved, but
         Markdown synchronization needs repair. Never silently claim it updated.
@@ -224,30 +229,39 @@ def get_server():
 
     @mcp.tool()
     async def fx_search_memory(
-        project_id: str,
-        query: str,
+        project_id: str = "",
+        query: str = "",
         shot_id: str = "",
         include_candidates: bool = False,
         limit: int = 5,
         max_chars: int = 3000,
         software: Literal["houdini", "nuke"] = "houdini",
         module: str = "",
+        source_project: str = "",
     ) -> dict:
-        """Recall project-scoped experience cards within a JSON character budget.
+        """Recall global experience cards within a JSON character budget.
 
         Chinese/English literal terms are supported; space-separated terms must
-        all match. No semantic embedding or cross-project sharing in this version.
+        all match. Project identifies context only; reusable knowledge crosses projects.
         Superseded entries never appear. Candidates are opt-in.
         """
         return await asyncio.to_thread(
             lambda: MemoryStore(data_root()).search(
-                project_id, query, shot_id, include_candidates, limit, max_chars, software, module
+                project_id,
+                query,
+                shot_id,
+                include_candidates,
+                limit,
+                max_chars,
+                software,
+                module,
+                source_project,
             )
         )
 
     @mcp.tool()
-    async def fx_get_memory(memory_id: str, project_id: str) -> dict:
-        """Expand one scoped memory's method, conditions, provenance and case reference."""
+    async def fx_get_memory(memory_id: str, project_id: str = "") -> dict:
+        """Expand one global memory's method, conditions, provenance and case reference."""
         return await asyncio.to_thread(lambda: MemoryStore(data_root()).get(memory_id, project_id))
 
     @mcp.tool()
@@ -321,15 +335,13 @@ def get_server():
         method: str,
         reason: str,
         applies_when: str,
-        reuse_scope: str = "project",
+        reuse_scope: str = "global",
     ) -> dict:
         """Distill the actually used method from the current accepted final-result record.
 
         Codex writes the method and conditions after inspecting the correction
         trace. The service checks acceptance, archive and scope atomically.
-        Project reuse is default so other shots can retrieve it under explicit
-        conditions; choose shot for shot-specific methods. No automatic global
-        sharing. Acceptance of an image is not proof of every causal explanation.
+        Global reuse is default; choose shot only for shot-specific methods. Acceptance of an image is not proof of every causal explanation.
         """
         return await asyncio.to_thread(
             lambda: LearningStore(data_root()).finalize(
@@ -339,16 +351,119 @@ def get_server():
 
     @mcp.tool()
     async def fx_dream_memory(
-        project_id: str, mode: str = "preview", expected_snapshot: str = ""
+        project_id: str = "",
+        mode: str = "preview",
+        expected_snapshot: str = "",
+        actions: list[DreamAction] | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+        software: str = "",
+        module: str = "",
     ) -> dict:
-        """Consolidate exact duplicate recall cards while preserving all source memories.
+        """Read global Dream candidates; host reads full sources and authors semantic actions.
 
-        Preview first; apply/reset require its unchanged snapshot. Never upgrades
-        hypotheses, edits user rules, deletes files or runs a background model.
-        Reset reverses this project's recall index. At most 20 edits per pass.
+        Preview pages use next_cursor. Apply must repeat cursor/filter/limit and snapshot.
+        Omit actions to apply exact aliases; supply actions for semantic revisions.
+        Sources are retained. Conflict actions never become successful recipes.
+        project_id is a deprecated compatibility argument, not a search boundary.
         """
         return await asyncio.to_thread(
-            lambda: LearningStore(data_root()).dream(project_id, mode, expected_snapshot)
+            lambda: LearningStore(data_root()).dream(
+                project_id,
+                mode,
+                expected_snapshot,
+                [action.model_dump() for action in actions] if actions is not None else None,
+                cursor,
+                limit,
+                software,
+                module,
+            )
+        )
+
+    @mcp.tool()
+    async def fx_undo_dream(run_id: str) -> dict:
+        """Undo an unchanged Dream result; refuse to overwrite subsequent knowledge changes."""
+        return await asyncio.to_thread(lambda: LearningStore(data_root()).undo_dream(run_id))
+
+    @mcp.tool()
+    async def fx_get_dream_runs(run_id: str = "", offset: int = 0, limit: int = 10) -> dict:
+        """List Dream progress cursors or expand one run's actions and provenance."""
+        import json
+
+        if offset < 0 or not 1 <= limit <= 50:
+            raise ValueError("Invalid offset or limit")
+
+        def read():
+            with Store(data_root()).connection() as db:
+                if run_id:
+                    row = db.execute(
+                        "SELECT payload FROM dream_runs WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                    if not row:
+                        raise ValueError("Dream run not found")
+                    return json.loads(row[0])
+                rows = db.execute(
+                    "SELECT run_id,payload FROM dream_runs ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                    (limit + 1, offset),
+                ).fetchall()
+                items = []
+                for row in rows[:limit]:
+                    value = json.loads(row["payload"])
+                    items.append(
+                        {
+                            key: value.get(key)
+                            for key in (
+                                "run_id",
+                                "mode",
+                                "applied",
+                                "next_cursor",
+                                "truncated",
+                                "software",
+                                "module",
+                                "undone",
+                            )
+                        }
+                    )
+                return {
+                    "items": items,
+                    "next_offset": offset + len(items),
+                    "truncated": len(rows) > limit,
+                }
+
+        return await asyncio.to_thread(read)
+
+    @mcp.tool()
+    async def fx_import_data(source: str, apply: bool = False) -> dict:
+        """Preview or append another data directory into the configured root.
+
+        Stop archive writers first. Preserve conflicts and snapshot; never overwrite
+        local records. Run host-authored Dream after import to consolidate knowledge.
+        """
+        return await asyncio.to_thread(lambda: import_data(Path(source), data_root(), apply=apply))
+
+    @mcp.tool()
+    async def fx_get_import_records(
+        import_id: str = "", table: str = "", offset: int = 0, limit: int = 20
+    ) -> dict:
+        """List import batches or expand divergent incoming/local rows for host review."""
+        return await asyncio.to_thread(
+            lambda: import_records(data_root(), import_id, table=table, offset=offset, limit=limit)
+        )
+
+    @mcp.tool()
+    async def fx_resolve_import_memory(
+        import_id: str, memory_id: str, decision: str, expected_snapshot: str, rationale: str
+    ) -> dict:
+        """Resolve memory divergence after reading both full versions and their evidence.
+
+        keep_local retains the current record. keep_incoming/keep_both create a
+        traceable separate incoming branch; source text is never replaced. Resolve
+        case/feedback provenance first. Use a current Dream preview snapshot.
+        """
+        return await asyncio.to_thread(
+            lambda: resolve_memory(
+                data_root(), import_id, memory_id, decision, expected_snapshot, rationale
+            )
         )
 
     @mcp.tool()

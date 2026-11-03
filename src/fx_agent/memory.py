@@ -20,7 +20,7 @@ class Experience(BaseModel):
     """Codex supplies provenance and decision rationale at a production milestone."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    project_id: Identifier
+    project_id: Identifier = "__global__"
     software: Literal["houdini", "nuke"] = "houdini"
     modules: list[str] = Field(
         default_factory=lambda: ["unclassified"],
@@ -39,6 +39,7 @@ class Experience(BaseModel):
     project_dependent: bool = True
     case_id: str = ""
     supersedes: str = ""
+    reuse_scope: Literal["global", "shot"] = "global"
 
     @field_validator("shot_id")
     @classmethod
@@ -100,6 +101,8 @@ class MemoryStore(Store):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
 
         content = request.model_dump(exclude={"source_ref"})
+        if request.reuse_scope == "global":
+            content.pop("reuse_scope")  # Preserve legacy global content hashes.
         if request.software == "houdini":
             content.pop("software")  # Preserve content hashes of existing Houdini memories.
         if request.modules == ["unclassified"]:
@@ -183,13 +186,14 @@ class MemoryStore(Store):
             result["module_guides"] = refresh_guides(self.root, request.project_id)
         return result
 
-    def get(self, memory_id: str, project_id: str) -> dict:
+    def get(self, memory_id: str, project_id: str = "") -> dict:
         """Read full history, including a superseded entry, in the project scope."""
-        project_id = scope_id.validate_python(project_id)
+        if project_id:
+            scope_id.validate_python(project_id)
         with self.connection() as db:
             row = db.execute(
-                "SELECT payload,status FROM memories WHERE memory_id=? AND project_id=?",
-                (memory_id, project_id),
+                "SELECT payload,status FROM memories WHERE memory_id=?",
+                (memory_id,),
             ).fetchone()
         if row is None:
             raise ValueError("Memory does not belong to the requested project or does not exist")
@@ -198,26 +202,47 @@ class MemoryStore(Store):
         result.setdefault("modules", ["unclassified"])
         with self.connection() as db:
             related = db.execute(
-                "SELECT duplicate_id FROM memory_aliases WHERE project_id=? AND canonical_id=? ORDER BY duplicate_id",
-                (project_id, memory_id),
+                "SELECT duplicate_id FROM memory_aliases WHERE canonical_id=? ORDER BY duplicate_id",
+                (memory_id,),
             ).fetchall()
+            sources = db.execute(
+                "SELECT source_id FROM knowledge_sources WHERE memory_id=? ORDER BY source_id",
+                (memory_id,),
+            ).fetchall()
+            valid = db.execute(
+                "SELECT 1 FROM memories WHERE memory_id=? AND " + usable_sql("memories"),
+                (memory_id,),
+            ).fetchone()
+            conflicts = db.execute(
+                "SELECT DISTINCT note.memory_id FROM knowledge_sources cf JOIN memories note ON note.memory_id=cf.memory_id "
+                "WHERE note.status='disputed' AND (cf.source_id=? OR cf.source_id IN (SELECT source_id FROM knowledge_sources WHERE memory_id=?))",
+                (memory_id, memory_id),
+            ).fetchall()
+        if sources:
+            result["source_memory_ids"] = [row[0] for row in sources]
+        if result["status"] == "active" and not valid:
+            result["status"] = "needs_review"
         if related:
             result["related_memory_ids"] = [item["duplicate_id"] for item in related]
+        if conflicts:
+            result["conflict_memory_ids"] = [row[0] for row in conflicts]
         return result
 
     def search(
         self,
-        project_id: str,
-        query: str,
+        project_id: str = "",
+        query: str = "",
         shot_id: str = "",
         include_candidates: bool = False,
         limit: int = 5,
         max_chars: int = 3000,
         software: Literal["houdini", "nuke"] = "houdini",
         module: str = "",
+        source_project: str = "",
     ) -> dict:
         """Literal multilingual substring matching, scoped before ranking and expansion."""
-        project_id = scope_id.validate_python(project_id)
+        if project_id:
+            scope_id.validate_python(project_id)
         if software not in ("houdini", "nuke"):
             raise ValueError("Invalid software")
         selected_module = normalize_modules([module], software)[0] if module else ""
@@ -232,20 +257,37 @@ class MemoryStore(Store):
         if len(tokens) > 16:
             raise ValueError("Search query has too many terms")
         clauses = [
-            "project_id=?",
             "COALESCE(json_extract(payload,'$.software'),'houdini')=?",
-            "status IN ('active','candidate')" if include_candidates else "status='active'",
+            "status IN ('active','candidate','disputed','needs_review')"
+            if include_candidates
+            else "status='active'",
         ]
         clauses.append(
-            "NOT EXISTS (SELECT 1 FROM memory_aliases a JOIN memories c ON c.memory_id=a.canonical_id WHERE a.duplicate_id=memories.memory_id AND a.project_id=memories.project_id AND c.project_id=memories.project_id AND c.shot_id=memories.shot_id AND c.status='active')"
+            "NOT EXISTS (SELECT 1 FROM memory_aliases a JOIN memories c ON c.memory_id=a.canonical_id WHERE a.duplicate_id=memories.memory_id AND c.status='active' AND "
+            + usable_sql("c")
+            + ")"
         )
-        params = [project_id, software]
+        clauses.append(usable_sql("memories"))
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM knowledge_sources ks JOIN memories k ON k.memory_id=ks.memory_id WHERE ks.source_id=memories.memory_id AND k.status='active' AND "
+            + usable_sql("k")
+            + (
+                " AND EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(k.payload,'$.modules'),'[\"unclassified\"]')) replacement_tags WHERE replacement_tags.value=?)"
+                if selected_module else ""
+            )
+            + ")"
+        )
+        # Legacy shot-only records retain their original scope; new knowledge defaults global.
+        clauses.append(
+            "(COALESCE(json_extract(payload,'$.reuse_scope'),CASE WHEN shot_id='' THEN 'global' ELSE 'shot' END)='global' OR (project_id=? AND (?='' OR shot_id=?)))"
+        )
+        params = [software, *((selected_module,) if selected_module else ()), project_id, shot_id, shot_id]
+        if source_project:
+            clauses.append("project_id=?")
+            params.append(scope_id.validate_python(source_project))
         if selected_module:
             clauses.append(MODULE_MATCH_SQL)
             params.append(selected_module)
-        if shot_id:
-            clauses.append("(shot_id='' OR shot_id=?)")
-            params.append(shot_id)
         for token in tokens:
             clauses.append("instr(search_text,?)>0")
             params.append(token)
@@ -271,8 +313,17 @@ class MemoryStore(Store):
                     "status",
                     "evidence_status",
                     "case_id",
+                    "project_id",
                 )
             } | {"summary": record["method"][:240]}
+            with self.connection() as db:
+                conflict = db.execute(
+                    "SELECT 1 FROM knowledge_sources cf JOIN memories note ON note.memory_id=cf.memory_id WHERE note.status='disputed' "
+                    "AND (cf.source_id=? OR cf.source_id IN (SELECT source_id FROM knowledge_sources WHERE memory_id=?)) LIMIT 1",
+                    (record["memory_id"], record["memory_id"]),
+                ).fetchone()
+            if conflict:
+                card["has_conflict"] = True
             result["items"].append(card)
             if len(compact(result)) > max_chars:
                 result["items"].pop()
@@ -280,3 +331,26 @@ class MemoryStore(Store):
                 break
         result["truncated"] = result["truncated"] or len(rows) > limit
         return result
+
+
+def usable_sql(alias: str) -> str:
+    """A derived recipe is usable only while every recorded source is unchanged."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM memory_conflicts blocked WHERE blocked.memory_id={alias}.memory_id) AND "
+        + feedback_current_sql(alias)
+        + " AND "
+        + (
+            f"NOT EXISTS (SELECT 1 FROM knowledge_sources dep LEFT JOIN memories src ON src.memory_id=dep.source_id "
+            f"WHERE dep.memory_id={alias}.memory_id AND (src.memory_id IS NULL OR src.status!='active' OR src.payload!=dep.source_payload OR NOT ({feedback_current_sql('src')}) OR EXISTS (SELECT 1 FROM memory_conflicts blocked_source WHERE blocked_source.memory_id=src.memory_id)))"
+        )
+    )
+
+
+def feedback_current_sql(alias: str) -> str:
+    return (
+        f"(json_extract({alias}.payload,'$.origin_feedback_id') IS NULL OR EXISTS ("
+        f"SELECT 1 FROM learning_feedback f WHERE f.feedback_id=json_extract({alias}.payload,'$.origin_feedback_id') "
+        "AND json_extract(f.payload,'$.outcome')='accepted' AND f.revision=(SELECT MAX(newer.revision) "
+        "FROM learning_feedback newer WHERE newer.project_id=f.project_id AND newer.shot_id=f.shot_id "
+        "AND newer.attempt_id=f.attempt_id AND newer.software=f.software)))"
+    )

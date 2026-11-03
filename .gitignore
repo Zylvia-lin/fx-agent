@@ -16,7 +16,6 @@ dist/
 .env
 .env.*
 !.env.example
-data/
 .fx-data-*/
 integrations/nuke/vendor/
 *.sqlite3
@@ -28,5 +27,6 @@ integrations/nuke/vendor/
 *.vdb
 *.exr
 
+data/
 # Machine-specific configuration
 .fx-agent.local.json

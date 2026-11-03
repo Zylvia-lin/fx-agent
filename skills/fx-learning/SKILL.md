@@ -30,19 +30,30 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 2. 归档最终 HIP、必要依赖、相关图片及结果预览，用实际 case_id 关联。只有工程文件或只有参考图不够，尚未复制的内容不能声称已归档。
 3. 将本次最终反馈更新为 accepted；从完整轨迹中区分失败尝试与实际采用的有效方案。
 4. 调用 `fx_finalize_learning`，提炼可复用步骤、关键参数、原因、适用条件与失败注意项；由服务检查当前反馈、范围与归档，并关联来源。
-   反馈中的 modules 会继承到最终经验。项目范围的已接受方案会自动更新 data/modules 下对应模块 MD 的自动区块；上游指南不修改。它写入提炼方法、条件与证据 ID，不复制整段聊天。未分类、镜头限定、未最终提炼的记录不推广成项目模块准则。
+   反馈中的 modules 会继承到最终经验。全局可复用的已接受方案会自动更新 data/modules 下对应模块 MD 的自动区块；上游指南不修改。它写入提炼方法、条件与证据 ID，不复制整段聊天。未分类、镜头限定、未最终提炼的记录不推广成项目模块准则。
    检查返回 module_guides.state：pending_rebuild 表示经验已经保存、MD 未同步，需要说明原因并调用 `fx_refresh_module_guides(project_id)` 修复；不能当作整次事务回滚重写历史。撤销或纠正已提炼方案也会更新文档。
-5. 默认 reuse_scope=project，让同项目的其他镜头能检索。只对当前镜头成立时选择 shot。当前不自动跨项目扩散经验。
+5. 默认 reuse_scope=global，跨项目检索；project_id 记录来源。仅工程特例选择 shot。旧 reuse_scope=project 兼容为 global。提炼时保留版本、尺度、输入等适用条件，不机械推广具体参数。
 6. 用户接受画面不代表每条因果解释都已证明；标明哪些是观察、哪些是待验证解释。归档文件校验也不等于完整可复现。
 
 ## 再次制作同类效果
 
-先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的项目模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
+先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的全局模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
 
 ## 阶段结束时整理记忆
 
-有新有效经验且当前没有模拟或渲染等待时，调用 `fx_dream_memory(mode=preview)`。有完全重复卡片时，检查对应关系，再用返回的 snapshot 执行 apply。快照变化先重读；没有变化不重复整理、不向用户刷无意义状态。
+有新有效经验、完成外部数据导入或用户要求整理时，由当前宿主助手执行 Dream，不额外启动模型服务。
 
-当前 Dream 仅整理完全重复的检索索引，保留原文、所有来源和案例，不改用户规范，不把候选升级为事实。reset 可以撤销该项目的索引；超过 500 条活动记忆时首版暂停新合并，但仍允许预览与重置。语义合并、自动遗忘和后台定时反思尚未实现。
+1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选。project_id 不限制经验范围；next_cursor 翻页，最后一页的游标可作为下次增量起点。用 fx_get_dream_runs 查询已提交进度。
+2. 用 fx_get_memory 展开相关完整来源、适用条件与案例；摘要不够时不要合并。判断同义、互补、不同方法、工程特例和矛盾。has_conflict 时展开 conflict_memory_ids，未解决前不能当作无争议方案套用。
+3. 提交 actions：merge 合并同义、refine 补充方法、split 用多个动作从同一来源分别提炼、conflict 记录争议、supersede 提炼替代结论。每个动作填写 source_ids、完整 title/method/reason/applies_when、rationale，可明确修正 modules。候选不能借整理升级为已验证；原始来源和文本不删除。
+4. apply 携带当前 snapshot。使用精确去重时省略 actions 并重复预览的 cursor/limit/software/module；语义整理则显式提交 actions。快照变化重读，不强行覆盖。每轮最多20个动作，可分批继续。精确建议 deferred_actions>0 时先用同一页参数继续预览和应用，处理完再推进游标。
+5. 检查 module_guides；pending_rebuild 时用 fx_refresh_module_guides 修复。fx_undo_dream(run_id) 可撤销未被后续相关修改影响的整理；reset 仅重置精确索引，不撤销语义总结。
+
+## 导入另一设备的数据
+
+1. 使用 fx_import_data(source=...) 预览，停止源归档写入后 apply=true。相同记录幂等跳过，独立同名尝试或分叉修订不自动接续。
+2. fx_get_import_records 展开冲突完整双方内容。冲突经验暂停默认召回；用当前 Dream snapshot 和判断理由调用 fx_resolve_import_memory，选择 keep_local/keep_incoming/keep_both。选 incoming/both 会保存独立来源分支，保留旧文本。案例或反馈来源有冲突时先处理证据，工具不会强行通过。
+3. 用户规范分歧通过原有版本化规则接口保存决定及原话；工程检查点须核对本机路径再保存，不能用 Dream 混合进度。不能解决的矛盾保留并明确报告。
+4. 对新增和已解决的经验执行全局 Dream；原始快照与手写材料保存在 data/imports 下，不直接拼进模块准则。
 
 Houdini 检查点、经验和纠错使用 software=houdini（兼容默认值）；Nuke 使用 software=nuke。发现上游渲染问题时保存版本化问题单，Houdini 核查后由 Nuke 复查关闭，不自动重渲染。

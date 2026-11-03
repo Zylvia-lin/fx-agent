@@ -3,7 +3,7 @@ param(
     [ValidateSet('Both', 'Houdini', 'Nuke')][string]$Components = 'Both',
     [string]$HoudiniPrefDir,
     [string]$NukeExe,
-    [ValidateRange(1, 65535)][int]$HoudiniPort = 8186,
+    [ValidateRange(1, 65535)][int]$HoudiniPort = 18186,
     [ValidateRange(1, 65535)][int]$NukePort = 8187,
     [switch]$Plan
 )
@@ -87,7 +87,7 @@ function Invoke-FxInstall {
         [string]$AgentRoot = $script:FxAgentRoot,
         [ValidateSet('Both', 'Houdini', 'Nuke')][string]$Components = 'Both',
         [string]$HoudiniPrefDir, [string]$NukeExe,
-        [ValidateRange(1, 65535)][int]$HoudiniPort = 8186,
+        [ValidateRange(1, 65535)][int]$HoudiniPort = 18186,
         [ValidateRange(1, 65535)][int]$NukePort = 8187,
         [string]$UserProfileRoot = [Environment]::GetFolderPath('UserProfile'),
         [switch]$Plan
@@ -108,7 +108,7 @@ function Invoke-FxInstall {
         if (-not $NukeExe) { $NukeExe = Find-FxNukeExecutable }
         $NukeExe = (Resolve-Path -LiteralPath $NukeExe -ErrorAction Stop).Path
         if (-not (Test-Path -LiteralPath $NukeExe -PathType Leaf)) { throw 'NukeExe 必须是已有程序文件。' }
-        if ($NukePort -in @(8100, 8186, 54321) -or $NukePort -eq $HoudiniPort) { throw 'Nuke 端口必须与 Houdini、原版 8100 和 54321 不同。' }
+        if ($NukePort -in @(8100, 8186, 18186, 54321) -or $NukePort -eq $HoudiniPort) { throw 'Nuke 端口必须与 Houdini、原版 8100 和 54321 不同。' }
     }
     Write-Host "工程：$AgentRoot`n组件：$Components`n记忆：$(Join-Path $AgentRoot 'data')"
     if ($withHoudini) { Write-Host "Houdini 偏好：$HoudiniPrefDir；端口：$HoudiniPort" }

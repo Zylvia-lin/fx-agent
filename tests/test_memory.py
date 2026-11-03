@@ -53,7 +53,7 @@ def test_explicit_user_preference_is_saved_and_duplicates_are_not_reinserted(tmp
     assert duplicate["decision"] == "duplicate"
     assert first["memory_id"] == duplicate["memory_id"]
     assert len(memories(tmp_path).search("广告A", "节点")["items"]) == 1
-    assert store.search("其他项目", "节点")["items"] == []
+    assert store.search("其他项目", "节点")["items"][0]["memory_id"] == first["memory_id"]
 
 
 def test_non_reusable_output_is_rejected_without_inserting(tmp_path):
@@ -92,8 +92,7 @@ def test_archived_project_is_traceable_but_does_not_claim_visual_verification(tm
     assert record["evidence_status"] == "user_reported_with_archive"
     assert record["visual_verified"] is False
     assert record["reproduction_status"] == "not_tested"
-    with pytest.raises(ValueError, match="project"):
-        store.get(result["memory_id"], "其他项目")
+    assert store.get(result["memory_id"], "其他项目")["project_id"] == "广告A"
 
 
 def test_observation_needs_archived_output_and_corrupt_evidence_is_rejected(tmp_path):
@@ -214,7 +213,7 @@ def test_search_is_bounded_literal_and_does_not_cross_shots(tmp_path):
     store = memories(tmp_path)
     for index in range(8):
         store.submit(
-            **experience(title=f"逆光层次 {index}", source_type="user", method="烟尘层次" * 500)
+            **experience(title=f"逆光层次 {index}", source_type="user", method="烟尘层次" * 500, reuse_scope="shot")
         )
     assert store.search("广告A", "%")["items"] == []
     assert store.search("广告A", "")["items"] == []
