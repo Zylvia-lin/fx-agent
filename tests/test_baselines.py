@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fx_agent.baselines import baseline_status, sync_baselines, validate_baselines
+from fx_agent.baselines import baseline_lock, baseline_status, sync_baselines, validate_baselines
 from fx_agent.data_import import import_data
 from fx_agent.migration import migrate_data
 from fx_agent.store import Store
@@ -114,6 +114,16 @@ def test_concurrent_sync_is_serialized_without_false_corruption(tmp_path):
     assert results[0]["snapshots"] == results[1]["snapshots"]
     assert len(baseline_status(root)["snapshots"]) == 2
     assert not (root / ".baseline.lock").exists()
+
+
+def test_runtime_lock_is_not_carried_to_another_device(tmp_path):
+    source, target = tmp_path / "source", tmp_path / "target"
+    Store(source)
+    sync_baselines(source)
+    with baseline_lock(source):
+        migrate_data(source, target)
+    assert not (target / ".baseline.lock").exists()
+    assert sync_baselines(target)["snapshots"]
 
 
 @pytest.mark.asyncio

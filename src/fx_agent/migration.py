@@ -47,6 +47,7 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                     source / "memory.sqlite3-wal",
                     source / "memory.sqlite3-shm",
                     source / "memory.sqlite3-journal",
+                    source / ".baseline.lock",
                 }:
                     continue
                 destination = stage / path.relative_to(source)

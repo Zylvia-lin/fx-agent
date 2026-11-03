@@ -162,6 +162,8 @@ uv run ruff check src tests scripts
 
 当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、语义向量检索或自动查全依赖。已提供只读模板导入、静态提取、检索、候选经验与原工程工作副本导出；用 `fx_plan_template_import` 盘点，`fx_learn_templates` 学习，所有数据仍在 data。混合 HIP/NK 目录、精简归档、修订与迁移合并详见 [工程模板学习与迁移](docs/工程模板学习与迁移.md)。Nuke 15.2 接入与验证范围见 [Nuke接入与独立学习](docs/Nuke接入与独立学习.md)。
 
+工程导入后还需逐张标注实际效果：`fx_annotate_template_effects` 保存对象、外观、动态、参数/动画/渲染差异及复用步骤；同一制作方案的不同效果使用独立卡。用户用“角色身体能量粒子”等描述时，通过 `fx_search_effects` 找相似卡，再追溯原工程。基础规范现有data/baselines中的完整版本快照，可随data手动迁移；使用 `fx_sync_module_baselines` 同步上游规范和项目工作流。详见 [效果指示卡与基础规范](docs/效果指示卡与基础规范.md)。
+
 ## 对话与制作反馈学习
 
 配套 `fx-learning` Skill 在用户提出长期规范、纠错和最终确认时触发相应流程：
