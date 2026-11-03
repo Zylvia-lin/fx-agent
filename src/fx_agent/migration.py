@@ -8,6 +8,7 @@ from contextlib import closing
 from pathlib import Path
 
 from fx_agent.archive import CaseArchive, copy_verified, publish_directory
+from fx_agent.baselines import validate_baselines
 
 
 def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = False) -> dict:
@@ -66,7 +67,13 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                     row[0]
                     for row in snapshot.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 }
-                for table in ("memories", "learning_feedback", "template_studies"):
+                for table in (
+                    "memories",
+                    "learning_feedback",
+                    "template_studies",
+                    "template_effects",
+                    "template_effect_reviews",
+                ):
                     if table not in tables:
                         continue
                     for (payload,) in snapshot.execute(f"SELECT payload FROM {table}"):
@@ -76,6 +83,9 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                             and not archive.verify(record["case_id"], record["project_id"])["valid"]
                         ):
                             raise ValueError("Database references an invalid case")
+            baseline_check = validate_baselines(stage)
+            if not baseline_check["valid"]:
+                raise ValueError("Migrated baseline failed validation: " + baseline_check["error"])
             publish_directory(stage, target)
     finally:
         if stage.exists():

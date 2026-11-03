@@ -9,6 +9,7 @@ from typing import Literal
 
 from fx_agent import __version__
 from fx_agent.archive import ArtifactInput, CaseArchive, create_case_async
+from fx_agent.baselines import sync_baselines
 from fx_agent.config import DEFAULT_HOUDINI_PORT, data_root
 from fx_agent.data_import import import_data, import_records, resolve_memory
 from fx_agent.dream import DreamAction
@@ -56,7 +57,19 @@ def get_server():
             "production_rules_version": production_rules()["version"],
             "module_taxonomy_version": 1,
             "template_learning_version": 1,
+            "effect_card_version": 1,
+            "module_baseline_sync_tool": "fx_sync_module_baselines",
         }
+
+    @mcp.tool()
+    async def fx_sync_module_baselines() -> dict:
+        """Copy versioned upstream rules and project workflows into portable data/baselines.
+
+        Preserves source files and old snapshots, includes hashes and licenses.
+        Writes module README indexes separately from learned supplements. Rule
+        snapshots are not personal experiences and Dream does not rewrite them.
+        """
+        return await asyncio.to_thread(sync_baselines, data_root())
 
     @mcp.tool()
     async def fx_get_module_catalog(software: Literal["houdini", "nuke"] = "houdini") -> dict:

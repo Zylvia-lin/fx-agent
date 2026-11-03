@@ -39,6 +39,8 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 有工程模板资料时并行检索 fx_search_templates，按 study_id 展开节点与原始参数。模板来源候选用 fx_learn_template_experience 保存；其默认是推断，不能因有工程归档就改为已验证观察。实际使用后的纠错和最终方案继续走本技能现有反馈与提炼流程，source_ref 保留 template_study 与节点证据。
 
+用户以自然语言描述目标效果时先 fx_search_effects，展开效果指示卡并比较同方案的不同变体。复用与反馈保留 effect_card_id；同一制作方案只因参数、动态或渲染不同而形成的效果卡必须分别保留。Dream可以整理共用方法与经验，但不能把不同效果卡删除、覆盖或按节点相同强行合并。
+
 先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的全局模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
 
 ## 阶段结束时整理记忆

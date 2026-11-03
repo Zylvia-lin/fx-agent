@@ -42,7 +42,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 7
+    SCHEMA_VERSION = 8
 
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -52,14 +52,14 @@ class Store:
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute("BEGIN IMMEDIATE")
             # A concurrent initializer may have upgraded while we waited for the lock.
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -106,6 +106,15 @@ class Store:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS template_studies_source ON template_studies(source_id,fingerprint)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS template_effects (card_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,effect_key TEXT NOT NULL,payload TEXT NOT NULL,search_text TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS template_effects_study ON template_effects(study_id,effect_key)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS template_effect_reviews (review_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,payload TEXT NOT NULL)"
+            )
             for table, columns, definition in (
                 (
                     "checkpoints",
@@ -126,14 +135,20 @@ class Store:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS knowledge_state (id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)"
             )
-            db.execute("INSERT OR IGNORE INTO knowledge_state VALUES (1,lower(hex(randomblob(32))))")
+            db.execute(
+                "INSERT OR IGNORE INTO knowledge_state VALUES (1,lower(hex(randomblob(32))))"
+            )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS module_guide_state (software TEXT,module TEXT,token TEXT NOT NULL,content_hash TEXT NOT NULL,lesson_count INTEGER NOT NULL,conflict_ids TEXT NOT NULL,PRIMARY KEY(software,module))"
             )
             # Triggers also observe writes made by other processes and roll back with their transaction.
             for table in (
-                "memories", "memory_aliases", "knowledge_sources", "memory_conflicts",
-                "learning_feedback", "learning_results",
+                "memories",
+                "memory_aliases",
+                "knowledge_sources",
+                "memory_conflicts",
+                "learning_feedback",
+                "learning_results",
             ):
                 for event in ("INSERT", "UPDATE", "DELETE"):
                     db.execute(

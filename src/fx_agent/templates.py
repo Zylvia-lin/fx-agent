@@ -286,6 +286,13 @@ class TemplateLibrary:
             items.append({"source": item["path"]} | result)
             if result["state"] in {"imported", "partial"}:
                 batch_bytes += result["archive_bytes"]
+        from fx_agent.effect_cards import EffectLibrary
+
+        effects = EffectLibrary(self.root)
+        for item in items:
+            if "study_id" in item:
+                item["effect_catalog"] = effects.catalog(item["study_id"])
+                item["effect_annotations_required"] = item["effect_catalog"]["state"] != "reviewed"
         return {
             "items": items,
             "counts": dict(Counter(x["state"] for x in items)),
@@ -779,10 +786,19 @@ class TemplateLibrary:
         reason: str,
         applies_when: str,
         modules: list[str],
+        effect_card_id: str = "",
     ) -> dict:
         record = self._record(study_id)
         if not self.validate(study_id)["valid"]:
             raise ValueError("Template study checksum validation failed")
+        source_ref = "template_study:" + study_id
+        if effect_card_id:
+            from fx_agent.effect_cards import EffectLibrary
+
+            card = EffectLibrary(self.root)._record_card(effect_card_id)
+            if card["study_id"] != study_id:
+                raise ValueError("Effect card does not belong to this study")
+            source_ref += "; effect_card:" + effect_card_id
         return MemoryStore(self.root).submit(
             project_id=record["project_id"],
             software=record["software"],
@@ -793,7 +809,7 @@ class TemplateLibrary:
             reason=reason,
             applies_when=applies_when,
             source_type="inferred",
-            source_ref="template_study:" + study_id,
+            source_ref=source_ref,
             project_dependent=True,
             case_id=record["case_id"],
         )

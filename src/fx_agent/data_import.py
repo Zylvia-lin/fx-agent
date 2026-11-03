@@ -5,10 +5,16 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 
 from fx_agent.archive import CaseArchive, contained, copy_verified, file_hash, publish_directory
+from fx_agent.baselines import (
+    baseline_destination,
+    baseline_lock,
+    validate_baseline,
+    write_baseline_indexes,
+)
 from fx_agent.memory import usable_sql
 from fx_agent.migration import migrate_data
 from fx_agent.module_guides import refresh_guides
@@ -23,6 +29,8 @@ TABLES = (
     "knowledge_sources",
     "render_issues",
     "template_studies",
+    "template_effects",
+    "template_effect_reviews",
 )
 SNAPSHOT_TABLES = (*TABLES, "memory_conflicts", "memory_aliases", "dream_runs", "import_runs")
 
@@ -127,6 +135,7 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                 "new_memory_ids": [],
                 "records": [],
                 "upstream_needs_review": frozen_count,
+                "baseline_snapshots": {"added": 0, "skipped": 0},
             }
             if apply:
                 archive_path = contained(target, f"imports/{import_id}")
@@ -151,6 +160,22 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                 destination = local
             with destination.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
+                with baseline_lock(target) if apply else nullcontext():
+                    reserved, seen_snapshots = set(), set()
+                    for folder in sorted(stage.glob("baselines/*")):
+                        if folder.name == ".staging":
+                            continue
+                        manifest = validate_baseline(folder)
+                        current, exists = baseline_destination(target, manifest, reserved)
+                        if exists or manifest["snapshot_id"] in seen_snapshots:
+                            report["baseline_snapshots"]["skipped"] += 1
+                        else:
+                            report["baseline_snapshots"]["added"] += 1
+                            if apply:
+                                _publish_tree(folder, current)
+                        seen_snapshots.add(manifest["snapshot_id"])
+                    if apply and sum(report["baseline_snapshots"].values()):
+                        write_baseline_indexes(target)
                 blocked_cases = set()
                 for folder in sorted((stage if stage.exists() else archive_path).glob("cases/*")):
                     if folder.name == ".staging":
@@ -174,7 +199,12 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                                 raise ValueError("Existing case checksum validation failed")
                     elif apply:
                         _publish_tree(folder, current)
-                blocked = {"memories": set(), "learning_feedback": set()}
+                blocked = {
+                    "memories": set(),
+                    "learning_feedback": set(),
+                    "template_studies": set(),
+                    "template_effects": set(),
+                }
                 feedback_branches = _feedback_branches(incoming, db)
                 for table in TABLES:
                     counts = {"added": 0, "skipped": 0, "conflicts": 0}
@@ -197,6 +227,16 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                         ):
                             problem = "attempt_branch_conflict"
                         payload = json.loads(values["payload"]) if "payload" in values else {}
+                        if (
+                            table in {"template_effects", "template_effect_reviews"}
+                            and values["study_id"] in blocked["template_studies"]
+                        ):
+                            problem = "study_conflict"
+                        if (
+                            table == "template_effect_reviews"
+                            and set(payload.get("card_ids", [])) & blocked["template_effects"]
+                        ):
+                            problem = "effect_card_conflict"
                         if payload.get("case_id") in blocked_cases:
                             problem = "case_conflict"
                         if table == "learning_results" and (
@@ -283,6 +323,9 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                     db.rollback()
             if apply:
                 report["module_guides"] = refresh_guides(target)
+                from fx_agent.effect_cards import refresh_effect_documents
+
+                report["effect_documents"] = refresh_effect_documents(target)
             return {k: v for k, v in report.items() if k != "records"} | {
                 "conflict_records": len(report["records"]),
                 "dream_required": bool(report["new_memory_ids"] or report["records"]),

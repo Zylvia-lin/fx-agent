@@ -5,6 +5,8 @@ import threading
 from contextlib import suppress
 
 from fx_agent.archive import ArchiveCancelled, ArtifactInput
+from fx_agent.effect_cards import EffectCardInput, EffectExclusion, EffectLibrary
+from fx_agent.store import compact
 from fx_agent.templates import TemplateLibrary, TemplatePolicy
 
 
@@ -82,17 +84,53 @@ def register_template_tools(mcp, root_provider):
         max_chars: int = 6000,
     ) -> dict:
         """Search extracted facts with local BM25; studies are not verified workflows."""
-        return await asyncio.to_thread(
-            TemplateLibrary(root_provider()).search,
-            query,
-            software=software,
-            module=module,
-            project_id=project_id,
-            include_history=include_history,
-            offset=offset,
-            limit=limit,
-            max_chars=max_chars,
-        )
+
+        def search():
+            root = root_provider()
+            result = TemplateLibrary(root).search(
+                query,
+                software=software,
+                module=module,
+                project_id=project_id,
+                include_history=include_history,
+                offset=offset,
+                limit=limit,
+                max_chars=max_chars,
+            )
+            effects = EffectLibrary(root).search(
+                query,
+                software=software,
+                module=module,
+                project_id=project_id,
+                include_history=include_history,
+                limit=3,
+                max_chars=max_chars,
+            )
+            result["effect_matches"] = effects
+            # Preserve useful discovery cards when the combined response is small-budget.
+            for collection, start, id_key in (
+                (result, offset, "study_id"),
+                (effects, 0, "card_id"),
+            ):
+                while collection["items"] and len(compact(result)) > max_chars:
+                    if len(collection["items"]) == 1 and not collection["items"][0].get(
+                        "detail_required"
+                    ):
+                        item = collection["items"][0]
+                        collection["items"] = [
+                            {
+                                id_key: item[id_key],
+                                "title": item["title"][:80],
+                                "detail_required": True,
+                            }
+                        ]
+                    else:
+                        collection["items"].pop()
+                    collection["next_offset"] = start + len(collection["items"])
+                    collection["truncated"] = collection["next_offset"] < collection["total"]
+            return result
+
+        return await asyncio.to_thread(search)
 
     @mcp.tool()
     async def fx_get_template(
@@ -108,14 +146,27 @@ def register_template_tools(mcp, root_provider):
         and connections by offset. Raw parm/chn/script text preserves original
         expressions and curves; it is not a computed DCC result.
         """
-        return await asyncio.to_thread(
-            TemplateLibrary(root_provider()).get,
-            study_id,
-            section=section,
-            offset=offset,
-            limit=limit,
-            max_chars=max_chars,
-        )
+
+        def read():
+            root = root_provider()
+            result = TemplateLibrary(root).get(
+                study_id, section=section, offset=offset, limit=limit, max_chars=max_chars
+            )
+            if section == "summary":
+                catalog = EffectLibrary(root).catalog(study_id)
+                result["effect_catalog"] = catalog
+                if len(compact(result)) > max_chars:
+                    result = {
+                        "study_id": study_id,
+                        "effect_catalog": catalog,
+                        "detail_required": True,
+                        "truncated": True,
+                        "next_sections": ["nodes", "dependencies", "history"],
+                        "effect_lookup_tool": "fx_search_effects",
+                    }
+            return result
+
+        return await asyncio.to_thread(read)
 
     @mcp.tool()
     async def fx_validate_template(study_id: str) -> dict:
@@ -136,7 +187,13 @@ def register_template_tools(mcp, root_provider):
 
     @mcp.tool()
     async def fx_learn_template_experience(
-        study_id: str, title: str, method: str, reason: str, applies_when: str, modules: list[str]
+        study_id: str,
+        title: str,
+        method: str,
+        reason: str,
+        applies_when: str,
+        modules: list[str],
+        effect_card_id: str = "",
     ) -> dict:
         """Save host-authored interpretation as an inferred candidate linked to a study.
 
@@ -152,4 +209,95 @@ def register_template_tools(mcp, root_provider):
             reason=reason,
             applies_when=applies_when,
             modules=modules,
+            effect_card_id=effect_card_id,
+        )
+
+    @mcp.tool()
+    async def fx_annotate_template_effects(study_id: str, cards: list[EffectCardInput]) -> dict:
+        """Save one text card per effect variant after inspecting the source study.
+
+        Shared scheme_key/node_paths do not merge different effect_key cards.
+        Describe subject, appearance, motion, parameter/animation/render/comp
+        differences, scope, node evidence and concrete reuse steps. Descriptions
+        are host-authored, never auto-inferred from node names. Use supersedes
+        for all current heads when revising; originals and source files stay intact.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).annotate, study_id, [c.model_dump() for c in cards]
+        )
+
+    @mcp.tool()
+    async def fx_search_effects(
+        query: str = "",
+        software: str = "",
+        module: str = "",
+        project_id: str = "",
+        scheme_key: str = "",
+        study_id: str = "",
+        include_history: bool = False,
+        offset: int = 0,
+        limit: int = 10,
+        max_chars: int = 6000,
+    ) -> dict:
+        """Find individual looks/motions from natural descriptions such as body energy particles.
+
+        Uses weighted local text retrieval and host-provided aliases, not a vector
+        model. Each scheme may have many variants. Open fx_get_effect to compare
+        motion, animation and rendering differences before exporting a work copy.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).search,
+            query,
+            software=software,
+            module=module,
+            project_id=project_id,
+            scheme_key=scheme_key,
+            study_id=study_id,
+            include_history=include_history,
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
+
+    @mcp.tool()
+    async def fx_get_effect(
+        card_id: str, section: str = "card", offset: int = 0, max_chars: int = 12000
+    ) -> dict:
+        """Read a versioned effect card, or paginate its Markdown with section=text.
+
+        Card text is authoritative in SQLite; generated data/effects MDs are views.
+        Inspect node paths and evidence, then use fx_export_template(study_id,...).
+        Reference cards are not verified successful workflows.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).get,
+            card_id,
+            section=section,
+            offset=offset,
+            max_chars=max_chars,
+        )
+
+    @mcp.tool()
+    async def fx_review_template_effects(
+        study_id: str,
+        reviewed_node_paths: list[str] | None = None,
+        expected_card_ids: list[str] | None = None,
+        exclusions: list[EffectExclusion] | None = None,
+        note: str = "",
+    ) -> dict:
+        """Preview effect annotation coverage; optionally record an explicit host review.
+
+        To write, provide all reviewed source node paths, current card IDs and a
+        reason for each technical node not mapped to a card. A source variant may
+        share nodes with others. This records host review, not proof that every
+        conceivable parameter combination or visual effect was discovered.
+        Revisions/merged branches make previous reviews stale automatically.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).review,
+            study_id,
+            reviewed_node_paths=reviewed_node_paths,
+            expected_card_ids=expected_card_ids,
+            exclusions=[x.model_dump() for x in exclusions or []],
+            note=note,
         )
