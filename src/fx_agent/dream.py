@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -90,6 +91,17 @@ def _plan(db, cursor, limit, software, module):
         library.setdefault(group_key(entry), []).append(entry["memory_id"])
     for row in rows[:limit]:
         record = json.loads(row["payload"])
+        source_texts = [record.get("source_ref", "")]
+        source_texts.extend(
+            json.loads(r[0]).get("source_ref", "")
+            for r in db.execute(
+                "SELECT source_payload FROM knowledge_sources WHERE memory_id=?",
+                (row["memory_id"],),
+            )
+        )
+        effect_ids = sorted(
+            {m for text in source_texts for m in re.findall(r"effect_card:([a-f0-9]{32})", text)}
+        )
         key = group_key(row)
         if key in library:
             groups[key] = library[key]
@@ -103,6 +115,7 @@ def _plan(db, cursor, limit, software, module):
                 "summary": record["method"][:240],
                 "source_project": row["project_id"],
                 "detail_required": True,
+                "effect_card_ids": effect_ids,
             }
         )
     actions = []
@@ -128,6 +141,13 @@ def _plan(db, cursor, limit, software, module):
         "module": module,
         "cursor": cursor,
         "limit": limit,
+        "effect_learning": {
+            "queue_tool": "fx_get_effect_learning_queue",
+            "inspect_tool": "fx_plan_effect_study",
+            "revision_tool": "fx_refine_effect",
+            "required": "迭代中理解效果后，读取关联效果卡及新证据，补充明确效果名、类别、运动与其他信息；以全部当前头建立修订，并填写refinement_sources和refinement_reason。疑问先查对应渲染序列，仍不明确则询问用户；不同表现保留独立effect_key。",
+            "automatic_promotion": False,
+        },
     }
 
 

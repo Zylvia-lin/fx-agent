@@ -160,7 +160,15 @@ def test_evidence_and_node_refs_are_checked_without_promoting_to_success(tmp_pat
 def test_coverage_requires_explicit_review_and_becomes_stale_after_card_edit(tmp_path):
     library, study_id, _ = study(tmp_path)
     assert library.review(study_id)["state"] == "not_annotated"
-    item = library.annotate(study_id, [card()])["items"][0]
+    definition = card(
+        effect_family=["粒子"],
+        effect_kind="身体能量粒子",
+        behaviors=["流动"],
+        naming_basis="user",
+        basis="user",
+        user_quote="角色身体贴身流动能量粒子",
+    )
+    item = library.annotate(study_id, [definition])["items"][0]
     assert library.review(study_id)["state"] == "needs_review"
     with pytest.raises(ValueError, match="reviewed"):
         library.review(
@@ -169,12 +177,15 @@ def test_coverage_requires_explicit_review_and_becomes_stale_after_card_edit(tmp
             expected_card_ids=[item["card_id"]],
             exclusions=[{"node_path": "/obj/geo1", "reason": "容器"}],
         )
+    media = tmp_path / "media"
+    media.mkdir()
     done = library.review(
         study_id,
         reviewed_node_paths=["/obj/geo1", "/obj/geo1/source", "/obj/geo1/shape"],
         expected_card_ids=[item["card_id"]],
         exclusions=[{"node_path": "/obj/geo1", "reason": "技术容器，本身不构成单独效果"}],
         note="已检查工程当前存在的效果分支；没有穷举参数空间。",
+        media_source=str(media),
     )
     assert done["state"] == "reviewed"
     library.annotate(study_id, [card(motion="重新描述运动", supersedes=[item["card_id"]])])
@@ -293,6 +304,9 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
         "fx_search_effects",
         "fx_get_effect",
         "fx_review_template_effects",
+        "fx_plan_effect_study",
+        "fx_get_effect_learning_queue",
+        "fx_refine_effect",
     ):
         assert name in tools
     result = await server.call_tool(
@@ -303,3 +317,5 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
     assert json.loads(search[0].text)["effect_matches"]["items"]
     detail = await server.call_tool("fx_get_template", {"study_id": study_id})
     assert json.loads(detail[0].text)["effect_catalog"]["card_count"] == 1
+    queue = await server.call_tool("fx_get_effect_learning_queue", {})
+    assert json.loads(queue[0].text)["items"][0]["study_id"] == study_id

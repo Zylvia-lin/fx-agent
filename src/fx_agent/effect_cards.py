@@ -22,6 +22,74 @@ Tag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_
 NodePath = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
 
 
+class VisualEvidence(BaseModel):
+    """Host observations with replay locations and archived representative samples."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    kind: Literal["movie", "sequence", "image"]
+    source_path: NodePath
+    render_node_path: NodePath | None = None
+    frame_range: str = Field(default="", max_length=200)
+    time_range: str = Field(default="", max_length=200)
+    observation: str = Field(min_length=1, max_length=3000)
+    sample_paths: list[NodePath] = Field(min_length=1, max_length=20)
+    case_id: CardId | None = None
+
+    @model_validator(mode="after")
+    def replay_location(self):
+        if self.kind == "sequence" and not self.frame_range:
+            raise ValueError("Sequence evidence requires a frame range")
+        if self.kind == "movie" and not self.time_range:
+            raise ValueError("Movie evidence requires a time range")
+        return self
+
+
+def identity_status(record: dict) -> str:
+    if record.get("questions"):
+        return "needs_confirmation"
+    if (
+        not record.get("effect_family")
+        or not record.get("effect_kind")
+        or not record.get("behaviors")
+    ):
+        return "needs_relearning"
+    if record.get("naming_basis", "provisional") == "provisional":
+        return "needs_confirmation"
+    if record.get("basis") == "user" and record.get("user_quote"):
+        return "identified"
+    if record.get("visual_evidence"):
+        return "identified"
+    return "needs_visual_evidence"
+
+
+CONCEPTS = {
+    "粒子": ("粒子", "particle", "particles"),
+    "烟雾": ("烟", "雾", "smoke", "fog", "mist"),
+    "爆炸": ("爆炸", "爆破", "explosion", "explosive"),
+    "环境": ("环境", "ambient", "environment"),
+    "能量": ("能量", "energy"),
+    "环绕": ("环绕", "绕转", "绕圈", "orbit", "orbiting"),
+    "吸引": ("吸引", "吸入", "向心", "收拢", "汇聚", "attract", "attraction", "attracting"),
+    "外扩": ("外扩", "扩散", "向外", "expansion", "expanding"),
+    "消散": ("消散", "dissipate", "dissipation"),
+    "火焰": ("火焰", "fire", "flame"),
+}
+
+
+def _concepts(text: str) -> set[str]:
+    lowered = text.lower()
+    return {
+        key
+        for key, aliases in CONCEPTS.items()
+        if any(
+            re.search(r"\b" + re.escape(alias) + r"\b", lowered)
+            if alias.isascii()
+            else alias in lowered
+            for alias in aliases
+        )
+    }
+
+
 class EffectCardInput(BaseModel):
     """The host describes an actual source variant, not every possible parameter combination."""
 
@@ -52,13 +120,35 @@ class EffectCardInput(BaseModel):
     preview_paths: list[NodePath] = Field(default_factory=list, max_length=20)
     modules: list[str] = Field(min_length=1, max_length=4)
     supersedes: list[CardId] = Field(default_factory=list, max_length=30)
+    effect_family: list[Tag] = Field(default_factory=list, max_length=10)
+    effect_kind: str = Field(default="", max_length=200)
+    behaviors: list[Tag] = Field(default_factory=list, max_length=20)
+    naming_basis: Literal["author", "preview", "user", "provisional"] = "provisional"
+    author_labels: list[Tag] = Field(default_factory=list, max_length=30)
+    questions: list[Step] = Field(default_factory=list, max_length=30)
+    visual_evidence: list[VisualEvidence] = Field(default_factory=list, max_length=30)
+    reuse_mode: Literal["rebuild", "copy_nodes", "hybrid"] = "rebuild"
+    reuse_node_paths: list[NodePath] = Field(default_factory=list, max_length=5000)
+    reuse_dependency_notes: str = Field(default="", max_length=3000)
+    refinement_sources: list[Tag] = Field(default_factory=list, max_length=30)
+    refinement_reason: str = Field(default="", max_length=3000)
 
     @model_validator(mode="after")
     def evidence_requirements(self):
         if self.basis == "user" and not self.user_quote:
             raise ValueError("User-based descriptions require a user quote")
-        if self.basis == "preview" and not self.preview_paths:
+        if self.basis == "preview" and not (self.preview_paths or self.visual_evidence):
             raise ValueError("Preview-based descriptions require archived preview references")
+        if self.naming_basis == "user" and (self.basis != "user" or not self.user_quote):
+            raise ValueError("User naming requires an actual user quote and user basis")
+        if self.naming_basis == "author" and not self.author_labels:
+            raise ValueError("Author naming requires original author labels")
+        if self.reuse_mode in {"copy_nodes", "hybrid"} and (
+            not self.reuse_node_paths or not self.reuse_dependency_notes
+        ):
+            raise ValueError("Node reuse requires explicit nodes and dependency boundaries")
+        if self.refinement_sources and not self.refinement_reason:
+            raise ValueError("Effect refinement sources require an explanation")
         return self
 
 
@@ -66,6 +156,14 @@ class EffectExclusion(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     node_path: NodePath
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class MediaReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    path: NodePath
+    status: Literal["viewed", "unavailable", "unassigned", "excluded"]
+    note: str = Field(min_length=1, max_length=3000)
+    card_ids: list[CardId] = Field(default_factory=list, max_length=100)
 
 
 def _heads(records: list[dict]) -> list[dict]:
@@ -119,6 +217,38 @@ def _markdown(record: dict) -> str:
         )
     blocks.append(
         f"描述来源：{record['basis']}。这是工程参考卡，不是已验证的成功经验；导出工作副本后核对节点、依赖、尺度与版本。"
+    )
+    blocks.append(
+        "## 效果识别与待确认问题\n\n"
+        + compact(
+            {
+                k: record.get(k)
+                for k in (
+                    "effect_family",
+                    "effect_kind",
+                    "behaviors",
+                    "naming_basis",
+                    "author_labels",
+                    "questions",
+                )
+            }
+        )
+    )
+    blocks.append(
+        "## 画面证据与复用范围\n\n"
+        + compact(
+            {
+                k: record.get(k)
+                for k in (
+                    "visual_evidence",
+                    "reuse_mode",
+                    "reuse_node_paths",
+                    "reuse_dependency_notes",
+                    "refinement_sources",
+                    "refinement_reason",
+                )
+            }
+        )
     )
     return "\n\n".join(blocks) + "\n"
 
@@ -216,19 +346,78 @@ class EffectLibrary:
         definitions = [EffectCardInput(**card) for card in cards]
         if len({d.effect_key for d in definitions}) != len(definitions):
             raise ValueError("Each effect_key must be unique in the batch")
-        study, _, nodes, previews = self._source(study_id)
+        study, snapshot, nodes, previews = self._source(study_id)
+        author_texts = {x.get("label", "") for x in snapshot.get("netboxes", [])}
+        author_texts.update(x.get("text", "") for x in snapshot.get("sticky_notes", []))
+        author_texts.update(n.get("comment", "") for n in snapshot["nodes"])
+        author_texts.update(n.get("parameters", {}).get("label", "") for n in snapshot["nodes"])
         for definition in definitions:
             definition.modules = normalize_modules(definition.modules, study["software"])
             if set(definition.node_paths) - nodes:
                 raise ValueError("Effect card references a node absent from the source snapshot")
             if set(definition.preview_paths) - previews:
                 raise ValueError("Effect card preview must reference an archived preview/reference")
+            if set(definition.reuse_node_paths) - nodes:
+                raise ValueError("Reuse node references a node absent from the source snapshot")
+            if set(definition.author_labels) - author_texts:
+                raise ValueError("Author labels must preserve actual source annotations")
+            for evidence in definition.visual_evidence:
+                allowed = previews
+                if evidence.case_id:
+                    archive = CaseArchive(self.root)
+                    if not archive.verify(evidence.case_id, study["project_id"])["valid"]:
+                        raise ValueError("Visual evidence archive checksum validation failed")
+                    case = archive.get(evidence.case_id, study["project_id"])
+                    allowed = {
+                        f["archive_path"]
+                        for f in case["files"]
+                        if f["role"] in {"preview", "reference"}
+                    }
+                if set(evidence.sample_paths) - allowed:
+                    raise ValueError(
+                        "Visual evidence samples must reference archived preview/reference files"
+                    )
+                if evidence.render_node_path and evidence.render_node_path not in nodes:
+                    raise ValueError("Visual evidence render node is absent from source snapshot")
         results, saved = [], []
         with Store(self.root).connection() as db:
             db.execute("BEGIN IMMEDIATE")
             records = self._rows(study_id, db)
             for definition in definitions:
+                provenance = []
+                for source in definition.refinement_sources:
+                    kind, _, identifier = source.partition(":")
+                    table = {
+                        "dream": ("dream_runs", "run_id"),
+                        "memory": ("memories", "memory_id"),
+                        "feedback": ("learning_feedback", "feedback_id"),
+                        "effect_card": ("template_effects", "card_id"),
+                    }.get(kind)
+                    if not table or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+                        raise ValueError("Invalid effect refinement source")
+                    row = db.execute(
+                        f"SELECT payload FROM {table[0]} WHERE {table[1]}=?", (identifier,)
+                    ).fetchone()
+                    if not row or json.loads(row[0]).get("undone"):
+                        raise ValueError("Effect refinement source is missing or undone")
+                    if kind == "effect_card" and json.loads(row[0])["study_id"] != study_id:
+                        raise ValueError("Effect refinement source belongs to a different study")
+                    value = json.loads(row[0])
+                    provenance.append(
+                        {
+                            "source_ref": source,
+                            "payload": {
+                                k: value[k]
+                                for k in ("card_id", "study_id", "content_hash", "title")
+                                if k in value
+                            }
+                            if kind == "effect_card"
+                            else value,
+                        }
+                    )
                 content = definition.model_dump(exclude={"supersedes"})
+                if provenance:
+                    content["refinement_provenance"] = provenance
                 content_hash = hashlib.sha256(compact(content).encode()).hexdigest()
                 current = _heads([r for r in records if r["effect_key"] == definition.effect_key])
                 if current and all(r["content_hash"] == content_hash for r in current):
@@ -276,6 +465,27 @@ class EffectLibrary:
             result["document"] = self._document(record)
         return {"study_id": study_id, "items": results, "effect_catalog": self.catalog(study_id)}
 
+    def refine(self, card_id: str, updates: dict, sources: list[str], reason: str) -> dict:
+        """Fill newly understood details without discarding earlier card content."""
+        record = self._record_card(card_id)
+        protected = {
+            "effect_key",
+            "scheme_key",
+            "supersedes",
+            "refinement_sources",
+            "refinement_reason",
+        }
+        if not updates or set(updates) - (set(EffectCardInput.model_fields) - protected):
+            raise ValueError("Refinement must update descriptive fields of the same effect variant")
+        if not sources or not reason.strip():
+            raise ValueError("Refinement requires evidence sources and a reason")
+        definition = {k: v for k, v in record.items() if k in EffectCardInput.model_fields}
+        definition.update(updates)
+        definition.update(
+            supersedes=[card_id], refinement_sources=sources, refinement_reason=reason
+        )
+        return self.annotate(record["study_id"], [definition])
+
     @staticmethod
     def _summary(record: dict) -> dict:
         return {
@@ -290,6 +500,11 @@ class EffectLibrary:
             "software": record["software"],
             "modules": record["modules"],
             "basis": record["basis"],
+            "identity_status": identity_status(record),
+            "effect_family": record.get("effect_family", []),
+            "effect_kind": record.get("effect_kind", ""),
+            "behaviors": record.get("behaviors", []),
+            "questions": record.get("questions", []),
         }
 
     def catalog(self, study_id: str) -> dict:
@@ -300,12 +515,32 @@ class EffectLibrary:
             reviews = [
                 json.loads(r[0])
                 for r in db.execute(
-                    "SELECT payload FROM template_effect_reviews WHERE study_id=?", (study_id,)
+                    "SELECT payload FROM template_effect_reviews WHERE study_id=? ORDER BY rowid",
+                    (study_id,),
                 )
             ]
-        reviewed = bool(ids) and any(set(r["card_ids"]) == ids for r in reviews)
+        relevant_reviews = [
+            r for r in reviews if set(r["card_ids"]) == ids and r.get("review_version") == 2
+        ]
+        review_parents = {p for r in relevant_reviews for p in r.get("parent_review_ids", [])}
+        review_heads = [r for r in relevant_reviews if r["review_id"] not in review_parents]
+        reviewed = (
+            bool(ids) and len(review_heads) == 1 and review_heads[0].get("media_complete", False)
+        )
+        media_issues = [issue for r in review_heads for issue in r.get("media_issues", [])]
         unique = _equivalent_heads(current)
         conflicts = any(n > 1 for n in Counter(r["effect_key"] for r in unique).values())
+        statuses = Counter(identity_status(r) for r in unique)
+        learning_state = next(
+            (
+                s
+                for s in ("needs_confirmation", "needs_relearning", "needs_visual_evidence")
+                if statuses[s]
+            ),
+            "reviewed" if reviewed else "needs_review" if current else "not_annotated",
+        )
+        if media_issues and not reviewed:
+            learning_state = "needs_confirmation"
         return {
             "card_count": len(unique),
             "scheme_count": len({r["scheme_key"] for r in current}),
@@ -318,6 +553,11 @@ class EffectLibrary:
             else "not_annotated",
             "has_conflict": conflicts,
             "coverage_basis": "host_review_not_automatic_effect_detection",
+            "learning_state": "conflict" if conflicts else learning_state,
+            "identity_counts": dict(statuses),
+            "relearning_required": any(s != "identified" for s in statuses),
+            "media_issues": media_issues,
+            "review_conflict": len(review_heads) > 1,
         }
 
     def review(
@@ -328,6 +568,8 @@ class EffectLibrary:
         expected_card_ids: list[str] | None = None,
         exclusions: list[dict] | None = None,
         note: str = "",
+        media_source: str = "",
+        media_reviews: list[dict] | None = None,
     ) -> dict:
         study, snapshot, nodes, _ = self._source(study_id)
         with Store(self.root).connection() as db:
@@ -340,6 +582,10 @@ class EffectLibrary:
                     raise ValueError("Annotate a parsed study before marking its effects reviewed")
                 if set(reviewed_node_paths) != nodes:
                     raise ValueError("All snapshot nodes must be explicitly reviewed")
+                if any(identity_status(r) != "identified" for r in current):
+                    raise ValueError(
+                        "Effect identity, visual evidence and unresolved questions require second-pass learning before review"
+                    )
                 if set(expected_card_ids or []) != ids or any(
                     n > 1
                     for n in Counter(r["effect_key"] for r in _equivalent_heads(current)).values()
@@ -351,6 +597,38 @@ class EffectLibrary:
                     raise ValueError("Unmapped technical nodes need explicit exclusion reasons")
                 if len(note) > 3000:
                     raise ValueError("Review note too long")
+                if not media_source:
+                    raise ValueError(
+                        "Explicit media_source is required to account for supplied videos and sequences"
+                    )
+                from fx_agent.effect_study import media_inventory, render_outputs
+                from fx_agent.templates import TemplatePolicy
+
+                _, entries = self.templates._inventory(media_source, TemplatePolicy())
+                inventory = media_inventory(
+                    entries, render_outputs(snapshot), Path(study["source_path"])
+                )
+                media = [MediaReview(**x).model_dump() for x in media_reviews or []]
+                if len({x["path"] for x in media}) != len(media) or {x["path"] for x in media} != {
+                    x["path"] for x in inventory
+                }:
+                    raise ValueError(
+                        "Every supplied media item needs one explicit review; paginate the study plan first"
+                    )
+                for item in media:
+                    if set(item["card_ids"]) - ids or (
+                        item["status"] == "viewed" and not item["card_ids"]
+                    ):
+                        raise ValueError("Viewed media must identify current effect cards")
+                media_issues = [x for x in media if x["status"] in {"unavailable", "unassigned"}]
+                prior_reviews = [
+                    json.loads(r[0])
+                    for r in db.execute(
+                        "SELECT payload FROM template_effect_reviews WHERE study_id=?", (study_id,)
+                    )
+                ]
+                prior_reviews = [r for r in prior_reviews if set(r["card_ids"]) == ids]
+                review_parents = {p for r in prior_reviews for p in r.get("parent_review_ids", [])}
                 review = {
                     "review_id": uuid.uuid4().hex,
                     "study_id": study_id,
@@ -362,6 +640,17 @@ class EffectLibrary:
                     "note": note,
                     "created_at": datetime.now(UTC).isoformat(),
                     "coverage_basis": "host_review_not_automatic_effect_detection",
+                    "review_version": 2,
+                    "media_source": media_source,
+                    "media_inventory": inventory,
+                    "media_reviews": media,
+                    "media_issues": media_issues,
+                    "media_complete": not media_issues,
+                    "parent_review_ids": sorted(
+                        r["review_id"]
+                        for r in prior_reviews
+                        if r["review_id"] not in review_parents
+                    ),
                 }
                 db.execute(
                     "INSERT INTO template_effect_reviews VALUES (?,?,?)",
@@ -398,6 +687,7 @@ class EffectLibrary:
             "markdown_path": document.get("path"),
             "document": document,
             "truncated": False,
+            "identity_status": identity_status(record),
         }
         related = [
             r for r in self._rows(record["study_id"]) if r["effect_key"] == record["effect_key"]
@@ -455,6 +745,18 @@ class EffectLibrary:
             r"我想要|我想|想要|我要|需要|帮我|做一个|一个|制作|实现|请", " ", query.lower()
         ).strip()
         wanted = set(_tokens(normalized))
+        wanted_concepts = _concepts(normalized)
+        residual = normalized
+        for alias in sorted(
+            {a for values in CONCEPTS.values() for a in values}, key=len, reverse=True
+        ):
+            residual = (
+                re.sub(r"\b" + re.escape(alias) + r"\b", " ", residual)
+                if alias.isascii()
+                else residual.replace(alias, " ")
+            )
+        residual = re.sub(r"效果|特效|并且|以及|的|与|和|并", " ", residual)
+        extra_terms = re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]+", residual)
         docs = []
         weighted = {
             "title": 4,
@@ -471,6 +773,10 @@ class EffectLibrary:
             "render_notes": 1,
             "compositing_notes": 1,
             "reuse_steps": 1,
+            "effect_family": 5,
+            "effect_kind": 5,
+            "behaviors": 5,
+            "author_labels": 2,
         }
         for r in records:
             if (
@@ -491,7 +797,7 @@ class EffectLibrary:
                 continue
             counts, fields = Counter(), []
             for field, weight in weighted.items():
-                value = r[field]
+                value = r.get(field, "")
                 tokens = _tokens(" ".join(value) if isinstance(value, list) else value)
                 counts.update(tokens * weight)
                 if wanted.intersection(tokens):
@@ -509,9 +815,30 @@ class EffectLibrary:
                 for t in wanted
                 if counts[t]
             )
-            if not query or score > 0:
-                scored.append((score, r, fields))
-        scored.sort(key=lambda d: d[0], reverse=True)
+            explicit = " ".join(
+                r.get("effect_family", []) + r.get("behaviors", []) + [r.get("effect_kind", "")]
+            )
+            present = _concepts(explicit)
+            missing = sorted(wanted_concepts - present)
+            description = " ".join(
+                [r["title"], r["subject"], r["appearance"], r["motion"], *r["aliases"]]
+            ).lower()
+            unverified = [term for term in extra_terms if term not in description]
+            kind = (
+                "complete"
+                if wanted_concepts
+                and not missing
+                and not unverified
+                and identity_status(r) == "identified"
+                else "partial"
+                if present & wanted_concepts
+                else "candidate"
+            )
+            if not query or score > 0 or present & wanted_concepts:
+                scored.append((score, r, fields, kind, missing, unverified))
+        scored.sort(
+            key=lambda d: ({"complete": 2, "partial": 1, "candidate": 0}[d[3]], d[0]), reverse=True
+        )
         items = [
             self._summary(r)
             | {
@@ -520,8 +847,11 @@ class EffectLibrary:
                 "has_conflict": branches[(r["study_id"], r["effect_key"])] > 1,
                 "equivalent_count": len(r.get("equivalent_card_ids", [r["card_id"]])),
                 "source_is_current": r["study_id"] not in source_parents,
+                "match_kind": kind,
+                "missing_concepts": missing,
+                "unverified_terms": unverified,
             }
-            for score, r, fields in scored[offset : offset + limit]
+            for score, r, fields, kind, missing, unverified in scored[offset : offset + limit]
         ]
         while items and len(compact(items)) > max_chars - 300:
             items.pop()

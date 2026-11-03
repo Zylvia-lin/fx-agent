@@ -47,6 +47,8 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 有新有效经验、完成外部数据导入或用户要求整理时，由当前宿主助手执行 Dream，不额外启动模型服务。
 
+每次 Dream 同时检查返回的 effect_learning 与候选的 effect_card_ids；经 knowledge_sources 继承的卡引用也要追溯。若本轮制作、反馈或新视频/序列使效果更明确，读取当前卡，以 `fx_refine_effect(card_id, updates, sources, reason)` 补充效果名、类别、外观、运动、别名和证据。sources 引用本轮真实 dream/memory/feedback/effect_card ID；服务保留来源资料与旧卡，新修订不得抹掉历史。不得仅因运行Dream就自动命名，只有理解有依据时才更新；不确定先追查渲染序列，再将问题集中问用户。新表现建立独立effect_key，不覆盖旧变体。无关联卡或无新理解时不制造无意义修订；`fx_get_effect_learning_queue` 可另行分页处理存量待学习记录。
+
 1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选。project_id 不限制经验范围；next_cursor 翻页，最后一页的游标可作为下次增量起点。用 fx_get_dream_runs 查询已提交进度。
 2. 用 fx_get_memory 展开相关完整来源、适用条件与案例；摘要不够时不要合并。判断同义、互补、不同方法、工程特例和矛盾。has_conflict 时展开 conflict_memory_ids，未解决前不能当作无争议方案套用。
 3. 提交 actions：merge 合并同义、refine 补充方法、split 用多个动作从同一来源分别提炼、conflict 记录争议、supersede 提炼替代结论。每个动作填写 source_ids、完整 title/method/reason/applies_when、rationale，可明确修正 modules。候选不能借整理升级为已验证；原始来源和文本不删除。

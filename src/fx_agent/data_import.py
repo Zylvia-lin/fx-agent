@@ -1,4 +1,4 @@
-"""Append verified snapshots; retain conflicting rows and never overwrite local state."""
+"""Merge verified knowledge with conflict evidence; synchronize current baseline documents."""
 
 import hashlib
 import json
@@ -12,6 +12,9 @@ from fx_agent.archive import CaseArchive, contained, copy_verified, file_hash, p
 from fx_agent.baselines import (
     baseline_destination,
     baseline_lock,
+    current_baseline_sources,
+    prune_baseline_copies,
+    publish_baseline,
     validate_baseline,
     write_baseline_indexes,
 )
@@ -161,19 +164,18 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
             with destination.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 with baseline_lock(target) if apply else nullcontext():
-                    reserved, seen_snapshots = set(), set()
-                    for folder in sorted(stage.glob("baselines/*")):
-                        if folder.name == ".staging":
-                            continue
+                    reserved = set()
+                    for folder in current_baseline_sources(stage):
                         manifest = validate_baseline(folder)
                         current, exists = baseline_destination(target, manifest, reserved)
-                        if exists or manifest["snapshot_id"] in seen_snapshots:
+                        if exists:
                             report["baseline_snapshots"]["skipped"] += 1
                         else:
                             report["baseline_snapshots"]["added"] += 1
                             if apply:
-                                _publish_tree(folder, current)
-                        seen_snapshots.add(manifest["snapshot_id"])
+                                publish_baseline(folder, current)
+                        if apply:
+                            prune_baseline_copies(target, manifest)
                     if apply and sum(report["baseline_snapshots"].values()):
                         write_baseline_indexes(target)
                 blocked_cases = set()
@@ -239,6 +241,11 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                             problem = "effect_card_conflict"
                         if payload.get("case_id") in blocked_cases:
                             problem = "case_conflict"
+                        if table == "template_effects" and any(
+                            evidence.get("case_id") in blocked_cases
+                            for evidence in payload.get("visual_evidence", [])
+                        ):
+                            problem = "visual_evidence_case_conflict"
                         if table == "learning_results" and (
                             values["feedback_id"] in blocked["learning_feedback"]
                             or values["memory_id"] in blocked["memories"]

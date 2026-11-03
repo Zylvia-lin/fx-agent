@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from fx_agent.vendor import kleer_hip_parser as upstream
 
-EXTRACTOR_VERSION = "1"
+EXTRACTOR_VERSION = "2"
 TEXT_SECTIONS = {"init", "def", "parm", "chn", "spare", "net", "inp", "postitdef", "netboxinit"}
 
 
@@ -155,6 +155,32 @@ def extract_hip(data: bytes) -> dict:
             node["comment"] = _unquote(comment[1])
         position = re.search(r"(?m)^position\s+([-\d.eE]+)\s+([-\d.eE]+)", definition)
         node["position"] = [float(position[1]), float(position[2])] if position else None
+    for box in result["netboxes"]:
+        path = (box["context"].rstrip("/") + "/" + box["name"]).lstrip("/")
+        raw = decoded.get(path + ".netboxinit", "")
+        box["raw_definition"] = raw
+        bounds = {}
+        for key in ("x_position", "y_position", "width", "height"):
+            match = re.search(r"\b" + key + r"\s*:=\s*([-\d.eE]+)", raw)
+            if match:
+                bounds[key] = float(match[1])
+        box["bounds"] = bounds
+        box["candidate_node_paths"] = []
+        if len(bounds) == 4:
+            for node in result["nodes"]:
+                position = node.get("position")
+                if (
+                    posixpath.dirname(node["path"]) == box["context"]
+                    and position
+                    and bounds["x_position"]
+                    <= position[0]
+                    <= bounds["x_position"] + bounds["width"]
+                    and bounds["y_position"]
+                    <= position[1]
+                    <= bounds["y_position"] + bounds["height"]
+                ):
+                    box["candidate_node_paths"].append(node["path"])
+        box["membership_basis"] = "position_candidates_not_explicit_membership"
     # Connections can use relative or absolute source paths.
     result["connections"] = []
     for node in result["nodes"]:
@@ -301,8 +327,27 @@ def extract_nuke(data: bytes) -> dict:
     return {
         "nodes": nodes,
         "connections": connections,
-        "sticky_notes": [],
-        "netboxes": [],
+        "sticky_notes": [
+            {
+                "context": posixpath.dirname(n["path"]),
+                "name": n["name"],
+                "text": n["parameters"].get("label", ""),
+                "node_path": n["path"],
+            }
+            for n in nodes
+            if n["type"] == "StickyNote"
+        ],
+        "netboxes": [
+            {
+                "context": posixpath.dirname(n["path"]),
+                "name": n["name"],
+                "label": n["parameters"].get("label", ""),
+                "node_path": n["path"],
+                "membership_basis": "not_resolved",
+            }
+            for n in nodes
+            if n["type"] == "BackdropNode"
+        ],
         "global_sections": {str(i): command for i, command in enumerate(global_commands)},
         "parse_status": "partial" if limitations or not nodes else "parsed",
         "limitations": limitations

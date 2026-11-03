@@ -80,7 +80,7 @@ def test_legacy_hash_paths_are_renamed_and_links_are_short(tmp_path):
     assert validate_baselines(root)["valid"]
 
 
-def test_same_short_name_different_snapshots_merge_without_overwriting(tmp_path):
+def test_import_updates_current_baseline_without_numbered_copies(tmp_path):
     import hashlib
 
     from fx_agent.store import compact
@@ -102,8 +102,8 @@ def test_same_short_name_different_snapshots_merge_without_overwriting(tmp_path)
     assert validate_baselines(b)["valid"]
     result = import_data(b, a, apply=True)
     assert result["baseline_snapshots"] == {"added": 1, "skipped": 1}
-    assert (a / "baselines/houdini-2").is_dir()
-    assert json.loads((a / "baselines/houdini/manifest.json").read_text())["version"] == "2.25.0"
+    assert not (a / "baselines/houdini-2").exists()
+    assert json.loads((a / "baselines/houdini/manifest.json").read_text())["version"] == "fixture-version"
     assert import_data(b, a, apply=True)["baseline_snapshots"]["skipped"] == 2
 
 
@@ -133,3 +133,186 @@ async def test_baseline_sync_tool_is_available(tmp_path, monkeypatch):
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
     result = await get_server().call_tool("fx_sync_module_baselines", {})
     assert json.loads(result[0].text)["snapshots"]
+
+
+def test_sync_updates_adds_and_removes_documents_in_same_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import fx_agent.baselines as baselines
+
+    package = tmp_path / "package"
+    markdown = package / "fxhoudinimcp/prompts/markdown"
+    markdown.mkdir(parents=True)
+    (markdown / "keep.md").write_text("old", encoding="utf-8")
+    (markdown / "remove.md").write_text("obsolete", encoding="utf-8")
+    for name in ("LICENSE", "NOTICE"):
+        path = package / "dist-info/licenses" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name, encoding="utf-8")
+    monkeypatch.setattr(baselines, "distribution", lambda _: SimpleNamespace(
+        version="fixture", locate_file=lambda p: package / p,
+        files=["dist-info/licenses/LICENSE", "dist-info/licenses/NOTICE"],
+    ))
+    root = tmp_path / "data"
+    sync_baselines(root)
+    (markdown / "keep.md").write_text("updated", encoding="utf-8")
+    (markdown / "remove.md").unlink()
+    (markdown / "add.md").write_text("new", encoding="utf-8")
+    sync_baselines(root)
+    assert (root / "baselines/houdini/markdown/keep.md").read_text() == "updated"
+    assert not (root / "baselines/houdini/markdown/remove.md").exists()
+    assert (root / "baselines/houdini/markdown/add.md").read_text() == "new"
+    assert {p.name for p in (root / "baselines").iterdir()} == {"houdini", "project", ".staging"}
+    assert validate_baselines(root)["valid"]
+
+
+def test_sync_consolidates_legacy_numbered_copies(tmp_path):
+    import shutil
+
+    root = tmp_path / "data"
+    sync_baselines(root)
+    shutil.copytree(root / "baselines/project", root / "baselines/project-2")
+    shutil.copytree(root / "baselines/project", root / "baselines/project-3")
+    sync_baselines(root)
+    assert not (root / "baselines/project-2").exists()
+    assert not (root / "baselines/project-3").exists()
+    assert len(baseline_status(root)["snapshots"]) == 2
+
+
+def test_failed_replacement_keeps_previous_current(tmp_path, monkeypatch):
+    import hashlib
+    import shutil
+
+    import fx_agent.baselines as baselines
+
+    root = tmp_path / "data"
+    sync_baselines(root)
+    target = root / "baselines/project"
+    before = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+    source = tmp_path / "incoming"
+    shutil.copytree(target, source)
+    manifest = json.loads((source / "manifest.json").read_text())
+    first = manifest["files"][0]
+    (source / first["path"]).write_text("updated workflow", encoding="utf-8")
+    first["sha256"] = hashlib.sha256((source / first["path"]).read_bytes()).hexdigest()
+    first["size_bytes"] = (source / first["path"]).stat().st_size
+    removed = manifest["files"].pop(1)
+    (source / removed["path"]).unlink()
+    (source / "added.md").write_text("new", encoding="utf-8")
+    manifest["files"].append({"path": "added.md", "size_bytes": 3,
+                              "sha256": hashlib.sha256(b"new").hexdigest()})
+    manifest["snapshot_id"] = baselines._identity(manifest)
+    (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    original = Path.replace
+
+    def fail_new_copy(source, destination):
+        if destination == target / "manifest.json" and "restore" not in source.parts:
+            raise OSError("publication failed")
+        return original(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_new_copy)
+    with pytest.raises(OSError, match="publication failed"):
+        baselines.publish_baseline(source, target)
+    assert {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()} == before
+    assert validate_baselines(root)["valid"]
+
+
+def test_failed_rollback_preserves_recoverable_previous_copy(tmp_path, monkeypatch):
+    import fx_agent.baselines as baselines
+
+    root = tmp_path / "data"
+    sync_baselines(root)
+    target = root / "baselines/project"
+    before = (target / "manifest.json").read_bytes()
+    original = Path.replace
+
+    def fail_publication_and_restore(source, destination):
+        if destination == target / "manifest.json":
+            raise OSError("locked destination")
+        return original(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_publication_and_restore)
+    with pytest.raises(OSError, match="locked destination"):
+        baselines.publish_baseline(target, target)
+    retained = list((root / "baselines/.staging").glob("*/previous/manifest.json"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == before
+
+
+def test_import_selects_highest_legacy_number_then_consolidates(tmp_path):
+    import hashlib
+    import shutil
+
+    from fx_agent.store import compact
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    Store(source)
+    sync_baselines(source)
+    current = source / "baselines/project"
+    shutil.copytree(current, source / "baselines/project-2")
+    shutil.copytree(current, source / "baselines/project-10")
+    for folder in source.glob("baselines/project*"):
+        manifest = json.loads((folder / "manifest.json").read_text())
+        manifest.pop("storage_mode", None)
+        manifest.pop("snapshot_id")
+        if folder.name == "project-2":
+            manifest["version"] = "intermediate"
+        manifest["snapshot_id"] = hashlib.sha256(compact(manifest).encode()).hexdigest()
+        (folder / "manifest.json").write_text(compact(manifest), encoding="utf-8")
+    assert validate_baselines(source)["valid"]
+    result = import_data(source, target, apply=True)
+    assert result["baseline_snapshots"] == {"added": 2, "skipped": 0}
+    assert {p.name for p in (target / "baselines").iterdir()} == {"houdini", "project", ".staging"}
+    assert json.loads((target / "baselines/project/manifest.json").read_text())["version"] != "intermediate"
+    assert import_data(source, target, apply=True)["baseline_snapshots"]["skipped"] == 2
+
+
+def test_internal_directory_link_is_rejected_before_import_changes_target(tmp_path, monkeypatch):
+    source, target = tmp_path / "source", tmp_path / "target"
+    for root in (source, target):
+        Store(root)
+        sync_baselines(root)
+    houdini = target / "baselines/houdini"
+    project = target / "baselines/project"
+    original = (project / "manifest.json").read_bytes()
+    original_is_junction = Path.is_junction
+    monkeypatch.setattr(Path, "is_junction", lambda p: p == houdini or original_is_junction(p))
+    with pytest.raises(ValueError, match="baseline|Baseline"):
+        import_data(source, target, apply=True)
+    assert (project / "manifest.json").read_bytes() == original
+
+
+def test_resolved_destination_cannot_redirect_to_another_source(tmp_path, monkeypatch):
+    import fx_agent.baselines as baselines
+
+    root = tmp_path / "data"
+    sync_baselines(root)
+    manifest = json.loads((root / "baselines/houdini/manifest.json").read_text())
+    original = baselines.contained
+    monkeypatch.setattr(baselines, "contained", lambda base, path: (
+        root / "baselines/project" if base == root and path == "baselines/houdini"
+        else original(base, path)
+    ))
+    with pytest.raises(ValueError, match="must not be a link"):
+        baselines.baseline_destination(root, manifest, set())
+
+
+def test_current_source_wins_over_ambiguous_legacy_hashes(tmp_path):
+    import hashlib
+    import shutil
+
+    from fx_agent.baselines import current_baseline_sources
+    from fx_agent.store import compact
+
+    root = tmp_path / "data"
+    sync_baselines(root)
+    for version, name in enumerate(("0" * 64, "1" * 64)):
+        folder = root / "baselines" / name
+        shutil.copytree(root / "baselines/project", folder)
+        manifest = json.loads((folder / "manifest.json").read_text())
+        manifest.pop("storage_mode")
+        manifest.pop("snapshot_id")
+        manifest["version"] = str(version)
+        manifest["snapshot_id"] = hashlib.sha256(compact(manifest).encode()).hexdigest()
+        (folder / "manifest.json").write_text(compact(manifest), encoding="utf-8")
+    assert {p.name for p in current_baseline_sources(root)} == {"houdini", "project"}

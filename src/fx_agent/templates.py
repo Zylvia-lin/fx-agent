@@ -152,6 +152,9 @@ class TemplateLibrary:
             "file_count": len(entries),
             "sequences": sequences[:100],
             "sequence_group_count": len(sequences),
+            "movies": [x for x in entries if Path(x["path"]).suffix.lower() in MOVIES][:100],
+            "movie_count": sum(Path(x["path"]).suffix.lower() in MOVIES for x in entries),
+            "media_analysis_required": True,
             "cache_files": sum(_cache(Path(x["path"])) for x in entries),
             "project_bytes": sum(x["size_bytes"] for x in projects),
             "copy_policy": options.model_dump(),
@@ -293,6 +296,7 @@ class TemplateLibrary:
             if "study_id" in item:
                 item["effect_catalog"] = effects.catalog(item["study_id"])
                 item["effect_annotations_required"] = item["effect_catalog"]["state"] != "reviewed"
+                item["next_tool"] = "fx_plan_effect_study"
         return {
             "items": items,
             "counts": dict(Counter(x["state"] for x in items)),

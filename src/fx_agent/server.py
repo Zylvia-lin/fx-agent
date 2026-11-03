@@ -56,18 +56,19 @@ def get_server():
             },
             "production_rules_version": production_rules()["version"],
             "module_taxonomy_version": 1,
-            "template_learning_version": 1,
-            "effect_card_version": 1,
+            "template_learning_version": 2,
+            "effect_card_version": 2,
             "module_baseline_sync_tool": "fx_sync_module_baselines",
         }
 
     @mcp.tool()
     async def fx_sync_module_baselines() -> dict:
-        """Copy versioned upstream rules and project workflows into portable data/baselines.
+        """Synchronize current upstream rules and project workflows in data/baselines.
 
-        Preserves source files and old snapshots, includes hashes and licenses.
-        Writes module README indexes separately from learned supplements. Rule
-        snapshots are not personal experiences and Dream does not rewrite them.
+        Preserves source files; adds, updates and removes current baseline files
+        without keeping numbered history copies. Includes hashes and licenses.
+        Writes module README indexes separately from learned supplements;
+        baseline rules are not personal experiences and Dream does not rewrite them.
         """
         return await asyncio.to_thread(sync_baselines, data_root())
 

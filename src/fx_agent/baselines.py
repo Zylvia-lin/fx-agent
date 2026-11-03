@@ -1,9 +1,10 @@
-"""Verified, immutable rule snapshots carried inside data rather than only a venv."""
+"""Verified current rules carried inside data rather than only a venv."""
 
 import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 import uuid
@@ -12,7 +13,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from fx_agent import __version__
-from fx_agent.archive import contained, copy_verified, file_hash, publish_directory
+from fx_agent.archive import contained, copy_verified, file_hash
 from fx_agent.store import compact
 
 
@@ -61,6 +62,8 @@ def baseline_status(root: Path) -> dict:
     snapshots = []
     for folder in sorted(base.iterdir()) if base.exists() else []:
         if folder.name == ".staging":
+            if folder.is_symlink() or folder.is_junction():
+                raise ValueError("Baseline staging must not be a link")
             if any(folder.iterdir()):
                 raise ValueError("Module baseline snapshot is still being written")
             continue
@@ -83,7 +86,7 @@ def validate_baselines(root: Path) -> dict:
 
 @contextmanager
 def baseline_lock(root: Path):
-    """Serialize snapshot publication without creating or upgrading the memory DB."""
+    """Serialize baseline synchronization without creating or upgrading the memory DB."""
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock = root / ".baseline.lock"
@@ -105,35 +108,118 @@ def baseline_lock(root: Path):
         lock.unlink()
 
 
-def _short_name(source: str, used: set[str]) -> str:
-    word = "houdini" if source == "fxhoudinimcp" else "project"
-    name, number = word, 2
-    while name in used:
-        name, number = f"{word}-{number}", number + 1
-    return name
-
-
 def baseline_destination(root: Path, manifest: dict, reserved: set[str]) -> tuple[Path, bool]:
-    snapshots = baseline_status(root)["snapshots"]
-    for snapshot in snapshots:
-        if snapshot["snapshot_id"] == manifest["snapshot_id"]:
-            return contained(root, snapshot["relative_path"]), True
-    used = {Path(s["relative_path"]).name for s in snapshots} | reserved
-    name = _short_name(manifest["source"], used)
-    reserved.add(name)
-    return contained(root, "baselines/" + name), False
+    """Use one stable directory per source; retain legacy API/hash field names."""
+    baseline_status(root)
+    name = "houdini" if manifest["source"] == "fxhoudinimcp" else "project"
+    target = contained(root, "baselines/" + name)
+    if target != Path(root).resolve() / "baselines" / name:
+        raise ValueError("Baseline destination must not be a link")
+    current = validate_baseline(target) if target.exists() else None
+    return target, bool(current and current["snapshot_id"] == manifest["snapshot_id"])
 
 
-def _shorten_legacy_paths(root: Path) -> None:
-    snapshots = baseline_status(root)["snapshots"]
-    used = {Path(s["relative_path"]).name for s in snapshots}
-    for snapshot in snapshots:
-        old = contained(root, snapshot["relative_path"])
-        if re.fullmatch(r"[a-f0-9]{64}", old.name):
-            name = _short_name(snapshot["source"], used)
-            used.add(name)
-            target = contained(root, "baselines/" + name)
-            publish_directory(old, target)
+def current_baseline_sources(root: Path) -> list[Path]:
+    """Import one source copy, preferring current format then highest legacy suffix."""
+    selected = {}
+    ambiguous = set()
+    for item in baseline_status(root)["snapshots"]:
+        path = contained(root, item["relative_path"])
+        manifest = validate_baseline(path)
+        suffix = re.fullmatch(r"(?:houdini|project)(?:-(\d+))?", path.name)
+        rank = (
+            manifest.get("storage_mode") == "current",
+            int(suffix.group(1) or 1) if suffix else 0,
+        )
+        previous = selected.get(manifest["source"])
+        if previous and previous[0] == rank and previous[1] != manifest["snapshot_id"]:
+            ambiguous.add(manifest["source"])
+        if previous is None or rank > previous[0]:
+            selected[manifest["source"]] = (rank, manifest["snapshot_id"], path)
+            ambiguous.discard(manifest["source"])
+    if ambiguous:
+        raise ValueError("Ambiguous legacy baselines; synchronize the source first")
+    return [item[2] for item in selected.values()]
+
+
+def publish_baseline(source: Path, target: Path) -> None:
+    """Update files in the stable directory, retaining recovery data until verified."""
+    manifest = validate_baseline(source)
+    base = target.parent.resolve()
+    if target.resolve() != base / target.name:
+        raise ValueError("Baseline destination must not be a link")
+    old_manifest = validate_baseline(target) if target.exists() else None
+    staging = contained(base, ".staging")
+    if staging != base / ".staging":
+        raise ValueError("Baseline staging must not be a link")
+    staging.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="current-", dir=staging))
+    retired = work / "previous"
+    complete = False
+    started = False
+    desired_paths = {item["path"] for item in manifest["files"]}
+    old_paths = {item["path"] for item in old_manifest["files"]} if old_manifest else set()
+    try:
+        copied = work / target.name
+        shutil.copytree(
+            source, copied, copy_function=lambda src, dst: copy_verified(Path(src), Path(dst))
+        )
+        if validate_baseline(copied)["snapshot_id"] != manifest["snapshot_id"]:
+            raise ValueError("Baseline changed during synchronization")
+        if old_manifest:
+            shutil.copytree(
+                target, retired, copy_function=lambda src, dst: copy_verified(Path(src), Path(dst))
+            )
+            validate_baseline(retired)
+        target.mkdir(exist_ok=True)
+        started = True
+        try:
+            for name in sorted(desired_paths):
+                destination = contained(target, name)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                contained(copied, name).replace(destination)
+            for name in old_paths - desired_paths:
+                contained(target, name).unlink()
+            (copied / "manifest.json").replace(target / "manifest.json")
+            validate_baseline(target)
+            complete = True
+        except BaseException:
+            if old_manifest:
+                for name in sorted(old_paths) + ["manifest.json"]:
+                    restored = contained(work / "restore", name)
+                    restored.parent.mkdir(parents=True, exist_ok=True)
+                    copy_verified(contained(retired, name), restored)
+                    destination = contained(target, name)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    restored.replace(destination)
+                for name in desired_paths - old_paths:
+                    contained(target, name).unlink(missing_ok=True)
+                validate_baseline(target)
+            else:
+                # This tree was created by this operation, under the checked base.
+                if target.resolve() != base / target.name:
+                    raise ValueError("Invalid new baseline recovery path") from None
+                shutil.rmtree(target)
+            complete = True
+            raise
+    finally:
+        # A failed rollback must leave the last valid copy available for recovery.
+        if complete or not started:
+            shutil.rmtree(work)
+
+
+def prune_baseline_copies(root: Path, manifest: dict) -> None:
+    """Remove only validated obsolete copies after the current source is installed."""
+    target, exists = baseline_destination(root, manifest, set())
+    if not exists:
+        raise ValueError("Current baseline must be installed before consolidation")
+    base = (Path(root).resolve() / "baselines").resolve()
+    for item in baseline_status(root)["snapshots"]:
+        old = contained(root, item["relative_path"])
+        if item["source"] == manifest["source"] and old != target:
+            if old.parent != base or old.is_symlink() or old.is_junction():
+                raise ValueError("Invalid obsolete baseline path")
+            shutil.rmtree(old)
 
 
 def write_baseline_indexes(root: Path) -> None:
@@ -147,9 +233,9 @@ def write_baseline_indexes(root: Path) -> None:
         lines = [
             f"# {software} 基础规范与学习补充",
             "",
-            "基础规范快照和个人学习补充分开保存，均随整个 data 目录迁移。",
+            "基础规范只维护当前内容，更新时同步新增、修改和删除；个人学习补充分开保存，均随整个 data 目录迁移。",
             "",
-            "## 基础规范快照",
+            "## 当前基础规范",
             "",
         ]
         for snapshot in snapshots:
@@ -166,7 +252,7 @@ def write_baseline_indexes(root: Path) -> None:
             ]
             if software == "houdini":
                 lines += [
-                    f"  [Pyro原始规范]({target}/markdown/workflows/pyro.md)；其他模块见快照目录。"
+                    f"  [Pyro原始规范]({target}/markdown/workflows/pyro.md)；其他模块见当前规范目录。"
                 ]
             else:
                 lines += [f"  [Nuke工作流]({target}/skills/nuke-workflow/SKILL.md)。"]
@@ -176,7 +262,7 @@ def write_baseline_indexes(root: Path) -> None:
             "",
             "当前目录下的模块MD由已确认、已归档并最终提炼的经验生成。没有符合条件的经验时，不生成该模块的补充文件；README存在不代表已经学到成功方案。",
             "",
-            "原始上游文档可能带模板占位符，运行时格式化仍由对应版本的get_workflow_guide完成。快照保留版本、许可证和SHA-256，不替代个人经验，也不被Dream改写。",
+            "原始上游文档可能带模板占位符，运行时格式化仍由对应版本的get_workflow_guide完成。当前规范保留来源版本、许可证和SHA-256校验，不保留编号历史目录，不替代个人经验，也不被Dream改写。",
             "",
             "本文件自动维护；人工笔记请另建文件。",
             "",
@@ -206,7 +292,6 @@ def _sync_baselines(root: Path) -> dict:
     existing = validate_baselines(root)
     if not existing["valid"]:
         raise ValueError("Existing baseline failed validation: " + existing["error"])
-    _shorten_legacy_paths(root)
     package = distribution("fxhoudinimcp")
     markdown = Path(package.locate_file("fxhoudinimcp/prompts/markdown"))
     upstream = [
@@ -240,6 +325,7 @@ def _sync_baselines(root: Path) -> dict:
         ]
         manifest = {
             "schema_version": 1,
+            "storage_mode": "current",
             "source": source,
             "version": version,
             "workflow_count": sum("/workflows/" in f["path"] for f in entries)
@@ -250,6 +336,7 @@ def _sync_baselines(root: Path) -> dict:
         manifest["snapshot_id"] = _identity(manifest)
         final, exists = baseline_destination(root, manifest, set())
         if exists:
+            prune_baseline_copies(root, manifest)
             continue
         with tempfile.TemporaryDirectory(prefix="baseline-", dir=staging) as work:
             stage = Path(work) / final.name
@@ -262,10 +349,7 @@ def _sync_baselines(root: Path) -> dict:
                     raise ValueError("Module baseline changed during snapshot")
             (stage / "manifest.json").write_text(compact(manifest), encoding="utf-8")
             validate_baseline(stage)
-            if final.exists():
-                if validate_baseline(final)["snapshot_id"] != manifest["snapshot_id"]:
-                    raise ValueError("Baseline destination changed during publication")
-            else:
-                publish_directory(stage, final)
+            publish_baseline(stage, final)
+        prune_baseline_copies(root, manifest)
     write_baseline_indexes(root)
     return baseline_status(root) | {"originals_modified": False}

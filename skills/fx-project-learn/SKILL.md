@@ -27,6 +27,20 @@ description: 通过 FX Agent 只读学习混合目录中的 Houdini/Nuke 工程�
 
 ## 按效果与变体逐张标注
 
+### 效果识别、渲染查证与二次学习（必须执行）
+
+- 工程导入只是归档，不代表理解效果。导入后调用 `fx_plan_effect_study(study_id, media_source=用户提供的工程/素材目录)`，分页读完 annotations、render_outputs、media；不得用归档体积限制跳过原位置的视频和渲染序列分析。计划只盘点与追踪，不替代宿主实际查看画面，不另起模型。
+- 网络框标题、便签、注释及节点名是作者线索。保留原文和作用范围，例如“能量”表示该区域的上层主题；位置落在框内只是候选成员，需核对网络编辑器或保存的成员关系。作者标注与静态节点名不能证明具体外观和运动，也不能按 GEO/Render 节点数量机械拆卡。
+- 不确定某 GEO/分支时，使用 `node_path` 聚焦，沿 related_node_paths、对象引用及容器内部 SOP 查找对应 ROP/LOP/Write 输出，再查看匹配的序列。输出路径、对象筛选、帧段、Take与渲染层需要交叉核对；通配符、表达式、合成和版本差异不能当作已确认关联。
+- 最终视频看整体时间过程；渲染序列先检查缺帧，再看首尾、中间及运动转折处的连续帧，必要时加密采样、查看通道/渲染层。sample_paths 只是建议入口，不能只看封面或九张抽样图便宣称理解全部动态。EXR/HDR或视频无法读取时使用可用的本地解码工具/软件转换查看；仍无法读取则保存问题，不跳过后宣布学完。禁止为学习触发原工程模拟或重渲染。
+- 每张卡至少有明确或粗略的效果名：补充 effect_family（如粒子/烟雾）、effect_kind（如爆炸烟/环境烟/能量粒子）、behaviors（如环绕/吸引/外扩）、naming_basis、author_labels。不能确定时标题写可证实的粗略描述，naming_basis=provisional，并在 questions 写具体疑问；完成工程内查证后直接向用户集中询问。
+- 视觉结论写 visual_evidence：视频时间段/序列帧段、观察、渲染节点和代表样本。新发现的样本用 `fx_archive_case` 独立归档后填写 evidence.case_id 与 sample_paths，可直接补充旧卡，不必重导工程。原位置的大序列无需全量复制。basis=preview 可使用这些独立归档证据；归档存在和校验通过不替代实际观察。
+- `fx_review_template_effects` 提交 media_source 与完整 media_reviews，逐项标记 viewed/unavailable/unassigned/excluded。viewed 需关联当前卡ID并说明时间过程；excluded 仅用于纹理等无关素材并解释。未归属、无法读取或卡片仍有疑问时不能完成复核，应把问题直接问用户。没有素材也需显式盘点指定目录；不能默默省略已提供的素材。
+- 旧历史不删不覆盖。`fx_get_effect_learning_queue` 返回需二次学习的当前工程及疑问；先读旧卡和归档工程，再查新证据。`fx_refine_effect(card_id, updates, sources, reason)` 只补充改变的字段，其余信息保留，建立同一 effect_key 的新修订。sources 使用真实 effect_card:/memory:/feedback:/dream: ID；冲突头需先读取并用原标注接口显式解决。不同表现仍建立独立 effect_key。
+- 检索“粒子环绕吸引”必须核对类别和两种运动。complete/partial/candidate 是本地结构化概念匹配；missing_concepts 与 unverified_terms 明确缺少或未核实的要求，不能把部分匹配说成完整符合。
+- 复用可选择 copy_nodes/rebuild/hybrid；复制或混合模式必须记录 reuse_node_paths 与 reuse_dependency_notes。先导出工作副本，核对上下游、引用、参数动画、材质、插件和外部输入，再复制节点或参考搭建并验证；学习阶段不修改源工程。
+- Dream及后续制作中获得新理解，必须检查关联效果卡，通过 fx_refine_effect 补充效果名、类别、动态或证据，并记录来源和原因。不能只更新经验库却让效果卡继续含糊，也不能自动把推断升级为视觉事实或用户认可。
+
 工程结构提取完成后，必须继续整理效果指示卡；`effect_annotations_required=true` 或 `effect_catalog.state=not_annotated/needs_review` 说明尚未完成效果标注，不能把“工程导入成功”说成“全部效果已学完”。Houdini和Nuke均执行此流程。
 
 1. 遍历工程可读取的所有网络、分支、输出、Take/帧段与明确关联的预览，列出**工程实际包含的效果与变体**。只读查看，不能通过改参数、切换设置、试渲染来发明变体。无法确认的效果写明待核实；不穷举所有可能参数组合。

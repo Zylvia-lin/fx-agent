@@ -5,12 +5,79 @@ import threading
 from contextlib import suppress
 
 from fx_agent.archive import ArchiveCancelled, ArtifactInput
-from fx_agent.effect_cards import EffectCardInput, EffectExclusion, EffectLibrary
+from fx_agent.effect_cards import EffectCardInput, EffectExclusion, EffectLibrary, MediaReview
+from fx_agent.effect_study import EffectStudy
 from fx_agent.store import compact
 from fx_agent.templates import TemplateLibrary, TemplatePolicy
 
 
 def register_template_tools(mcp, root_provider):
+    @mcp.tool()
+    async def fx_plan_effect_study(
+        study_id: str,
+        media_source: str = "",
+        section: str = "all",
+        offset: int = 0,
+        limit: int = 50,
+        max_chars: int = 12000,
+        node_path: str = "",
+    ) -> dict:
+        """Trace author labels and render outputs, inventory supplied movies/sequences.
+
+        Re-extracts the archived original without changing old history. Supply the
+        user-provided media directory explicitly; never scans a live GUI scene.
+        Paginate annotations/render_outputs/media. Inspect sample_paths, the whole
+        movie and dense temporal samples before naming effects. All items start
+        not_viewed; path matches and spatial box candidates are not visual proof.
+        Unclear GEO: follow related_node_paths to outputs, inspect their sequences,
+        then ask the user only about remaining missing/ambiguous evidence.
+        """
+        return await asyncio.to_thread(
+            EffectStudy(root_provider()).plan,
+            study_id,
+            media_source,
+            section=section,
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+            node_path=node_path,
+        )
+
+    @mcp.tool()
+    async def fx_get_effect_learning_queue(
+        offset: int = 0,
+        limit: int = 20,
+        max_chars: int = 12000,
+    ) -> dict:
+        """List current studies needing second-pass identification or user answers.
+
+        Old cards remain searchable. Revise using all current supersedes, preserve
+        effect_key, and record new evidence/names. Never invent missing visuals.
+        """
+        return await asyncio.to_thread(
+            EffectStudy(root_provider()).queue, offset=offset, limit=limit, max_chars=max_chars
+        )
+
+    @mcp.tool()
+    async def fx_refine_effect(
+        card_id: str,
+        updates: dict,
+        sources: list[str],
+        reason: str,
+    ) -> dict:
+        """Add names/details newly understood during iteration or Dream.
+
+        Read current card first. Updates are EffectCardInput descriptive fields;
+        omitted fields are preserved. Sources use effect_card:, memory:, feedback:
+        or dream: followed by an existing ID. A new immutable revision supersedes
+        this card; stale heads are refused. Never use this to rename a different
+        variant. Archive new representative samples with fx_archive_case, then
+        reference that case_id in visual_evidence to improve an old study.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).refine, card_id, updates, sources, reason
+        )
+
     @mcp.tool()
     async def fx_plan_template_import(source: str, policy: TemplatePolicy | None = None) -> dict:
         """Read mixed HIP/NK directory metadata; no data writes or DCC connection.
@@ -284,6 +351,8 @@ def register_template_tools(mcp, root_provider):
         expected_card_ids: list[str] | None = None,
         exclusions: list[EffectExclusion] | None = None,
         note: str = "",
+        media_source: str = "",
+        media_reviews: list[MediaReview] | None = None,
     ) -> dict:
         """Preview effect annotation coverage; optionally record an explicit host review.
 
@@ -292,6 +361,9 @@ def register_template_tools(mcp, root_provider):
         share nodes with others. This records host review, not proof that every
         conceivable parameter combination or visual effect was discovered.
         Revisions/merged branches make previous reviews stale automatically.
+        Completion also requires explicit media_source and one media_review per
+        inventoried movie/sequence/image. Unavailable or unassigned media are saved
+        as issues and prevent completion. Identity questions also block completion.
         """
         return await asyncio.to_thread(
             EffectLibrary(root_provider()).review,
@@ -300,4 +372,6 @@ def register_template_tools(mcp, root_provider):
             expected_card_ids=expected_card_ids,
             exclusions=[x.model_dump() for x in exclusions or []],
             note=note,
+            media_source=media_source,
+            media_reviews=[x.model_dump() for x in media_reviews or []],
         )
