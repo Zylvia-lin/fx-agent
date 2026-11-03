@@ -148,7 +148,7 @@ uv run ruff check src tests scripts
 
 ## 接入状态
 
-已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。支持通过 `scripts/install_codex.py` 将当前工程全局注册到 Codex，替换旧 `fxhoudini` 注册和 Houdini 启动包，并将三个全局工作流目录链接至仓库。根目录插件清单作为可选适配保留；请勿同时启用重复入口。其他宿主的安装器尚未实现，不能据此宣称已兼容所有客户端。
+已提供根目录 `plugin.json`、`mcp.json` 与 `skills/fx-workflow/SKILL.md`。支持通过 `scripts/install_codex.py` 将当前工程全局注册到 Codex，替换旧 `fxhoudini` 注册和 Houdini 启动包，并将四个全局工作流目录链接至仓库，包含工程学习 `fx-project-learn`。根目录插件清单作为可选适配保留；请勿同时启用重复入口。其他宿主的安装器尚未实现，不能据此宣称已兼容所有客户端。
 
 已提供 `fx_save_checkpoint`、`fx_get_checkpoint`、`fx_get_context`：按项目和镜头保存进度，使用修订号防止旧状态覆盖，摘要按 JSON 字符预算返回并支持内容哈希去重。检查点只记录工程路径，不等于工程副本或实时验证。
 
@@ -160,7 +160,7 @@ uv run ruff check src tests scripts
 
 用户纠正通过 `supersedes` 建立新修订；旧聊天、跨镜头替代和并发重复纠正受到保护。历史内容可以作为新修订恢复，相同请求重试保持幂等。
 
-当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、语义向量检索、自动查全依赖或模板自动学习。Nuke 15.2 接入与验证范围见 [Nuke接入与独立学习](docs/Nuke接入与独立学习.md)。
+当前依靠配套 Skill 在阶段边界调用，尚未实现全部 Houdini 操作的自动事件记录、语义向量检索或自动查全依赖。已提供只读模板导入、静态提取、检索、候选经验与原工程工作副本导出；用 `fx_plan_template_import` 盘点，`fx_learn_templates` 学习，所有数据仍在 data。混合 HIP/NK 目录、精简归档、修订与迁移合并详见 [工程模板学习与迁移](docs/工程模板学习与迁移.md)。Nuke 15.2 接入与验证范围见 [Nuke接入与独立学习](docs/Nuke接入与独立学习.md)。
 
 ## 对话与制作反馈学习
 

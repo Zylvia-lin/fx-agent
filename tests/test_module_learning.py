@@ -134,7 +134,7 @@ async def test_module_tools_publish_schemas_and_forward_filters(tmp_path, monkey
     item = store.submit(**experience(modules=["sop"]))
     server = get_server()
     tools = {tool.name: tool for tool in await server.list_tools()}
-    assert len(tools) == 246
+    assert len(tools) == 253
     assert "module" in tools["fx_search_memory"].inputSchema["properties"]
     assert "module" in tools["fx_get_learning_history"].inputSchema["properties"]
     assert "get_workflow_guide" in tools

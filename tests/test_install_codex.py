@@ -164,9 +164,12 @@ def test_install_and_failure_restore_original_files(tmp_path, monkeypatch, fail_
             assert not old.exists()
             assert (packages / "fx-agent.json").exists()
             assert (home / ".agents/skills/fx-workflow").resolve() == ROOT / "skills/fx-workflow"
+            assert (
+                home / ".agents/skills/fx-project-learn"
+            ).resolve() == ROOT / "skills/fx-project-learn"
             installer.main()  # Reinstall uses the same targets without duplicating tools.
     finally:
-        for name in ("fx-workflow", "fx-learning", "nuke-workflow"):
+        for name in ("fx-workflow", "fx-learning", "nuke-workflow", "fx-project-learn"):
             link = home / ".agents/skills" / name
             if os.path.lexists(link):
                 os.rmdir(link)

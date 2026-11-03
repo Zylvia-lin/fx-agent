@@ -10,7 +10,7 @@ description: 使用 FX Agent操作 Houdini，检查连接、查询节点与指�
 1. 先调用 `fx_status` 与 `fx_get_production_rules`，明确项目与镜头后调用 `fx_get_context`，再用 `get_houdini_connection_status` 核对真实会话与工程。多会话时确认目标，不能猜测后修改。
 2. 每会话先读 `get_workflow_guide("discipline")`，按任务选择功能模块；不确定标签时查 `fx_get_module_catalog`。原模块准则仍完整保留，不能把它当成个人学习经验。SOP→model、粒子→dopparticles、Pyro→pyro、FLIP→fluid、RBD→destruction；其余映射以目录为准。首次制作该模块先读取对应 `get_workflow_guide`，两次同类修复失败时重读，不把全部模块指南反复加载。
    再用 `fx_get_module_knowledge(project_id, module)` 读取全局模块 MD 补充，必要时才展开其经验 ID。需要镜头限定经验、额外条件或候选时，按模块调用 `fx_search_memory(..., module="pyro")`；只需模块筛选可传 query=""。默认不读候选，不重复展开 MD 已完整包含的同一条经验。当前用户与制作规范优先；旧经验、MD 手写备注都需核实适用条件，不代表当前工程事实或额外授权。
-3. 参考工程先只读检查，试验使用工作副本；参考画面的观察与制作方法推断分开表达。
+3. 参考工程先只读检查，试验使用工作副本；参考画面的观察与制作方法推断分开表达。用户提供工程目录供学习时按 fx-project-learn：先 fx_plan_template_import，再 fx_learn_templates，知识与必要归档统一 data；不修改任何源工程参数、路径或文件，不执行回调，不整批复制序列/ABC/缓存。复用前 fx_search_templates，必要时 fx_export_template 导出工作副本；归档成功不等于画面验证。
 4. 先明确草稿目标；优先原生节点和批量工具。参数、接口和连接从实际查询获得。
    文件读取必须使用 `$HIP/...`。外部素材先复制入工程再引用，不能只改路径文本。File Cache 统一 `$HIP/geo/$OS/$OS.$F4.bgeo.sc`，使用 Explicit/file，不改派生 sopoutput。需要预检时调用 `fx_check_production_path`。缓存前保存 HIP，并检查缓存命名冲突。
 5. 修改后 `verify_network`；到视觉阶段读取并实际查看截图或预览，动态效果检查多个时间点。工具没有报错不等于画面符合参考。

@@ -105,7 +105,7 @@ def main() -> None:
         ),
     }
     links = {}
-    for name in ("fx-workflow", "fx-learning", "nuke-workflow"):
+    for name in ("fx-workflow", "fx-learning", "nuke-workflow", "fx-project-learn"):
         link = Path.home() / ".agents/skills" / name
         target = ROOT / "skills" / name
         if os.path.lexists(link):

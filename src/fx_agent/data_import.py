@@ -8,7 +8,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
-from fx_agent.archive import CaseArchive, contained, copy_verified, file_hash
+from fx_agent.archive import CaseArchive, contained, copy_verified, file_hash, publish_directory
 from fx_agent.memory import usable_sql
 from fx_agent.migration import migrate_data
 from fx_agent.module_guides import refresh_guides
@@ -22,6 +22,7 @@ TABLES = (
     "learning_results",
     "knowledge_sources",
     "render_issues",
+    "template_studies",
 )
 SNAPSHOT_TABLES = (*TABLES, "memory_conflicts", "memory_aliases", "dream_runs", "import_runs")
 
@@ -58,7 +59,7 @@ def _publish_tree(source, destination):
         shutil.copytree(
             source, copied, copy_function=lambda src, dst: copy_verified(Path(src), Path(dst))
         )
-        copied.rename(destination)
+        publish_directory(copied, destination)
 
 
 def _feedback_branches(incoming, local):

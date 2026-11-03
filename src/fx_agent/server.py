@@ -19,6 +19,7 @@ from fx_agent.module_guides import ModuleGuides, refresh_guides
 from fx_agent.modules import module_catalog
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.store import Store, scope_id
+from fx_agent.template_tools import register_template_tools
 
 
 @lru_cache(maxsize=1)
@@ -37,6 +38,7 @@ def get_server():
     # The pinned lifespan resolves this constructor at startup; progress and
     # request-context behavior remain upstream-owned.
     upstream_server.HoudiniBridge = ProductionBridge
+    register_template_tools(mcp, data_root)
 
     @mcp.tool()
     async def fx_status() -> dict:
@@ -53,6 +55,7 @@ def get_server():
             },
             "production_rules_version": production_rules()["version"],
             "module_taxonomy_version": 1,
+            "template_learning_version": 1,
         }
 
     @mcp.tool()

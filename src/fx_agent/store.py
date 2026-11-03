@@ -42,7 +42,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 7
 
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -52,14 +52,14 @@ class Store:
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5):
+            if schema not in (0, 1, 2, 3, 4, 5, 6):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute("BEGIN IMMEDIATE")
             # A concurrent initializer may have upgraded while we waited for the lock.
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5):
+            if schema not in (0, 1, 2, 3, 4, 5, 6):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -99,6 +99,12 @@ class Store:
             )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS render_issues (issue_id TEXT,project_id TEXT,shot_id TEXT,revision INTEGER,payload TEXT NOT NULL,PRIMARY KEY(issue_id,revision))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS template_studies (study_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,fingerprint TEXT NOT NULL,project_id TEXT NOT NULL,payload TEXT NOT NULL,search_text TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS template_studies_source ON template_studies(source_id,fingerprint)"
             )
             for table, columns, definition in (
                 (

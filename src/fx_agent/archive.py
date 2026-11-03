@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import threading
+import time
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -45,6 +46,22 @@ def file_hash(path: Path) -> str:
     """Hash a file without loading it into memory."""
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def publish_directory(stage: Path, destination: Path) -> None:
+    """Atomically publish owned staging data, tolerating brief Windows scanner locks."""
+    for attempt in range(5):
+        try:
+            stage.rename(destination)
+            return
+        except PermissionError as exc:
+            if (
+                attempt == 4
+                or destination.exists()
+                or getattr(exc, "winerror", None) not in {5, 32, 33}
+            ):
+                raise
+            time.sleep(0.02 * 2**attempt)
 
 
 def copy_verified(
@@ -159,7 +176,13 @@ class CaseArchive:
             raise ValueError("Invalid case_id") from exc
         return contained(self.cases, case_id)
 
-    def create(self, *, cancellation: threading.Event | None = None, **values) -> dict:
+    def create(
+        self,
+        *,
+        cancellation: threading.Event | None = None,
+        expected_hashes: dict[str, str] | None = None,
+        **values,
+    ) -> dict:
         """Copy explicitly supplied files; no live HIP save or dependency scan implied."""
         request = CaseInput(**values)
         check_cancelled(cancellation)
@@ -209,6 +232,14 @@ class CaseArchive:
                     max_bytes=request.max_total_bytes - copied_bytes,
                     cancellation=cancellation,
                 )
+                if (
+                    expected_hashes
+                    and str(source) in expected_hashes
+                    and info["sha256"] != expected_hashes[str(source)]
+                ):
+                    raise ValueError(
+                        "Source changed during extraction; retry for a consistent snapshot"
+                    )
                 copied_bytes += info["size_bytes"]
                 members.append(
                     {"role": item.role, "source_path": str(source), "archive_path": relative} | info
@@ -227,7 +258,7 @@ class CaseArchive:
             }
             (staging / "manifest.json").write_text(compact(manifest), encoding="utf-8")
             check_cancelled(cancellation)
-            staging.rename(final)
+            publish_directory(staging, final)
         except BaseException:
             # Only delete this call's verified UUID staging directory, never a computed parent.
             if staging.exists():
