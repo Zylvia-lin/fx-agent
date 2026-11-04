@@ -72,6 +72,39 @@ def test_channel_exposure_frame_and_readback(viewer_module):
     window.activateInput.assert_called_once_with(1, secondary=False)
 
 
+def test_wipe_disabled_without_changing_a_or_b(viewer_module):
+    module, _, _, window, host = viewer_module
+    checked = [True]
+    item = Mock()
+    item.action.return_value.isChecked.side_effect = lambda: checked[0]
+    item.action.return_value.isCheckable.return_value = True
+    item.invoke.side_effect = lambda: checked.__setitem__(0, False)
+    menu = Mock()
+    menu.items.return_value = []
+    menu.findItem.return_value = item
+    host.menu = lambda name: menu
+    assert module.set_viewer_state({"viewer_name":"Viewer1", "wipe":False})["result"]["wipe_enabled"] is False
+    window.activateInput.assert_not_called()
+    module.set_viewer_state({"viewer_name":"Viewer1", "wipe":False})
+    item.invoke.assert_called_once()
+    with pytest.raises(ValueError):
+        module.set_viewer_state({"viewer_name":"Viewer1", "a_input":-1})
+
+
+def test_interface_capture_does_not_activate_window(viewer_module, monkeypatch):
+    module, _, _, _, _ = viewer_module
+    window = Mock()
+    window.grab.return_value.isNull.return_value = False
+    window.grab.return_value.save.side_effect = lambda path, fmt: Path(path).write_bytes(b"png")
+    window.grab.return_value.width.return_value = 640
+    window.grab.return_value.height.return_value = 480
+    monkeypatch.setattr(module,"_main_window",lambda:window)
+    result = module.capture_interface({})["result"]
+    assert result["dimensions"] == [640,480]
+    window.activateWindow.assert_not_called()
+    window.raise_.assert_not_called()
+
+
 def test_invalid_setting_does_not_partially_apply(viewer_module):
     module, _, values, _, _ = viewer_module
     before = values.copy()

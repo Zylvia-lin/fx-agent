@@ -232,3 +232,70 @@ def test_silent_connection_refusal_is_detected_and_rolled_back(graph):
     with pytest.raises(RuntimeError, match="refused"):
         module.layout_nodes({"positions": [], "routes": [route()], "dry_run": False})
     assert len(parent.nodes()) == 3 and target.input(0) is source
+
+
+def test_collapse_only_named_dots_preserves_image_source(graph):
+    module, _, parent, source, target, other = graph
+    dot = Node(parent, "D", "Dot")
+    dot.setInput(0, source)
+    target.setInput(0, dot)
+    result = module.collapse_dots({"dot_names": ["D"]})
+    assert result["result"]["removed_dots"] == ["D"]
+    assert target.input(0) is source and other in parent.nodes()
+    with pytest.raises(ValueError, match="Dot"):
+        module.collapse_dots({"dot_names": ["Source"]})
+
+
+def test_different_sources_cannot_share_a_dot_center(graph):
+    module, _, parent, source, target, other = graph
+    target2 = Node(parent, "Target2", x=300, y=300)
+    target2.setInput(0, other)
+    r2 = {"source_node":"Unrelated", "target_node":"Target2", "input_index":0,
+          "waypoints":[[540,100],[240,100],[340,100]]}
+    with pytest.raises(ValueError, match="overlap"):
+        module.layout_nodes({"positions":[],"routes":[route(),r2],"dry_run":False})
+    assert len(parent.nodes()) == 4 and target.input(0) is source
+
+
+def test_same_source_different_prefix_is_rejected_before_mutation(graph):
+    module, _, parent, source, target, _ = graph
+    extra = Node(parent, "Extra", x=400, y=200)
+    extra.setInput(0, source)
+    second = {"source_node":"Source", "target_node":"Extra", "input_index":0,
+              "waypoints":[[40,60],[240,60],[240,100],[440,100]]}
+    with pytest.raises(ValueError, match="prefix"):
+        module.layout_nodes({"positions":[],"routes":[route(),second],"dry_run":False})
+    assert len(parent.nodes()) == 4
+
+
+def test_existing_dot_final_position_is_reserved(graph):
+    module, _, parent, _, _, _ = graph
+    Node(parent, "Existing", "Dot", x=234, y=94)
+    with pytest.raises(ValueError, match="existing Dot"):
+        module.layout_nodes({"positions":[],"routes":[route()],"dry_run":False})
+    assert len(parent.nodes()) == 4
+
+
+def test_block_translation_preserves_local_arrangement_and_inputs():
+    from fx_agent.nuke_graph_tools import register
+
+    registered, calls = {}, []
+    class Registry:
+        def tool(self, **kwargs):
+            def bind(fn):
+                registered[fn.__name__] = fn
+                return fn
+            return bind
+    class Connection:
+        def send_command(self, command, args):
+            calls.append((command,args))
+            if command == "get_nuke_graph_snapshot":
+                return {"nodes":[dict(name="Read1",xpos=100,ypos=50,width=80,height=80,inputs=[]),
+                                 dict(name="Group1",xpos=100,ypos=220,width=80,height=30,inputs=["Read1"])]}
+            return args
+    register(Registry(), Connection())
+    result = registered["layout_nuke_blocks"]([{"node_names":["Read1","Group1"],"x":300,"y":400}],False)
+    assert result["positions"] == [{"node_name":"Read1","x":300,"y":400},
+                                   {"node_name":"Group1","x":300,"y":570}]
+    assert result["routes"] == []
+    assert len(calls) == 2

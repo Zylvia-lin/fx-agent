@@ -3,6 +3,50 @@
 
 def register(mcp, connection):
     @mcp.tool()
+    def collapse_nuke_dots(dot_names: list[str]) -> dict:
+        """Remove explicitly named pass-through Dots while preserving downstream image inputs.
+
+        For replacing routing made by this task; never removes processing nodes.
+        """
+        return connection.send_command("collapse_nuke_dots", {"dot_names": dot_names})
+
+    @mcp.tool()
+    def layout_nuke_blocks(blocks: list[dict], dry_run: bool = True) -> dict:
+        """Translate explicit effect blocks without changing their internal layout.
+
+        Each block: {node_names,x,y}. Groups stay intact. Changes only positions;
+        no image knobs, image inputs, or automatic obstacle routing. Blocks must not overlap.
+        Use layout_nuke_nodes for a separately reviewed bus and a few shared-reference Dots.
+        """
+        names = [name for block in blocks for name in block["node_names"]]
+        if len(names) != len(set(names)):
+            raise ValueError("Effect blocks cannot share processing nodes")
+        snapshot = connection.send_command("get_nuke_graph_snapshot", {"node_names": names})
+        if snapshot.get("status") == "error" or "nodes" not in snapshot:
+            return snapshot
+        nodes = {node["name"]: node for node in snapshot["nodes"]}
+        positions, bounds = [], []
+        for block in blocks:
+            if type(block["x"]) is not int or type(block["y"]) is not int:
+                raise ValueError("Block origins require integer coordinates")
+            if not block["node_names"]:
+                raise ValueError("An effect block must contain nodes")
+            left = min(nodes[name]["xpos"] for name in block["node_names"])
+            top = min(nodes[name]["ypos"] for name in block["node_names"])
+            placed = [{"node_name": name, "x": nodes[name]["xpos"] - left + block["x"],
+                       "y": nodes[name]["ypos"] - top + block["y"]} for name in block["node_names"]]
+            right = max(p["x"] + nodes[p["node_name"]]["width"] for p in placed)
+            bottom = max(p["y"] + nodes[p["node_name"]]["height"] for p in placed)
+            rect = (block["x"], block["y"], right, bottom)
+            if any(rect[0] < c and rect[2] > a and rect[1] < d and rect[3] > b for a, b, c, d in bounds):
+                raise ValueError("Effect blocks overlap; no nodes moved")
+            bounds.append(rect)
+            positions.extend(placed)
+        return connection.send_command("layout_nuke_nodes", {
+            "positions": positions, "routes": [], "dry_run": dry_run,
+        })
+
+    @mcp.tool()
     def layout_nuke_nodes(positions: list[dict], routes: list[dict], dry_run: bool = True) -> dict:
         """Position only named nodes and route existing connections through explicit Dot centers.
 

@@ -28,7 +28,7 @@ def _port(node, position, input_index=None):
         return [x + width // 2, y + height // 2]
     if input_index is None:
         return [x + width // 2, y + height]
-    if node.Class() == "Merge2" and input_index == 1:
+    if node.Class() in ("Merge2", "Copy", "ShuffleCopy", "OFXcom.genarts.sapphire.distort.s_distort_v1") and input_index == 1:
         return [x, y + height // 2]
     if input_index > 0:
         if input_index != (2 if node.Class() == "Merge2" else 1):
@@ -44,7 +44,7 @@ def _port(node, position, input_index=None):
 def layout_nodes(params):
     import nuke
 
-    placements, positions, routes, seen_inputs = {}, [], [], set()
+    placements, positions, routes, seen_inputs, corners = {}, [], [], set(), {}
     for item in params.get("positions", []):
         if set(item) != {"node_name", "x", "y"}:
             raise ValueError("Position requires exactly node_name, x and y")
@@ -77,6 +77,25 @@ def layout_nodes(params):
             if not isinstance(point, (list, tuple)) or len(point) != 2:
                 raise ValueError("A waypoint must contain x and y")
             points.append([_integer(point[0]), _integer(point[1])])
+        if len({tuple(point) for point in points}) != len(points):
+            raise ValueError("A route cannot repeat a Dot center")
+        predecessor = ("node", source.fullName())
+        for point in points:
+            key = tuple(point)
+            signature = (source.fullName(), predecessor)
+            if key in corners and corners[key] != signature:
+                raise ValueError("Different image sources or route prefixes cannot overlap Dot centers")
+            for old_point in corners:
+                if old_point != key and abs(old_point[0] - key[0]) < 12 and abs(old_point[1] - key[1]) < 12:
+                    raise ValueError("Dot rectangles overlap")
+            for existing in source.parent().nodes():
+                if existing.Class() != "Dot":
+                    continue
+                center = _port(existing, placements.get(existing.fullName(), [existing.xpos(), existing.ypos()]))
+                if abs(center[0] - key[0]) < 12 and abs(center[1] - key[1]) < 12:
+                    raise ValueError("Route overlaps an existing Dot")
+            corners[key] = signature
+            predecessor = ("dot", key)
         start = _port(source, placements.get(source.fullName(), [source.xpos(), source.ypos()]))
         end = _port(target, placements.get(target.fullName(), [target.xpos(), target.ypos()]), index)
         segments = list(zip([start, *points], [*points, end], strict=True))
@@ -90,8 +109,9 @@ def layout_nodes(params):
             "width": node.screenWidth(), "height": node.screenHeight(),
             "output_port": _port(node, xy),
             "input_ports": {str(index): _port(node, xy, index) for index in (
-                (0, 1, 2) if node.Class() == "Merge2" else (0, 1) if node.Class() != "Dot" and any(
-                    key in node.knobs() for key in ("maskChannelInput", "maskChannelMask")
+                (0, 1, 2) if node.Class() == "Merge2" else (0, 1) if (
+                    node.Class() in ("Copy", "ShuffleCopy", "OFXcom.genarts.sapphire.distort.s_distort_v1")
+                    or node.Class() != "Dot" and any(key in node.knobs() for key in ("maskChannelInput", "maskChannelMask"))
                 ) else (0,)
             )},
         } for node, xy, _ in positions],
@@ -102,6 +122,7 @@ def layout_nodes(params):
     if result["dry_run"]:
         return {"status": "ok", "result": result}
     created = []
+    dot_cache = {}
     actual_routes = []
     try:
         for node, xy, _ in positions:
@@ -111,13 +132,19 @@ def layout_nodes(params):
             dots = []
             with source.parent():
                 for x, y in points:
-                    dot = nuke.nodes.Dot()
-                    created.append(dot)
+                    key = (source.fullName(), x, y)
+                    dot = dot_cache.get(key)
+                    if dot is None:
+                        dot = nuke.nodes.Dot()
+                        created.append(dot)
+                        dot_cache[key] = dot
+                        dot.setXYpos(x - dot.screenWidth() // 2, y - dot.screenHeight() // 2)
+                        dot.setInput(0, previous)
+                        if not _same(dot.input(0), previous):
+                            raise RuntimeError("Nuke refused a Dot input connection")
+                    elif not _same(dot.input(0), previous):
+                        raise RuntimeError("Shared Dot has a different route predecessor")
                     dots.append(dot)
-                    dot.setXYpos(x - dot.screenWidth() // 2, y - dot.screenHeight() // 2)
-                    dot.setInput(0, previous)
-                    if not _same(dot.input(0), previous):
-                        raise RuntimeError("Nuke refused a Dot input connection")
                     previous = dot
             target.setInput(index, previous)
             if not _same(target.input(index), previous):
@@ -216,4 +243,64 @@ def duplicate_node(params):
 
 
 def install(addon):
-    addon.COMMANDS.update({"layout_nuke_nodes": layout_nodes, "duplicate_nuke_node": duplicate_node})
+    addon.COMMANDS.update({"layout_nuke_nodes": layout_nodes, "duplicate_nuke_node": duplicate_node,
+                           "get_nuke_graph_snapshot": graph_snapshot,
+                           "collapse_nuke_dots": collapse_dots})
+
+
+def collapse_dots(params):
+    """Remove only explicitly named pass-through Dots, preserving downstream inputs."""
+    import nuke
+
+    dots = {_node(nuke, name).fullName(): _node(nuke, name) for name in params["dot_names"]}
+    if not dots or any(node.Class() != "Dot" for node in dots.values()):
+        raise ValueError("Specify only existing Dot nodes")
+    parent = next(iter(dots.values())).parent()
+    if any(node.parent() != parent for node in dots.values()):
+        raise ValueError("Dot removal cannot cross Groups")
+
+    def upstream(node):
+        seen = set()
+        while node is not None and node.fullName() in dots:
+            if node.fullName() in seen:
+                raise ValueError("Cyclic Dot chain")
+            seen.add(node.fullName())
+            node = node.input(0)
+        return node
+
+    changes = []
+    for node in parent.nodes():
+        if node.fullName() in dots:
+            continue
+        for index in range(node.inputs()):
+            source = node.input(index)
+            if source is not None and source.fullName() in dots:
+                changes.append((node, index, source, upstream(source)))
+    try:
+        for node, index, _, source in changes:
+            node.setInput(index, source)
+            if node.input(index) is not None and not _same(node.input(index), source):
+                raise RuntimeError("Nuke refused collapsed input")
+            if source is not None and node.input(index) is None:
+                raise RuntimeError("Nuke lost collapsed input")
+    except Exception:
+        for node, index, source, _ in changes:
+            node.setInput(index, source)
+        raise
+    for dot in dots.values():
+        nuke.delete(dot)
+    return {"status": "ok", "result": {"removed_dots": list(dots)}}
+
+
+def graph_snapshot(params):
+    import nuke
+
+    nodes = [_node(nuke, name) for name in params["node_names"]]
+    if not nodes or any(node.parent() != nodes[0].parent() for node in nodes):
+        raise ValueError("Tree layout requires nodes at one Group level")
+    return {"status": "ok", "result": {"nodes": [{
+        "name": node.fullName(), "class": node.Class(),
+        "xpos": node.xpos(), "ypos": node.ypos(),
+        "width": node.screenWidth(), "height": node.screenHeight(),
+        "inputs": [node.input(i).fullName() if node.input(i) else None for i in range(node.inputs())],
+    } for node in nodes]}}

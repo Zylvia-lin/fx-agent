@@ -27,20 +27,22 @@ def register(mcp, connection):
         gamma: float | None = None, frame: int | None = None,
         a_input: int | None = None, b_input: int | None = None,
         viewer_process: str | None = None,
+        wipe: bool | None = None,
     ) -> dict:
         """Set Viewer-only controls and read back. Channels accepts a real layer or full channel.
 
-        Exposure is in stops. A/B selection requires the named Viewer already be active
+        Exposure is in stops. wipe=False shows A alone without changing the B reference.
+        Selection requires the named Viewer already be active
         inside Nuke; this tool never changes desktop focus or selects another window.
         """
         values = {"viewer_name": viewer_name, "channels": channels, "exposure": exposure,
                   "gamma": gamma, "frame": frame, "a_input": a_input, "b_input": b_input,
-                  "viewer_process": viewer_process}
+                  "viewer_process": viewer_process, "wipe": wipe}
         return connection.send_command("set_nuke_viewer_state", values)
 
     @mcp.tool()
-    def connect_nuke_viewer(viewer_name: str, source_node: str, input_index: int = 0) -> dict:
-        """Connect an existing source to Viewer input 0-9; changes no production-node inputs."""
+    def connect_nuke_viewer(viewer_name: str, source_node: str | None, input_index: int = 0) -> dict:
+        """Connect a source to Viewer input 0-9, or pass null to clear a comparison input."""
         return connection.send_command("connect_nuke_viewer", {
             "viewer_name": viewer_name, "source_node": source_node, "input_index": input_index,
         })

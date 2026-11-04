@@ -52,6 +52,12 @@ def _fit_actions(nuke):
     return found
 
 
+def _wipe_action(nuke):
+    menu = nuke.menu("Viewer") if hasattr(nuke, "menu") else None
+    item = menu.findItem("Enable Wipe") if menu and hasattr(menu, "findItem") else None
+    return item if item is not None and item.action().isCheckable() else None
+
+
 def get_viewer_state(params):
     nuke, viewer = _viewer(params["viewer_name"])
     keys = ("frame", "channels", "gain", "gamma", "viewerProcess", "input_number", "zoom_lock")
@@ -68,6 +74,7 @@ def get_viewer_state(params):
         "available_channels": list(source.channels()) if source else [],
         "active_viewer_window": window is not None,
         "fit_actions": [name for name, _ in _fit_actions(nuke)],
+        "wipe_enabled": _wipe_action(nuke).action().isChecked() if _wipe_action(nuke) else None,
     }}
 
 
@@ -100,8 +107,13 @@ def set_viewer_state(params):
             raise ValueError("Viewer process is unavailable")
         changes[key] = params["viewer_process"]
     window = _window(nuke, viewer)
+    wipe_action = None
+    if params.get("wipe") is not None:
+        wipe_action = _wipe_action(nuke)
+        if window is None or wipe_action is None:
+            raise ValueError("Native wipe control is unavailable for this active Viewer")
     inputs = [(params.get(key), secondary) for key, secondary in (("a_input", False), ("b_input", True))]
-    for index, _ in inputs:
+    for index, _secondary in inputs:
         if index is not None:
             if window is None:
                 raise ValueError("A/B activation requires this Viewer to be the active Viewer; no focus was changed")
@@ -114,14 +126,16 @@ def set_viewer_state(params):
     for index, secondary in inputs:
         if index is not None:
             window.activateInput(index, secondary=secondary)
+    if wipe_action is not None and wipe_action.action().isChecked() != params["wipe"]:
+        wipe_action.invoke()
     return get_viewer_state(params)
 
 
 def connect_viewer(params):
     nuke, viewer = _viewer(params["viewer_name"])
-    source = nuke.toNode(params["source_node"])
+    source = nuke.toNode(params["source_node"]) if params["source_node"] is not None else None
     index = params.get("input_index", 0)
-    if source is None or source is viewer or not 0 <= index <= 9:
+    if (params["source_node"] is not None and source is None) or source is viewer or not 0 <= index <= 9:
         raise ValueError("Specify an existing source and a Viewer input from 0 to 9")
     viewer.setInput(index, source)
     return get_viewer_state(params)
