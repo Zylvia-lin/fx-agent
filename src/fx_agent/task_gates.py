@@ -4,7 +4,7 @@ import hashlib
 import json
 import ntpath
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -404,6 +404,10 @@ class TaskGates:
             self._write(db, task)
 
     def observe(self, task_id, tool, arguments, result):
+        # The Houdini/shared adapter compact-serializes dicts before the SDK returns.
+        if isinstance(result, str):
+            with suppress(ValueError):
+                result = json.loads(result)
         if not successful(result):
             return
         if (

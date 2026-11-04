@@ -9,7 +9,9 @@ from types import SimpleNamespace
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.config import data_root
+from fx_agent.nuke_graph_tools import register as register_graph_tools
 from fx_agent.nuke_sessions import list_sessions
+from fx_agent.nuke_viewer_tools import register as register_viewer_tools
 from fx_agent.task_tools import install_task_gates
 
 
@@ -109,6 +111,16 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
         module.register(state)
     mcp.remove_tool("execute_python")
     mcp.remove_tool("auto_layout")
+    register_viewer_tools(mcp, connection)
+    register_graph_tools(mcp, connection)
+
+    @mcp.tool()
+    def reload_nuke_tools() -> dict:
+        """Reload only this installation's fixed Viewer/graph adapter modules in the selected Nuke.
+
+        No arbitrary paths or code. Preserves the running bridge, session identity and scene.
+        """
+        return connection.send_command("reload_nuke_tools")
 
     @mcp.tool()
     def get_nuke_connection_status() -> dict:

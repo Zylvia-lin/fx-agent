@@ -74,6 +74,7 @@ def environment(monkeypatch, tmp_path):
                            root=lambda: SimpleNamespace(name=lambda: "shot.nk"),
                            NUKE_VERSION_STRING="15.2v1")
     addon = SimpleNamespace(
+        COMMANDS={},
         NukeMCPServer=Bridge,
         _handshake_data=lambda: {"pid": 1, "nuke_version": "15.2v1"},
         _get_nuke=lambda: host,
@@ -83,10 +84,13 @@ def environment(monkeypatch, tmp_path):
         NukeMCPPanel=Mock(side_effect=AssertionError("Popup must never be created")),
     )
     monkeypatch.setitem(sys.modules, "fx_agent_nuke_addon", addon)
+    monkeypatch.setitem(sys.modules, "fx_agent_nuke_viewer", SimpleNamespace(install=Mock()))
+    monkeypatch.setitem(sys.modules, "fx_agent_nuke_graph", SimpleNamespace(install=Mock()))
     path = Path(__file__).resolve().parents[1] / "integrations/nuke/fx_agent_nuke.py"
     spec = importlib.util.spec_from_file_location("fx_nuke_menu_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "reload", lambda value: value)
     monkeypatch.setattr(module, "_session_directory", lambda: tmp_path / "nuke_sessions")
     return module, addon, host, root_menu, terminal
 

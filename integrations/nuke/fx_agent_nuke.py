@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 from contextlib import suppress
-from importlib import import_module
+from importlib import import_module, reload
 from pathlib import Path
 
 
@@ -23,7 +23,8 @@ def _dispatch_with_result(self, callback, *args):
         try:
             if not getattr(self, "_running", True):
                 raise RuntimeError("Nuke MCP server has stopped")
-            return {"ok": True, "value": callback(*args)}
+            value = callback(*args)
+            return {"ok": True, "value": json.loads(json.dumps(value, default=str))}
         except Exception as error:
             return {"ok": False, "error": f"{type(error).__name__}: {error}"}
 
@@ -108,7 +109,6 @@ def _serve_with_cleanup(self):
 
 def _handle_client_with_cleanup(self, client):
     import fx_agent_nuke_addon as addon
-
     try:
         if self._running:
             return self._fx_original_handle_client(client)
@@ -217,6 +217,17 @@ def _session_handshake():
     return result
 
 
+def _reload_tool_modules(params):
+    import fx_agent_nuke_addon as addon
+
+    for name in ("fx_agent_nuke_viewer", "fx_agent_nuke_graph"):
+        reload(import_module(name)).install(addon)
+    return {"status": "ok", "result": {
+        "reloaded": ["fx_agent_nuke_viewer", "fx_agent_nuke_graph"],
+        "pid": os.getpid(), "session_id": addon._fx_agent_server._fx_session_id,
+    }}
+
+
 def _install_timer(addon):
     timer = getattr(addon, "_fx_agent_timer", None)
     if timer is None:
@@ -276,6 +287,9 @@ def start(port=8187, auto_port=True):
     if not hasattr(addon, "_fx_original_handshake"):
         addon._fx_original_handshake = addon._handshake_data
     addon._handshake_data = _session_handshake
+    reload(import_module("fx_agent_nuke_viewer")).install(addon)
+    reload(import_module("fx_agent_nuke_graph")).install(addon)
+    addon.COMMANDS["reload_nuke_tools"] = _reload_tool_modules
     _install_dispatch(addon)
     _install_lifecycle(addon)
     addon.NukeMCPServer._fx_original_serve = _serve_exclusive

@@ -71,6 +71,20 @@ def ready(tmp_path, *, root=None, scene_path=None):
     return gates, task
 
 
+def test_compact_json_receipt_retains_rules_offsets_and_errors(tmp_path):
+    gates = TaskGates(tmp_path / "data")
+    task = gates.begin(spec(tmp_path))
+    evidence(gates, task["task_id"])
+    gates.observe(task["task_id"], "fx_get_production_rules", {"project_id": "p"},
+                  json.dumps({"user_rules": [], "omitted_rules": 0, "next_offset": 1}))
+    assert "rules" not in gates.get(task["task_id"])["missing"]
+    gates.observe(task["task_id"], "fx_get_production_rules", {"project_id": "p", "offset": 1},
+                  json.dumps({"error": "failed read"}))
+    receipts = gates.get(task["task_id"], True)["receipts"].values()
+    rules = [r for r in receipts if r["tool"] == "fx_get_production_rules"]
+    assert len(rules) == 1 and rules[0]["next_offset"] == 1
+
+
 def test_plan_requires_actual_reads_and_reuses_evidence(tmp_path):
     gates = TaskGates(tmp_path / "data")
     task = gates.begin(spec(tmp_path))
