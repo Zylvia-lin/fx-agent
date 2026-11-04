@@ -88,22 +88,22 @@ def install_task_gates(mcp, software, root_provider, live_target):
         return
 
     @mcp.tool()
-    def fx_begin_task(spec: TaskSpec) -> dict:
+    async def fx_begin_task(spec: TaskSpec) -> dict:
         """Record requirements, target, acceptance and budget before production/learning."""
         return TaskGates(root_provider()).begin(spec)
 
     @mcp.tool()
-    def fx_get_task(task_id: str, detail: bool = False) -> dict:
+    async def fx_get_task(task_id: str, detail: bool = False) -> dict:
         """Get compact gate state/missing steps; detail includes questions and evidence."""
         return TaskGates(root_provider()).get(task_id, detail)
 
     @mcp.tool()
-    def fx_update_task(task_id: str, expected_revision: int, spec: TaskSpec) -> dict:
+    async def fx_update_task(task_id: str, expected_revision: int, spec: TaskSpec) -> dict:
         """Revise changed requirements/inputs/target; invalidate plan and previous evidence."""
         return TaskGates(root_provider()).update(task_id, expected_revision, spec)
 
     @mcp.tool()
-    def fx_set_task_plan(
+    async def fx_set_task_plan(
         task_id: str,
         expected_revision: int,
         method: str,
@@ -129,7 +129,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
         )
 
     @mcp.tool()
-    def fx_task_question(
+    async def fx_task_question(
         task_id: str,
         expected_revision: int,
         question: str = "",

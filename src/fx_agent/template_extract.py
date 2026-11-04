@@ -5,11 +5,49 @@ import hashlib
 import posixpath
 import re
 from collections import defaultdict
+from email import policy
+from email.parser import BytesParser
 
 from fx_agent.vendor import kleer_hip_parser as upstream
 
-EXTRACTOR_VERSION = "2"
+EXTRACTOR_VERSION = "3"
 TEXT_SECTIONS = {"init", "def", "parm", "chn", "spare", "net", "inp", "postitdef", "netboxinit"}
+
+
+def _hip_text(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("gb18030", errors="replace")
+
+
+def _hip_sections(data: bytes) -> dict[str, bytes]:
+    if not data.startswith(b"MIME-Version:"):
+        return _cpio_sections(data)
+    message = BytesParser(policy=policy.default).parsebytes(data)
+    if not message.is_multipart():
+        raise ValueError("Invalid HIP MIME container")
+    if any(part.defects for part in message.walk()):
+        raise ValueError("Malformed HIP MIME container")
+    sections = {}
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        name = part.get_filename()
+        if part.get("Content-Transfer-Encoding", "").lower() == "base64":
+            # Houdini pads each encoded line independently, including intermediate lines.
+            body = b"".join(
+                base64.b64decode(line.strip(), validate=True)
+                for line in part.get_payload().splitlines() if line.strip()
+            )
+        else:
+            body = part.get_payload(decode=True)
+        if not name or body is None or name in sections:
+            raise ValueError("Invalid or duplicate HIP MIME section")
+        sections[name] = body
+    if not sections or any(part.defects for part in message.walk()):
+        raise ValueError("Malformed HIP MIME container")
+    return sections
 
 
 def _cpio_sections(data: bytes) -> dict[str, bytes]:
@@ -133,12 +171,18 @@ def _hip_parameters(text: str) -> dict:
 
 
 def extract_hip(data: bytes) -> dict:
-    sections = _cpio_sections(data)
-    result = upstream._build_result(sections, "archived_project")
+    sections = _hip_sections(data)
     decoded = {
-        name: body.lstrip(b"\0").decode("utf-8", errors="replace")
+        name: _hip_text(body.lstrip(b"\0"))
         for name, body in sections.items()
     }
+    # Normalize text only for the upstream UTF-8 parser; retain original bytes for hashes.
+    normalized = {
+        name: decoded[name].encode("utf-8")
+        if name.rsplit(".", 1)[-1] in TEXT_SECTIONS else body
+        for name, body in sections.items()
+    }
+    result = upstream._build_result(normalized, "archived_project")
     by_node = defaultdict(dict)
     for name, text in decoded.items():
         path, _, suffix = name.rpartition(".")
@@ -250,7 +294,7 @@ def extract_nuke(data: bytes) -> dict:
                 stack.append(None)
                 limitations.append("未解析 push 引用：" + value[:200])
             continue
-        match = re.fullmatch(r"([A-Za-z_][\w:]*)\s*\{(.*)\}", command, re.S)
+        match = re.fullmatch(r"([A-Za-z_][\w:.]*)\s*\{(.*)\}", command, re.S)
         if not match:
             limitations.append("保留但未执行命令：" + command[:200])
             continue
@@ -302,11 +346,11 @@ def extract_nuke(data: bytes) -> dict:
             else 1
         )
         count_text = parameters.get("inputs", str(default_inputs))
-        if not count_text.isdigit() or int(count_text) > 1024:
+        # Nuke serializes image and mask sockets as e.g. "1+1" or "4+1".
+        count = sum(map(int, count_text.split("+"))) if re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", count_text) else 1025
+        if count > 1024:
             limitations.append("未解析输入数量：" + path)
             count = 0
-        else:
-            count = int(count_text)
         for port in range(count):
             source = stack.pop() if stack else None
             if source:
