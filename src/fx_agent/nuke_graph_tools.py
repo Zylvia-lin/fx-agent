@@ -2,6 +2,17 @@
 
 
 def register(mcp, connection):
+    @mcp.tool(annotations={"readOnlyHint": True})
+    def get_selected_nodes() -> dict:
+        """Read all selected node flags in the current script, including inside Groups.
+
+        Returns script, count and nodes with full names, classes, parent Groups,
+        positions and indexed input names. Includes selections retained in other
+        Group graphs; does not infer active-panel focus or change selection.
+        No selection returns an empty list. Use this when users point to selected nodes.
+        """
+        return connection.send_command("get_selected_nodes")
+
     @mcp.tool()
     def collapse_nuke_dots(dot_names: list[str]) -> dict:
         """Remove explicitly named pass-through Dots while preserving downstream image inputs.

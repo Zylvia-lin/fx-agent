@@ -245,6 +245,7 @@ def duplicate_node(params):
 def install(addon):
     addon.COMMANDS.update({"layout_nuke_nodes": layout_nodes, "duplicate_nuke_node": duplicate_node,
                            "get_nuke_graph_snapshot": graph_snapshot,
+                           "get_selected_nodes": get_selected_nodes,
                            "collapse_nuke_dots": collapse_dots})
 
 
@@ -304,3 +305,29 @@ def graph_snapshot(params):
         "width": node.screenWidth(), "height": node.screenHeight(),
         "inputs": [node.input(i).fullName() if node.input(i) else None for i in range(node.inputs())],
     } for node in nodes]}}
+
+
+def get_selected_nodes(params):
+    """Read selection flags across the script without changing Group context."""
+    import nuke
+
+    root = nuke.root()
+    selected = []
+
+    def collect(group):
+        for node in group.nodes():
+            if node.isSelected():
+                selected.append({
+                    "name": node.fullName(), "class": node.Class(),
+                    "group": group.fullName(), "xpos": node.xpos(), "ypos": node.ypos(),
+                    "inputs": [node.input(i).fullName() if node.input(i) else None
+                               for i in range(node.inputs())],
+                })
+            if hasattr(node, "nodes"):
+                collect(node)
+
+    collect(root)
+    selected.sort(key=lambda node: node["name"])
+    return {"status": "ok", "result": {
+        "script": root.name(), "count": len(selected), "nodes": selected,
+    }}

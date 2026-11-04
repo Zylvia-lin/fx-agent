@@ -50,6 +50,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 ### 4. Nuke 合成示例
 
+用户可以在 Nuke 中选中需要调整的节点，再让助手调用只读接口 `get_selected_nodes`。
+接口返回当前工程中全部选中节点（含 Group 内保留的选择）的完整名称、类型、所属 Group、位置和输入连接；无选择时返回空列表，不改变选择或节点。
+更新后可调用 `reload_nuke_tools` 热重载 Nuke 端；新增 MCP 工具定义需要重新连接 fx-nuke 或重启 Codex 并新建聊天。
+
 > 使用 fx-agent 的 Nuke 工作流。项目名为“广告A”，镜头为 sh010，参考这个最终效果，用我提供的 EXR 和 NK 模板完成合成。先检查素材、帧段、通道、色彩空间和预乘，再开始调整。
 
 明确指定合成工作流时，可以用 `$nuke-workflow`。Nuke 与 Houdini 分别召回经验和保存进度，共用同一个数据根。只有 Nuke 发现可能的源渲染问题时，才记录问题和证据，转交 Houdini 检查；修复后回到 Nuke 复查，不自动重渲染。
