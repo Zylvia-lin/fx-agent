@@ -42,7 +42,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 8
+    SCHEMA_VERSION = 9
 
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -52,14 +52,14 @@ class Store:
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute("BEGIN IMMEDIATE")
             # A concurrent initializer may have upgraded while we waited for the lock.
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -115,6 +115,7 @@ class Store:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS template_effect_reviews (review_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,payload TEXT NOT NULL)"
             )
+            db.execute("CREATE TABLE IF NOT EXISTS task_gates (task_id TEXT PRIMARY KEY,payload TEXT NOT NULL)")
             for table, columns, definition in (
                 (
                     "checkpoints",

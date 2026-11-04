@@ -323,7 +323,7 @@ class EffectLibrary:
                 raise ValueError("Merge requires all current heads and a new effect_key")
         fields = ["node_paths", "reuse_node_paths", "preview_paths", "inputs"]
         if not current:
-            fields += ["questions", "modules"]
+            fields += ["questions"]
         for field in fields:
             required = {item for r in sources for item in r.get(field, [])}
             if not required <= set(getattr(definition, field)):
@@ -495,6 +495,13 @@ class EffectLibrary:
                     )
                 content = definition.model_dump(exclude={"supersedes"})
                 if component_sources:
+                    content["component_modules"] = sorted(
+                        {
+                            module
+                            for source in component_sources
+                            for module in source["modules"] + source.get("component_modules", [])
+                        }
+                    )
                     content["component_terms"] = sorted(
                         {
                             term
@@ -621,6 +628,7 @@ class EffectLibrary:
             "behaviors": record.get("behaviors", []),
             "questions": record.get("questions", []),
             "component_card_ids": record.get("component_card_ids", []),
+            "component_modules": record.get("component_modules", []),
         }
 
     def catalog(self, study_id: str) -> dict:
@@ -926,6 +934,7 @@ class EffectLibrary:
                 and r["software"] != software
                 or module
                 and module not in r["modules"]
+                and module not in r.get("component_modules", [])
                 or project_id
                 and r["project_id"] != project_id
                 or scheme_key

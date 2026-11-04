@@ -36,7 +36,7 @@ class Menu:
 
 
 @pytest.fixture
-def environment(monkeypatch):
+def environment(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "path", sys.path.copy())
     terminal = io.StringIO()
     monkeypatch.setattr(sys, "__stdout__", terminal)
@@ -70,12 +70,15 @@ def environment(monkeypatch):
         def stop(self):
             self._running, self._thread.alive = False, False
 
-    host = SimpleNamespace(GUI=True, menu=lambda name: root_menu, tprint=Mock())
+    host = SimpleNamespace(GUI=True, menu=lambda name: root_menu, tprint=Mock(),
+                           root=lambda: SimpleNamespace(name=lambda: "shot.nk"),
+                           NUKE_VERSION_STRING="15.2v1")
     addon = SimpleNamespace(
         NukeMCPServer=Bridge,
+        _handshake_data=lambda: {"pid": 1, "nuke_version": "15.2v1"},
         _get_nuke=lambda: host,
         _panel=None,
-        _fx_agent_timer=object(),
+        _fx_agent_timer=Mock(),
         Qt=SimpleNamespace(QueuedConnection=2),
         NukeMCPPanel=Mock(side_effect=AssertionError("Popup must never be created")),
     )
@@ -84,6 +87,7 @@ def environment(monkeypatch):
     spec = importlib.util.spec_from_file_location("fx_nuke_menu_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_session_directory", lambda: tmp_path / "nuke_sessions")
     return module, addon, host, root_menu, terminal
 
 
@@ -134,6 +138,7 @@ def test_hot_reload_adopts_legacy_panel_without_stopping_its_server(environment)
     module, addon, _, _, _ = environment
     service = addon.NukeMCPServer(8187)
     service.start()
+    service._fx_session_id = "legacy"
     panel = SimpleNamespace(
         _port=8187, _server=service, _append_log=lambda msg: None, hide=Mock(), deleteLater=Mock()
     )
@@ -215,3 +220,108 @@ def test_stopped_server_rejects_queued_main_thread_operations(environment):
     with pytest.raises(RuntimeError, match="stopped"):
         server._run_in_nuke(operation)
     operation.assert_not_called()
+
+
+def test_listener_rejects_duplicate_port_without_disrupting_owner(environment):
+    import socket
+
+    module, _, _, _, _ = environment
+    with module._open_listener(0) as owner:
+        port = owner.getsockname()[1]
+        with pytest.raises(OSError):
+            module._open_listener(port)
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            client, _ = owner.accept()
+            client.close()
+
+
+def test_exclusive_listener_handles_client_and_cleans_up(environment):
+    import socket
+
+    module, addon, _, _, _ = environment
+    module.start()
+    server = addon._fx_agent_server
+    server.port = 0
+    server._emit_log = Mock()
+
+    def handle_client(client):
+        client.close()
+        server._running = False
+
+    server._handle_client = handle_client
+    original_open = module._open_listener
+
+    def open_and_connect(port):
+        listener = original_open(port)
+        peer = socket.create_connection(listener.getsockname(), timeout=1)
+        peer.close()
+        return listener
+
+    module._open_listener = open_and_connect
+    server._serve()
+    assert server._server_sock is None
+    assert not server._running
+    assert not getattr(server, "_fx_error", False)
+
+
+def test_port_conflict_reports_error_instead_of_running(environment):
+    module, addon, _, root, terminal = environment
+    with module._open_listener(0) as owner:
+        module.start(auto_port=False)
+        server = addon._fx_agent_server
+        server.port = owner.getsockname()[1]
+        server._serve()
+        server._thread.alive = False
+        module._refresh_menu()
+        assert any("Error" in label for label in root.menus["MCP Server"].commands)
+        assert server._server_sock is None
+        assert "Server error: OSError" in terminal.getvalue()
+
+
+def test_auto_port_preserves_owner_and_advertises_new_window(environment):
+    import json
+    import socket
+
+    module, addon, host, _, _ = environment
+    module.start()
+    server = addon._fx_agent_server
+    with module._open_listener(0) as owner:
+        server.port = owner.getsockname()[1]
+        server._emit_log = Mock()
+
+        def handle(client):
+            client.close()
+            server._running = False
+
+        server._handle_client = handle
+        original = module._open_listener
+
+        def open_and_connect(port):
+            listener = original(port)
+            peer = socket.create_connection(listener.getsockname(), timeout=1)
+            peer.close()
+            return listener
+
+        module._open_listener = open_and_connect
+        server._serve()
+        assert server.port > owner.getsockname()[1]
+        assert not getattr(server, "_fx_error", False)
+    module._publish_session(addon, server, "Running")
+    paths = list(module._session_directory().glob("*.json"))
+    record = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert record["port"] == server.port
+    assert record["script"] == host.root().name()
+    assert addon._handshake_data()["session_id"] == record["session_id"]
+    module._publish_session(addon, server, "Stopped")
+    assert not list(module._session_directory().glob("*.json"))
+
+
+def test_start_rebinds_timer_callback_after_reload(environment):
+    module, addon, _, _, _ = environment
+    module.start()
+    timer = addon._fx_agent_timer
+    timer.timeout.disconnect.assert_called_once()
+    timer.timeout.connect.assert_called_once_with(module._refresh_menu)
+    module.start()
+    assert timer.timeout.disconnect.call_count == 2
+    assert timer.timeout.connect.call_count == 2

@@ -632,7 +632,30 @@ async def test_mcp_template_learning_search_export_and_candidate(tmp_path, monke
     source = hip(tmp_path / "effect.hip")
     server = get_server()
 
+    from test_task_gates import evidence
+
+    from fx_agent.task_gates import TaskGates, TaskSpec
+
+    gates = TaskGates(tmp_path / "data")
+    task = gates.begin(
+        TaskSpec(
+            project_id="p",
+            shot_id="s",
+            software="houdini",
+            kind="learning",
+            scene_path=str(source),
+            endpoint="127.0.0.1:18186",
+            goal="学习模板",
+            acceptance=["归档提取并建立候选"],
+            budget="静态学习",
+            modules=["particles"],
+        )
+    )
+    evidence(gates, task["task_id"])
+    gates.plan(task["task_id"], 1, "只读提取", "测试工程", "记录候选", [], "无已有案例")
+
     async def call(name, arguments):
+        arguments = arguments | {"fx_task_id": task["task_id"]}
         result = await server.call_tool(name, arguments)
         return json.loads(result[0].text)
 

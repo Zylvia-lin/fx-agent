@@ -193,14 +193,22 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
     assert json.loads(result[0].text)["user_rules"][0]["user_quote"] == rule()["user_quote"]
     full_rule = await server.call_tool("fx_get_user_rule", {"rule_key": "cache-layout"})
     assert json.loads(full_rule[0].text)["user_quote"] == rule()["user_quote"]
+    from test_task_gates import ready
+
+    gates, task = ready(tmp_path, root=tmp_path, scene_path=tmp_path / "draft.hip")
+    case_id = case_at(tmp_path)
+    gates.observe(task["task_id"], "save_scene", {}, {"success": True})
+    gates.observe(task["task_id"], "verify_network", {}, {"healthy": True})
+    gates.finish(task["task_id"], task["revision"], case_id, "测试中已核对归档预览")
     result = await server.call_tool(
         "fx_record_feedback",
         {
             "feedback": feedback(
                 outcome="accepted",
-                case_id=case_at(tmp_path),
+                case_id=case_id,
                 user_quote="这个版本可以，保存该方案",
-            )
+            ),
+            "fx_task_id": task["task_id"],
         },
     )
     feedback_id = json.loads(result[0].text)["feedback_id"]
@@ -218,6 +226,7 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
             "method": "调整逆光",
             "reason": "保留层次",
             "applies_when": "逆光烟尘",
+            "fx_task_id": task["task_id"],
         },
     )
     assert json.loads(result[0].text)["decision"] == "admitted"

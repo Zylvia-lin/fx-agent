@@ -7,6 +7,10 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 用户不需要额外说“记住”。当前宿主助手（如 Codex） 在看到有价值的明确要求、纠错和最终确认时，执行下面的对应流程。服务不自行读取所有 当前宿主助手（如 Codex） 聊天，不另起一个模型代理。
 
+制作/学习使用fx_begin_task登记的同一任务ID。相关读取携带fx_task_id以留下真实证据，accepted反馈及fx_finalize_learning只有对应制作任务通过fx_finish_task、归档匹配且用户确实认可后才提交；普通pending/improved/failed反馈及用户规则记录不要求先完成。
+
+学习或制作中有查证后仍不理解的地方，fx_task_question登记具体问题，再在对话中向用户集中发问。工具的ask_user只是行动要求，不代表已发问；不得静默跳过、伪造答案或宣布完成。真实回复保存answer、user_quote和source_ref，必要时修订效果卡/需求。未解问题阻止相关任务完成与成功入库，只读调查和其他独立任务可继续。
+
 ## 用户提出长期要求
 
 1. 区分长期规范、仅当前镜头的调整和假设；只有明确要求进入规范库。
@@ -47,9 +51,13 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 有新有效经验、完成外部数据导入或用户要求整理时，由当前宿主助手执行 Dream，不额外启动模型服务。
 
+需要写入效果卡修订/合并而没有现成已放行任务时，先按fx-project-learn建立学习任务、读取规范与相关知识并保存方案，再携带fx_task_id写入；不借Dream绕过门禁。
+
 每次 Dream 同时检查返回的 effect_learning 与候选的 effect_card_ids；经 knowledge_sources 继承的卡引用也要追溯。若本轮制作、反馈或新视频/序列使效果更明确，读取当前卡，以 `fx_refine_effect(card_id, updates, sources, reason)` 补充效果名、类别、外观、运动、别名和证据。sources 引用本轮真实 dream/memory/feedback/effect_card ID；服务保留来源资料与旧卡，新修订不得抹掉历史。不得仅因运行Dream就自动命名，只有理解有依据时才更新；不确定先追查渲染序列，再将问题集中问用户。新表现建立独立effect_key，不覆盖旧变体。无关联卡或无新理解时不制造无意义修订；`fx_get_effect_learning_queue` 可另行分页处理存量待学习记录。
 
 同时检查效果卡是否被对象副本或渲染层拆得过细。对同一工程内的候选，用 `fx_search_effects` 分页检索并逐张 `fx_get_effect` 读取完整卡，不只依赖待学习队列或经验候选（已识别卡也可能需要合并）。核对外观、运动、用途和来源，例如一/二/三号龙的同类眼部亮点可合为“龙眼橙黄能量亮点”。使用 `fx_merge_effect_cards(card_ids, card, reason)` 先预览，再 `apply=true`：新 effect_key 和总描述由当前助手提炼，保留各层标题/别名、节点、输入、参数动画与输出差异、预览及 visual_evidence。component_card_ids 保留原卡绑定；默认检索只显示总卡，旧卡仍可按ID或include_history读取。不把独立效果变体合并，不跨工程混合证据，不提升验证等级。合并后重新核对效果/素材复核状态；Dream的经验撤销不撤销效果卡合并。
+
+用户以少数卡片举例要求整理整个效果库时，先分页盘点全部当前卡片，再按study核对组成关系，不能只处理举例。每张卡都应有处理决定：合并到哪张总卡、保留独立用途，或因具体证据不足待核实；交付全库清单、合并映射及保留理由。制作、材质和渲染知识可以汇入同一完整效果流程，总卡主模块最多4个，其余来源模块由component_modules完整继承并参与筛选，不因合并失去检索入口。
 
 1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选。project_id 不限制经验范围；next_cursor 翻页，最后一页的游标可作为下次增量起点。用 fx_get_dream_runs 查询已提交进度。
 2. 用 fx_get_memory 展开相关完整来源、适用条件与案例；摘要不够时不要合并。判断同义、互补、不同方法、工程特例和矛盾。has_conflict 时展开 conflict_memory_ids，未解决前不能当作无争议方案套用。

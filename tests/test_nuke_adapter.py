@@ -31,9 +31,39 @@ def connection():
 
 
 @pytest.mark.asyncio
-async def test_curated_tools_work_without_second_memory_system(connection):
+async def test_curated_tools_work_without_second_memory_system(connection, tmp_path, monkeypatch):
+    from fx_agent.task_gates import TaskGates, TaskSpec
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
     conn, handshake = connection
     server = build_server(conn, handshake)
+    gates = TaskGates(tmp_path)
+    task = gates.begin(
+        TaskSpec(
+            project_id="p",
+            shot_id="s",
+            software="nuke",
+            scene_path="untitled.nk",
+            endpoint=f"127.0.0.1:{conn.port}",
+            goal="合成",
+            acceptance=["调整有效"],
+            budget="草稿",
+            modules=["compositing"],
+        )
+    )
+    task_id = task["task_id"]
+    gates.observe(
+        task_id,
+        "fx_get_production_rules",
+        {"project_id": "p"},
+        {"user_rules": [], "omitted_rules": 0, "next_offset": 0},
+    )
+    gates.observe(
+        task_id, "fx_get_module_knowledge", {"software": "nuke", "module": "compositing"}, {}
+    )
+    for name in ("fx_search_effects", "fx_search_memory"):
+        gates.observe(task_id, name, {"software": "nuke", "query": "合成"}, {"items": []})
+    gates.plan(task_id, 1, "调色", "当前素材", "调低亮度", [], "没有匹配案例")
     names = {tool.name for tool in await server.list_tools()}
     assert {
         "create_node",
@@ -47,9 +77,17 @@ async def test_curated_tools_work_without_second_memory_system(connection):
         not {"execute_python", "auto_layout", "write_memory", "read_memory", "search_memory"}
         & names
     )
-    await server.call_tool("create_node", {"node_class": "Grade", "name": "grade_test"})
     await server.call_tool(
-        "batch_set_knob", {"node_names": ["grade_test"], "knob_name": "multiply", "value": 0.5}
+        "create_node", {"node_class": "Grade", "name": "grade_test", "fx_task_id": task_id}
+    )
+    await server.call_tool(
+        "batch_set_knob",
+        {
+            "node_names": ["grade_test"],
+            "knob_name": "multiply",
+            "value": 0.5,
+            "fx_task_id": task_id,
+        },
     )
     result = await server.call_tool("get_node_info", {"node_name": "grade_test"})
     assert "0.5" in str(result)

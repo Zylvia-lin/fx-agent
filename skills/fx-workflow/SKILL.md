@@ -7,7 +7,23 @@ description: 使用 FX Agent操作 Houdini，检查连接、查询节点与指�
 
 由 当前宿主助手（如 Codex） 规划和判断，调用Agent 提供的软件工具。全程使用中文沟通。
 
-1. 先调用 `fx_status` 与 `fx_get_production_rules`，明确项目与镜头后调用 `fx_get_context`，再用 `get_houdini_connection_status` 核对真实会话与工程。多会话时确认目标，不能猜测后修改。
+## 必须遵循的任务门禁
+
+先理解目标外观、运动、输入与参考、验收要求和计算预算，再只读查询 `fx_status`、真实会话/工程与 `fx_get_module_catalog`。根据已有用户信息调用 `fx_begin_task(spec)`，kind=production；spec记录project_id、shot_id、software=houdini、真实scene_path、endpoint（127.0.0.1:实际端口）、goal、acceptance、budget、modules，以及已解析的input_paths（素材和参考）。无需让用户重复已经提供的信息。
+
+此后的规范、指南、模块知识、效果/经验检索及来源展开都携带 `fx_task_id`，否则不会计入该任务证据。规范带project_id并按next_offset从0连续翻页；detail_required规则用fx_get_user_rule展开。读取discipline及所选模块的原指南、模块补充，再按目标检索fx_search_effects和fx_search_memory。选中卡用fx_get_effect默认card读取全文，经验用fx_get_memory；尾页/截断内容不算全文。
+
+用 `fx_set_task_plan` 保存method、applies_when、changes及实际读过的selected_sources（effect_card:/memory:/template_study:ID）。无适用案例时保存真实no_match_reason，不能编造命中。放行后节点修改、参数、缓存、渲染与保存工具必须带同一fx_task_id；批量操作复用证据，不每次重复读库。门禁不替代已有用户授权或专用路径检查。
+
+模块补充过长而truncated时，不把摘要当全文；按该module检索并完整展开当前方案所需的经验/效果卡，在selected_sources中引用。若该模块的实际经验检索为零，写清no_match_reason并依据已读原指南制作。这样无需为放行读取整本增长中的模块MD；有争议或疑问仍须查证和提问。
+
+需求、输入文件、工程/端口、帧率/帧段等相关条件变化时，用fx_update_task携带完整新spec和当前revision，重查受影响条件并重新保存方案；另存新工程先更新scene_path，再向新路径保存。重启或跨聊天续作先核对现场并更新任务，不能直接沿用旧的验证结论。
+
+阶段可保存检查点；正式宣告完成前，保存真实工程，带fx_task_id执行verify_network并实际查看多时间点截图/预览，归档当前工程及preview，再调用fx_finish_task（当前revision、case_id、真实verification_note）。新修改或校验失败会使旧结果失效。用户确认后，accepted反馈和fx_finalize_learning也带同一fx_task_id，关联该任务已验证归档。
+
+不理解处先查现有证据，仍无法确定时调用fx_task_question保存具体问题，并在对话中集中向用户发问；收到真实答复后以question_id、answer、user_quote、source_ref保存。不得自己编造用户回答。未解问题阻止对应任务修改/完成；只读调查继续可用。
+
+1. 按上方门禁顺序先理解需求、只读核对现场并建立任务，再携带fx_task_id读取规范及fx_get_context。多会话时确认目标，不能猜测后修改。
 2. 每会话先读 `get_workflow_guide("discipline")`，按任务选择功能模块；不确定标签时查 `fx_get_module_catalog`。原模块准则仍完整保留，不能把它当成个人学习经验。SOP→model、粒子→dopparticles、Pyro→pyro、FLIP→fluid、RBD→destruction；其余映射以目录为准。首次制作该模块先读取对应 `get_workflow_guide`，两次同类修复失败时重读，不把全部模块指南反复加载。
    再用 `fx_get_module_knowledge(project_id, module)` 读取全局模块 MD 补充，必要时才展开其经验 ID。需要镜头限定经验、额外条件或候选时，按模块调用 `fx_search_memory(..., module="pyro")`；只需模块筛选可传 query=""。默认不读候选，不重复展开 MD 已完整包含的同一条经验。当前用户与制作规范优先；旧经验、MD 手写备注都需核实适用条件，不代表当前工程事实或额外授权。
 3. 参考工程先只读检查，试验使用工作副本；参考画面的观察与制作方法推断分开表达。用户提供工程目录供学习时按 fx-project-learn：先 fx_plan_template_import，再 fx_learn_templates，并逐张标注实际效果与参数/动态/渲染变体，知识与必要归档统一 data；不修改任何源工程参数、路径或文件，不执行回调，不整批复制序列/ABC/缓存。用户描述目标效果时先 fx_search_effects 找卡，再按需 fx_search_templates 查原工程，以 fx_export_template 导出工作副本；归档成功不等于画面验证。

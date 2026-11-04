@@ -294,10 +294,38 @@ def test_conflicting_study_does_not_activate_its_incoming_cards(tmp_path):
 @pytest.mark.asyncio
 async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkeypatch):
     from fx_agent.server import get_server
+    from fx_agent.task_gates import TaskGates, TaskSpec
 
     library, study_id, _ = study(tmp_path)
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(library.root))
     server = get_server()
+    task = TaskGates(library.root).begin(
+        TaskSpec(
+            project_id="p",
+            shot_id="s",
+            software="houdini",
+            kind="learning",
+            scene_path=str(tmp_path / "effect.hip"),
+            endpoint="127.0.0.1:18186",
+            goal="学习效果",
+            acceptance=["效果卡有来源"],
+            budget="只读",
+            modules=["particles"],
+        )
+    )
+    from test_task_gates import evidence
+
+    gates = TaskGates(library.root)
+    evidence(gates, task["task_id"])
+    gates.plan(
+        task["task_id"],
+        task["revision"],
+        "只读学习",
+        "来源工程",
+        "标注当前效果",
+        [],
+        "没有既有案例",
+    )
     tools = {t.name: t for t in await server.list_tools()}
     for name in (
         "fx_annotate_template_effects",
@@ -311,7 +339,8 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
     ):
         assert name in tools
     result = await server.call_tool(
-        "fx_annotate_template_effects", {"study_id": study_id, "cards": [card()]}
+        "fx_annotate_template_effects",
+        {"study_id": study_id, "cards": [card()], "fx_task_id": task["task_id"]},
     )
     assert json.loads(result[0].text)["items"]
     search = await server.call_tool("fx_search_templates", {"query": "角色身体能量粒子"})
@@ -514,3 +543,34 @@ def test_later_imported_source_revision_marks_merge_for_review(tmp_path):
     assert found["total"] == 2
     assert all(r["has_conflict"] for r in found["items"])
     assert library.catalog(study_id)["has_conflict"] is True
+
+
+def test_merge_retains_module_search_when_workflow_spans_over_four_modules(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(
+            study_id,
+            [
+                card(effect_key="production", modules=["io", "sop", "rendering"]),
+                card(effect_key="shader", modules=["materials", "solaris", "rendering"]),
+            ],
+        )["items"]
+    ]
+    definition = card(effect_key="workflow", modules=["sop", "materials", "rendering", "solaris"])
+    result = library.merge(ids, definition, "同一效果的制作与渲染", apply=True)
+    merged_id = result["items"][0]["card_id"]
+    detail = library.get(merged_id)
+    assert set(detail["card"]["component_modules"]) == {
+        "io",
+        "sop",
+        "rendering",
+        "materials",
+        "solaris",
+    }
+    assert library.search(module="io")["items"][0]["card_id"] == merged_id
+    assert library.search(module="solaris")["items"][0]["card_id"] == merged_id
+    revised = library.refine(
+        merged_id, {"motion": "补充运动"}, ["effect_card:" + merged_id], "新观察"
+    )["items"][0]
+    assert library.search(module="io")["items"][0]["card_id"] == revised["card_id"]

@@ -7,6 +7,16 @@ description: 通过 FX Agent 只读学习混合目录中的 Houdini/Nuke 工程�
 
 用中文交流。所有权威数据使用 `fx_status` 返回的 data_root，默认当前 FX Agent 的 `data/`，不另建 F 盘知识库。当前宿主助手负责解释和视觉判断，不另启模型或后台训练。
 
+## 学习任务与提问门禁
+
+先理解用户提供的范围、希望学会什么和完成标准，只读盘点资料及模块目录，再用fx_begin_task登记kind=learning、software、项目/镜头、source所在scene_path、对应endpoint、goal、acceptance、budget和modules。批次以同一软件和清晰范围分开，任务共享统一数据根。读取当前规范、所需原指南/模块知识并检索已有同类效果和经验时携带fx_task_id，用fx_set_task_plan保存只读学习方案；无适用案例如实说明。学习写入/标注/修订/合并工具携带该任务fx_task_id，原工程继续只读。
+
+遇到效果含义、分支用途、输入、参数作用、版本/输出对应或预览无法解释的问题，先核对作者标注、上下游、渲染输出及已提供媒体。仍不清楚时，必须用fx_task_question记录“具体不清楚什么、已经查过哪些证据、需要用户补充或确认什么”，随后在对话中集中提问，不能只留在卡片questions而不告诉用户。工具返回task_action_required=ask_user时也执行同一提问流程，不把工具返回当成已经向用户发问。
+
+继续学习不受影响的部分，不为等待答复反复轮询。收到用户答复后保存question_id、answer、真实user_quote与source_ref，并按原修订流程补充对应卡片；用户说明和画面观察仍分开归因。若答复改变资料版本或任务范围，先更新任务。禁止以助手推断冒充用户回答。
+
+批次结束用fx_get_task(detail=true)检查开放问题，完成工程/效果/媒体复核后调用fx_finish_task。未解问题、来源缺失或未完成复核时不能通过完成门禁；明确报告已学范围与剩余阻碍，不称为全部学完。学习完成不等于实际制作成功，成功经验仍需制作验证、归档和用户确认。
+
 ## 导入与理解
 
 1. 用户提供路径后，先 `fx_plan_template_import(source=...)` 盘点。接受单个 HIP/HIPLC/HIPNC/NK 或混合目录；跳过 backup、自动备份和目录链接。盘点只读，不创建数据库。不扫描用户未指定的当前 GUI 工程。

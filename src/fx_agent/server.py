@@ -20,6 +20,7 @@ from fx_agent.module_guides import ModuleGuides, refresh_guides
 from fx_agent.modules import module_catalog
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.store import Store, scope_id
+from fx_agent.task_tools import install_task_gates
 from fx_agent.template_tools import register_template_tools
 
 
@@ -59,6 +60,8 @@ def get_server():
             "template_learning_version": 2,
             "effect_card_version": 3,
             "module_baseline_sync_tool": "fx_sync_module_baselines",
+            "task_gate_version": 1,
+            "task_gate_entry": "fx_begin_task",
         }
 
     @mcp.tool()
@@ -529,4 +532,13 @@ def get_server():
             )
         )
 
+    async def live_target(context):
+        bridge = upstream_server._get_bridge(context)
+        info = await bridge.execute("scene.get_scene_info", {})
+        settings = {
+            key: info[key] for key in ("fps", "frame_range", "playback_range") if key in info
+        }
+        return f"127.0.0.1:{bridge.port}", info["hip_file"], settings
+
+    install_task_gates(mcp, "houdini", data_root, live_target)
     return mcp
