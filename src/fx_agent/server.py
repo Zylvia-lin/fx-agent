@@ -42,6 +42,29 @@ def get_server():
     upstream_server.HoudiniBridge = ProductionBridge
     register_template_tools(mcp, data_root)
 
+    from fxhoudinimcp._sdk import Context
+    from fx_agent.render_view import render_view_command
+
+    @mcp.tool()
+    async def fx_render_view_start(ctx: Context, node_path: str, pane_name: str = "FX_Render_View", frame: float | None = None, preview: bool = False) -> dict:
+        """Start a single frame in native Houdini Render View; leaves ROP parameters unchanged. Requires GUI. Poll fx_render_view_status, then save only after rendering stops."""
+        return await render_view_command(upstream_server._get_bridge(ctx), "start", node_path=node_path, pane_name=pane_name, frame=frame, preview=preview)
+
+    @mcp.tool()
+    async def fx_render_view_status(ctx: Context, pane_name: str = "FX_Render_View") -> dict:
+        """Read native Render View progress, requested ROP/frame/token, image resolution and planes."""
+        return await render_view_command(upstream_server._get_bridge(ctx), "status", pane_name=pane_name)
+
+    @mcp.tool()
+    async def fx_render_view_save(ctx: Context, output_path: str, pane_name: str = "FX_Render_View", token: str | None = None, overwrite: bool = False) -> dict:
+        """Save a completed Render View frame and measure RGB plus Alpha pixels. Rejects running renders, stale tokens, changed frames and unapproved overwrites. Does not treat nonzero RGB as valid Alpha."""
+        return await render_view_command(upstream_server._get_bridge(ctx), "save", output_path=output_path, pane_name=pane_name, token=token, overwrite=overwrite)
+
+    @mcp.tool()
+    async def fx_render_view_stop(ctx: Context, pane_name: str = "FX_Render_View", token: str | None = None) -> dict:
+        """Stop only the named Render View; an optional token guards against cancelling a newer render."""
+        return await render_view_command(upstream_server._get_bridge(ctx), "stop", pane_name=pane_name, token=token)
+
     @mcp.tool()
     async def fx_status() -> dict:
         """Get workstation version and data location; does not inspect a live scene."""
