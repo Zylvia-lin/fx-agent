@@ -57,7 +57,7 @@ def get_server():
             "production_rules_version": production_rules()["version"],
             "module_taxonomy_version": 1,
             "template_learning_version": 2,
-            "effect_card_version": 2,
+            "effect_card_version": 3,
             "module_baseline_sync_tool": "fx_sync_module_baselines",
         }
 

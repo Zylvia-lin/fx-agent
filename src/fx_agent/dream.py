@@ -145,7 +145,8 @@ def _plan(db, cursor, limit, software, module):
             "queue_tool": "fx_get_effect_learning_queue",
             "inspect_tool": "fx_plan_effect_study",
             "revision_tool": "fx_refine_effect",
-            "required": "迭代中理解效果后，读取关联效果卡及新证据，补充明确效果名、类别、运动与其他信息；以全部当前头建立修订，并填写refinement_sources和refinement_reason。疑问先查对应渲染序列，仍不明确则询问用户；不同表现保留独立effect_key。",
+            "merge_tool": "fx_merge_effect_cards",
+            "required": "迭代中理解效果后，读取关联效果卡及新证据，补充明确效果名、类别、运动与其他信息。检查同一效果是否被对象编号或组成渲染层拆碎；核对完整来源、外观、运动和用途后，用fx_merge_effect_cards先预览再合并，保留各层节点、输入、输出差异和证据，旧卡保留历史。不可只凭名称相似或节点相同合并；有独立外观、动态或用途的变体保持独立。疑问先查渲染序列，仍不明确则询问用户。",
             "automatic_promotion": False,
         },
     }

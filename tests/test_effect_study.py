@@ -193,6 +193,7 @@ def test_dream_surfaces_cards_and_revision_records_learning_provenance(tmp_path)
     first = library.annotate(study_id, [card()])["items"][0]
     plan = LearningStore(library.root).dream("", "preview")
     assert plan["effect_learning"]["queue_tool"] == "fx_get_effect_learning_queue"
+    assert plan["effect_learning"]["merge_tool"] == "fx_merge_effect_cards"
     revised = library.annotate(
         study_id,
         [

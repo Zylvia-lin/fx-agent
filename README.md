@@ -164,6 +164,8 @@ uv run ruff check src tests scripts
 
 工程导入后还需逐张标注实际效果：`fx_annotate_template_effects` 保存对象、外观、动态、参数/动画/渲染差异及复用步骤；同一制作方案的不同效果使用独立卡。用户用“角色身体能量粒子”等描述时，通过 `fx_search_effects` 找相似卡，再追溯原工程。基础规范在data/baselines中仅维护当前内容，可随data手动迁移；使用 `fx_sync_module_baselines` 同步新增、修改和删除，不再生成project-2等历史目录。详见 [效果指示卡与基础规范](docs/效果指示卡与基础规范.md)。
 
+Dream与模板学习会检查是否把同一效果按对象编号或组成渲染层拆得过细；核对完整来源后，用 `fx_merge_effect_cards` 先预览再合并为总卡，保留原卡、分层节点、输入和画面证据。独立外观、运动或用途的变体继续分别保留，不按名称相似自动合并。`fx_status.effect_card_version=3` 表示已加载合并接口。
+
 ## 对话与制作反馈学习
 
 配套 `fx-learning` Skill 在用户提出长期规范、纠错和最终确认时触发相应流程：

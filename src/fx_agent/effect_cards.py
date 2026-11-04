@@ -130,8 +130,9 @@ class EffectCardInput(BaseModel):
     reuse_mode: Literal["rebuild", "copy_nodes", "hybrid"] = "rebuild"
     reuse_node_paths: list[NodePath] = Field(default_factory=list, max_length=5000)
     reuse_dependency_notes: str = Field(default="", max_length=3000)
-    refinement_sources: list[Tag] = Field(default_factory=list, max_length=30)
+    refinement_sources: list[Tag] = Field(default_factory=list, max_length=50)
     refinement_reason: str = Field(default="", max_length=3000)
+    component_card_ids: list[CardId] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
     def evidence_requirements(self):
@@ -167,7 +168,9 @@ class MediaReview(BaseModel):
 
 
 def _heads(records: list[dict]) -> list[dict]:
-    parents = {parent for r in records for parent in r["parent_ids"]}
+    parents = {
+        parent for r in records for parent in r["parent_ids"] + r.get("component_card_ids", [])
+    }
     return [r for r in records if r["card_id"] not in parents]
 
 
@@ -182,12 +185,39 @@ def _equivalent_heads(records: list[dict]) -> list[dict]:
     return list(grouped.values())
 
 
+def _merge_conflicts(records: list[dict], current: list[dict]) -> set[str]:
+    """Keep post-merge source branches visible and mark both sides for review."""
+    indexed = {r["card_id"]: r for r in records}
+    conflicts = set()
+    for total in current:
+        pending = list(total.get("component_card_ids", []))
+        ancestors = set()
+        while pending:
+            identifier = pending.pop()
+            if identifier in ancestors or identifier not in indexed:
+                continue
+            ancestors.add(identifier)
+            source = indexed[identifier]
+            pending.extend(source["parent_ids"] + source.get("component_card_ids", []))
+        keys = {indexed[i]["effect_key"] for i in ancestors}
+        branches = {
+            r["card_id"]
+            for r in current
+            if r["study_id"] == total["study_id"] and r["effect_key"] in keys
+        }
+        if branches:
+            conflicts.update(branches | {total["card_id"]})
+    return conflicts
+
+
 def _markdown(record: dict) -> str:
     blocks = [
         "# " + record["title"],
         f"效果ID：{record['card_id']}\n工程学习ID：{record['study_id']}\n软件：{record['software']}\n案例：{record['case_id']}",
         f"共用制作方案：{record['scheme_name']}（{record['scheme_key']}）\n效果变体：{record['effect_key']}",
     ]
+    if record.get("component_card_ids"):
+        blocks.append("## 组成层原卡\n\n" + "\n".join(record["component_card_ids"]))
     for label, key in (
         ("作用对象", "subject"),
         ("外观描述", "appearance"),
@@ -257,6 +287,52 @@ class EffectLibrary:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self.templates = TemplateLibrary(self.root)
+
+    @staticmethod
+    def _validate_components(definition: EffectCardInput, records: list[dict], current: list[dict]):
+        components = set(definition.component_card_ids)
+        consumed = {i for r in records for i in r.get("component_card_ids", [])}
+        if any(
+            r["card_id"] in consumed and r["effect_key"] == definition.effect_key for r in records
+        ):
+            raise ValueError("Effect layer was merged; revise the merged card instead")
+        if not components:
+            if any(r.get("component_card_ids") for r in current):
+                raise ValueError("Merged card revisions must preserve component bindings")
+            return []
+        sources = [r for r in records if r["card_id"] in components]
+        if (
+            len(components) < 2
+            or len(components) != len(definition.component_card_ids)
+            or len(sources) != len(components)
+        ):
+            raise ValueError("Merge components must be unique cards from the same study")
+        if not definition.refinement_reason.strip():
+            raise ValueError("Merge requires an evidence-based reason")
+        existing_components = {i for r in current for i in r.get("component_card_ids", [])}
+        if components != existing_components:
+            if current:
+                raise ValueError("Merged card revisions must preserve component bindings")
+            heads = _heads(records)
+            if not components <= {r["card_id"] for r in heads}:
+                raise ValueError("Merge requires current component cards")
+            keys = {r["effect_key"] for r in sources}
+            if definition.effect_key in keys or any(
+                r["effect_key"] in keys and r["card_id"] not in components for r in heads
+            ):
+                raise ValueError("Merge requires all current heads and a new effect_key")
+        fields = ["node_paths", "reuse_node_paths", "preview_paths", "inputs"]
+        if not current:
+            fields += ["questions", "modules"]
+        for field in fields:
+            required = {item for r in sources for item in r.get(field, [])}
+            if not required <= set(getattr(definition, field)):
+                raise ValueError(f"Merged card must preserve component {field}")
+        if not {compact(e) for r in sources for e in r.get("visual_evidence", [])} <= {
+            compact(e.model_dump()) for e in definition.visual_evidence
+        }:
+            raise ValueError("Merged card must preserve component visual evidence")
+        return sources
 
     def _source(self, study_id: str) -> tuple[dict, dict, set[str], set[str]]:
         study = self.templates._record(study_id)
@@ -384,6 +460,8 @@ class EffectLibrary:
             db.execute("BEGIN IMMEDIATE")
             records = self._rows(study_id, db)
             for definition in definitions:
+                current = _heads([r for r in records if r["effect_key"] == definition.effect_key])
+                component_sources = self._validate_components(definition, records, current)
                 provenance = []
                 for source in definition.refinement_sources:
                     kind, _, identifier = source.partition(":")
@@ -416,10 +494,21 @@ class EffectLibrary:
                         }
                     )
                 content = definition.model_dump(exclude={"supersedes"})
+                if component_sources:
+                    content["component_terms"] = sorted(
+                        {
+                            term
+                            for source in component_sources
+                            for term in [
+                                source["title"],
+                                *source.get("aliases", []),
+                                *source.get("component_terms", []),
+                            ]
+                        }
+                    )
                 if provenance:
                     content["refinement_provenance"] = provenance
                 content_hash = hashlib.sha256(compact(content).encode()).hexdigest()
-                current = _heads([r for r in records if r["effect_key"] == definition.effect_key])
                 if current and all(r["content_hash"] == content_hash for r in current):
                     record, state = current[0], "unchanged"
                 else:
@@ -465,6 +554,31 @@ class EffectLibrary:
             result["document"] = self._document(record)
         return {"study_id": study_id, "items": results, "effect_catalog": self.catalog(study_id)}
 
+    def merge(self, card_ids: list[str], card: dict, reason: str, *, apply: bool = False) -> dict:
+        """Merge host-identified components without deleting their immutable source cards."""
+        if not 2 <= len(card_ids) <= 50 or len(set(card_ids)) != len(card_ids):
+            raise ValueError("Merge requires 2–50 unique component cards")
+        if not reason.strip():
+            raise ValueError("Merge requires an evidence-based reason")
+        records = [self._record_card(i) for i in sorted(card_ids)]
+        if len({r["study_id"] for r in records}) != 1:
+            raise ValueError("Merge components must belong to the same study")
+        definition = EffectCardInput(**card).model_dump()
+        definition.update(
+            component_card_ids=sorted(card_ids),
+            refinement_sources=["effect_card:" + i for i in sorted(card_ids)],
+            refinement_reason=reason,
+        )
+        definition = EffectCardInput(**definition).model_dump()
+        if not apply:
+            all_records = self._rows(records[0]["study_id"])
+            current = _heads(
+                [r for r in all_records if r["effect_key"] == definition["effect_key"]]
+            )
+            self._validate_components(EffectCardInput(**definition), all_records, current)
+            return {"applied": False, "study_id": records[0]["study_id"], "card": definition}
+        return self.annotate(records[0]["study_id"], [definition]) | {"applied": True}
+
     def refine(self, card_id: str, updates: dict, sources: list[str], reason: str) -> dict:
         """Fill newly understood details without discarding earlier card content."""
         record = self._record_card(card_id)
@@ -474,6 +588,7 @@ class EffectLibrary:
             "supersedes",
             "refinement_sources",
             "refinement_reason",
+            "component_card_ids",
         }
         if not updates or set(updates) - (set(EffectCardInput.model_fields) - protected):
             raise ValueError("Refinement must update descriptive fields of the same effect variant")
@@ -505,11 +620,13 @@ class EffectLibrary:
             "effect_kind": record.get("effect_kind", ""),
             "behaviors": record.get("behaviors", []),
             "questions": record.get("questions", []),
+            "component_card_ids": record.get("component_card_ids", []),
         }
 
     def catalog(self, study_id: str) -> dict:
         self.templates._record(study_id)
-        current = _heads(self._rows(study_id))
+        records = self._rows(study_id)
+        current = _heads(records)
         ids = {r["card_id"] for r in current}
         with Store(self.root).connection() as db:
             reviews = [
@@ -529,7 +646,9 @@ class EffectLibrary:
         )
         media_issues = [issue for r in review_heads for issue in r.get("media_issues", [])]
         unique = _equivalent_heads(current)
-        conflicts = any(n > 1 for n in Counter(r["effect_key"] for r in unique).values())
+        conflicts = bool(_merge_conflicts(records, current)) or any(
+            n > 1 for n in Counter(r["effect_key"] for r in unique).values()
+        )
         statuses = Counter(identity_status(r) for r in unique)
         learning_state = next(
             (
@@ -689,12 +808,33 @@ class EffectLibrary:
             "truncated": False,
             "identity_status": identity_status(record),
         }
-        related = [
-            r for r in self._rows(record["study_id"]) if r["effect_key"] == record["effect_key"]
+        all_records = self._rows(record["study_id"])
+        related = [r for r in all_records if r["effect_key"] == record["effect_key"]]
+        result["current_card_ids"] = [
+            r["card_id"] for r in _heads(all_records) if r["effect_key"] == record["effect_key"]
         ]
-        result["current_card_ids"] = [r["card_id"] for r in _heads(related)]
         result["equivalent_card_ids"] = [
             r["card_id"] for r in related if r["content_hash"] == record["content_hash"]
+        ]
+        descendants = {card_id}
+        merged_descendants = set()
+        while True:
+            related_ids = {
+                r["card_id"]
+                for r in all_records
+                if set(r["parent_ids"] + r.get("component_card_ids", [])) & descendants
+            }
+            merged_descendants.update(
+                r["card_id"]
+                for r in all_records
+                if set(r.get("component_card_ids", [])) & descendants
+                or set(r["parent_ids"]) & merged_descendants
+            )
+            if related_ids <= descendants:
+                break
+            descendants.update(related_ids)
+        result["merged_into_card_ids"] = [
+            r["card_id"] for r in _heads(all_records) if r["card_id"] in merged_descendants
         ]
         if len(compact(result)) > max_chars:
             return {
@@ -732,6 +872,7 @@ class EffectLibrary:
             raise ValueError("Invalid software")
         records = self._rows(study_id)
         current = _equivalent_heads(_heads(records))
+        merge_conflicts = _merge_conflicts(records, current)
         branches = Counter((r["study_id"], r["effect_key"]) for r in current)
         if not include_history:
             records = current
@@ -777,6 +918,7 @@ class EffectLibrary:
             "effect_kind": 5,
             "behaviors": 5,
             "author_labels": 2,
+            "component_terms": 2,
         }
         for r in records:
             if (
@@ -821,7 +963,14 @@ class EffectLibrary:
             present = _concepts(explicit)
             missing = sorted(wanted_concepts - present)
             description = " ".join(
-                [r["title"], r["subject"], r["appearance"], r["motion"], *r["aliases"]]
+                [
+                    r["title"],
+                    r["subject"],
+                    r["appearance"],
+                    r["motion"],
+                    *r["aliases"],
+                    *r.get("component_terms", []),
+                ]
             ).lower()
             unverified = [term for term in extra_terms if term not in description]
             kind = (
@@ -844,7 +993,8 @@ class EffectLibrary:
             | {
                 "score": round(score, 5),
                 "matched_fields": fields,
-                "has_conflict": branches[(r["study_id"], r["effect_key"])] > 1,
+                "has_conflict": branches[(r["study_id"], r["effect_key"])] > 1
+                or r["card_id"] in merge_conflicts,
                 "equivalent_count": len(r.get("equivalent_card_ids", [r["card_id"]])),
                 "source_is_current": r["study_id"] not in source_parents,
                 "match_kind": kind,

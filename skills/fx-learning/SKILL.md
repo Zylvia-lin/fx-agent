@@ -39,7 +39,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 有工程模板资料时并行检索 fx_search_templates，按 study_id 展开节点与原始参数。模板来源候选用 fx_learn_template_experience 保存；其默认是推断，不能因有工程归档就改为已验证观察。实际使用后的纠错和最终方案继续走本技能现有反馈与提炼流程，source_ref 保留 template_study 与节点证据。
 
-用户以自然语言描述目标效果时先 fx_search_effects，展开效果指示卡并比较同方案的不同变体。复用与反馈保留 effect_card_id；同一制作方案只因参数、动态或渲染不同而形成的效果卡必须分别保留。Dream可以整理共用方法与经验，但不能把不同效果卡删除、覆盖或按节点相同强行合并。
+用户以自然语言描述目标效果时先 fx_search_effects，展开效果指示卡并比较同方案的不同变体。复用与反馈保留 effect_card_id。有独立外观、动态或用途的效果变体分别保留；同一效果仅因对象编号或组成渲染层拆出的卡片，可以核对完整来源后合并，不能仅按名称相似或节点相同强行合并。
 
 先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的全局模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
 
@@ -48,6 +48,8 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 有新有效经验、完成外部数据导入或用户要求整理时，由当前宿主助手执行 Dream，不额外启动模型服务。
 
 每次 Dream 同时检查返回的 effect_learning 与候选的 effect_card_ids；经 knowledge_sources 继承的卡引用也要追溯。若本轮制作、反馈或新视频/序列使效果更明确，读取当前卡，以 `fx_refine_effect(card_id, updates, sources, reason)` 补充效果名、类别、外观、运动、别名和证据。sources 引用本轮真实 dream/memory/feedback/effect_card ID；服务保留来源资料与旧卡，新修订不得抹掉历史。不得仅因运行Dream就自动命名，只有理解有依据时才更新；不确定先追查渲染序列，再将问题集中问用户。新表现建立独立effect_key，不覆盖旧变体。无关联卡或无新理解时不制造无意义修订；`fx_get_effect_learning_queue` 可另行分页处理存量待学习记录。
+
+同时检查效果卡是否被对象副本或渲染层拆得过细。对同一工程内的候选，用 `fx_search_effects` 分页检索并逐张 `fx_get_effect` 读取完整卡，不只依赖待学习队列或经验候选（已识别卡也可能需要合并）。核对外观、运动、用途和来源，例如一/二/三号龙的同类眼部亮点可合为“龙眼橙黄能量亮点”。使用 `fx_merge_effect_cards(card_ids, card, reason)` 先预览，再 `apply=true`：新 effect_key 和总描述由当前助手提炼，保留各层标题/别名、节点、输入、参数动画与输出差异、预览及 visual_evidence。component_card_ids 保留原卡绑定；默认检索只显示总卡，旧卡仍可按ID或include_history读取。不把独立效果变体合并，不跨工程混合证据，不提升验证等级。合并后重新核对效果/素材复核状态；Dream的经验撤销不撤销效果卡合并。
 
 1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选。project_id 不限制经验范围；next_cursor 翻页，最后一页的游标可作为下次增量起点。用 fx_get_dream_runs 查询已提交进度。
 2. 用 fx_get_memory 展开相关完整来源、适用条件与案例；摘要不够时不要合并。判断同义、互补、不同方法、工程特例和矛盾。has_conflict 时展开 conflict_memory_ids，未解决前不能当作无争议方案套用。

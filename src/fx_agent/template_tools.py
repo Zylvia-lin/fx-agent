@@ -294,6 +294,28 @@ def register_template_tools(mcp, root_provider):
         )
 
     @mcp.tool()
+    async def fx_merge_effect_cards(
+        card_ids: list[str], card: EffectCardInput, reason: str, apply: bool = False
+    ) -> dict:
+        """Preview or merge same-effect object copies/render components into one card.
+
+        Read every full current source card first; explain why they compose one
+        effect rather than independent looks/motions. Supply a NEW effect_key and
+        a host-authored combined description with every source node, input, reuse
+        node, preview and visual evidence. Preserve per-layer differences in notes
+        and aliases. Default preview does not write. apply atomically creates a
+        reference card; originals remain readable/history-searchable. No promotion
+        to successful experience. Do not merge merely similar names or shared nodes.
+        """
+        return await asyncio.to_thread(
+            EffectLibrary(root_provider()).merge,
+            card_ids,
+            card.model_dump(),
+            reason,
+            apply=apply,
+        )
+
+    @mcp.tool()
     async def fx_search_effects(
         query: str = "",
         software: str = "",

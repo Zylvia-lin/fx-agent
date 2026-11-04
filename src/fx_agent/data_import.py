@@ -44,6 +44,45 @@ def _connect(path):
     return db
 
 
+def _blocked_effect_components(incoming, db, blocked, blocked_cases):
+    """Preflight component bindings before ID-sorted imports can publish a total card."""
+    rows = {r["card_id"]: dict(r) for r in incoming.execute("SELECT * FROM template_effects")}
+    payloads = {key: json.loads(row["payload"]) for key, row in rows.items()}
+    invalid = set()
+    for key, row in rows.items():
+        local = db.execute("SELECT * FROM template_effects WHERE card_id=?", (key,)).fetchone()
+        payload = payloads[key]
+        if (
+            local is not None
+            and dict(local) != row
+            or row["study_id"] in blocked["template_studies"]
+            or payload.get("case_id") in blocked_cases
+            or any(e.get("case_id") in blocked_cases for e in payload.get("visual_evidence", []))
+        ):
+            invalid.add(key)
+    component_conflicts = set()
+    while True:
+        newly_blocked = set()
+        for key, payload in payloads.items():
+            for component_id in payload.get("component_card_ids", []):
+                source = payloads.get(component_id)
+                if source is None:
+                    local = db.execute(
+                        "SELECT payload FROM template_effects WHERE card_id=?", (component_id,)
+                    ).fetchone()
+                    source = json.loads(local[0]) if local else None
+                if (
+                    component_id in invalid
+                    or not source
+                    or source["study_id"] != payload["study_id"]
+                ):
+                    newly_blocked.add(key)
+        component_conflicts.update(newly_blocked)
+        if newly_blocked <= invalid:
+            return component_conflicts
+        invalid.update(newly_blocked)
+
+
 def _fingerprint(db, root):
     digest = hashlib.sha256()
     for table in SNAPSHOT_TABLES:
@@ -213,6 +252,11 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                     report["counts"][table] = counts
                     info = incoming.execute(f"PRAGMA table_info({table})").fetchall()
                     keys = [row["name"] for row in sorted(info, key=lambda r: r["pk"]) if row["pk"]]
+                    component_conflicts = (
+                        _blocked_effect_components(incoming, db, blocked, blocked_cases)
+                        if table == "template_effects"
+                        else set()
+                    )
                     for row in incoming.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
                         values = dict(row)
                         where = " AND ".join(f"{key}=?" for key in keys)
@@ -223,6 +267,8 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                             counts["skipped"] += 1
                             continue
                         problem = "record_diverged" if existing is not None else ""
+                        if table == "template_effects" and values["card_id"] in component_conflicts:
+                            problem = "component_card_conflict"
                         if (
                             table == "learning_feedback"
                             and values["feedback_id"] in feedback_branches

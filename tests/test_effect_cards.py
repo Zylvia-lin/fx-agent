@@ -307,6 +307,7 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
         "fx_plan_effect_study",
         "fx_get_effect_learning_queue",
         "fx_refine_effect",
+        "fx_merge_effect_cards",
     ):
         assert name in tools
     result = await server.call_tool(
@@ -319,3 +320,197 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
     assert json.loads(detail[0].text)["effect_catalog"]["card_count"] == 1
     queue = await server.call_tool("fx_get_effect_learning_queue", {})
     assert json.loads(queue[0].text)["items"][0]["study_id"] == study_id
+
+
+def test_merge_layers_previews_then_preserves_sources_and_search(tmp_path):
+    library, study_id, source = study(tmp_path)
+    before = source.read_bytes()
+    originals = library.annotate(
+        study_id,
+        [
+            card(effect_key="eye-one", title="一号龙眼部亮点"),
+            card(effect_key="eye-two", title="二号龙眼部亮点"),
+        ],
+    )["items"]
+    ids = [r["card_id"] for r in originals]
+    definition = card(
+        effect_key="dragon-eyes",
+        title="龙眼橙黄能量亮点",
+        aliases=["一号龙眼部亮点", "二号龙眼部亮点"],
+    )
+    preview = library.merge(ids, definition, "同一效果的两个对象层")
+    assert preview["applied"] is False
+    assert library.search()["total"] == 2
+    assert preview["card"]["component_card_ids"] == sorted(ids)
+    result = library.merge(ids, definition, "同一效果的两个对象层", apply=True)
+    merged_id = result["items"][0]["card_id"]
+    assert library.search()["total"] == 1
+    assert library.catalog(study_id)["card_count"] == 1
+    assert library.search("二号龙眼部亮点")["items"][0]["card_id"] == merged_id
+    detail = library.get(merged_id)
+    assert set(detail["card"]["component_card_ids"]) == set(ids)
+    assert detail["card"]["visual_verified"] is False
+    assert set(library.get(ids[0])["merged_into_card_ids"]) == {merged_id}
+    assert library.get(ids[0])["current_card_ids"] == []
+    assert library.get(ids[0])["card"]["title"] == "一号龙眼部亮点"
+    assert library.search(include_history=True)["total"] == 3
+    assert (
+        library.merge(ids, definition, "同一效果的两个对象层", apply=True)["items"][0]["state"]
+        == "unchanged"
+    )
+    assert source.read_bytes() == before
+    revised = library.refine(
+        merged_id, {"motion": "跟随龙头闪动"}, ["effect_card:" + merged_id], "补充运动"
+    )["items"][0]
+    assert library.search()["total"] == 1
+    assert library.get(revised["card_id"])["card"]["component_card_ids"] == sorted(ids)
+    with pytest.raises(ValueError, match="merged"):
+        library.refine(ids[0], {"motion": "旧层不能独立复活"}, ["effect_card:" + ids[0]], "修改")
+
+
+def test_merge_rejects_stale_cross_study_and_incomplete_details(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    rows = library.annotate(study_id, [card(), card(effect_key="other")])["items"]
+    ids = [r["card_id"] for r in rows]
+    with pytest.raises(ValueError, match="node"):
+        library.merge(ids, card(effect_key="merged", node_paths=[]), "不可丢节点", apply=True)
+    assert library.search()["total"] == 2
+    library.refine(ids[0], {"motion": "新版本"}, ["effect_card:" + ids[0]], "修订")
+    with pytest.raises(ValueError, match="current"):
+        library.merge(ids, card(effect_key="merged"), "旧卡", apply=True)
+    other = nk(tmp_path / "other.nk")
+    other_study = learn(TemplateLibrary(library.root), other)["items"][0]["study_id"]
+    other_id = library.annotate(
+        other_study, [card(node_paths=["/Controls/Grade1"], modules=["compositing"])]
+    )["items"][0]["card_id"]
+    with pytest.raises(ValueError, match="same study"):
+        library.merge([ids[1], other_id], card(effect_key="merged"), "跨工程", apply=True)
+
+
+def test_merged_effect_survives_data_import(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(study_id, [card(effect_key="one"), card(effect_key="two")])[
+            "items"
+        ]
+    ]
+    merged = library.merge(ids, card(effect_key="merged"), "同效果分层", apply=True)["items"][0]
+    destination = tmp_path / "destination"
+    import_data(library.root, destination, apply=True)
+    other = EffectLibrary(destination)
+    assert other.search()["total"] == 1
+    assert other.get(merged["card_id"])["card"]["component_card_ids"] == sorted(ids)
+    assert other.get(ids[0])["merged_into_card_ids"] == [merged["card_id"]]
+
+
+def test_merge_search_keeps_original_names_without_manual_aliases(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(
+            study_id,
+            [
+                card(effect_key="one", title="DragonEyeAlpha", aliases=["unique-eye-alpha"]),
+                card(effect_key="two", title="DragonEyeBeta", aliases=["unique-eye-beta"]),
+            ],
+        )["items"]
+    ]
+    merged = library.merge(ids, card(effect_key="merged", aliases=[]), "同类对象层", apply=True)
+    assert library.search("unique-eye-beta")["items"][0]["card_id"] == merged["items"][0]["card_id"]
+
+
+def test_merge_preview_checks_conflicting_heads(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    originals = library.annotate(study_id, [card(), card(effect_key="other")])["items"]
+    other_root = tmp_path / "other"
+    migrate_data(library.root, other_root)
+    first = originals[0]["card_id"]
+    a = library.refine(first, {"motion": "分支A"}, ["effect_card:" + first], "A")["items"][0]
+    EffectLibrary(other_root).refine(first, {"motion": "分支B"}, ["effect_card:" + first], "B")
+    import_data(other_root, library.root, apply=True)
+    with pytest.raises(ValueError, match="all current heads"):
+        library.merge(
+            [a["card_id"], originals[1]["card_id"]], card(effect_key="merged"), "不完整头"
+        )
+
+
+def test_incoming_merge_does_not_hide_divergent_local_component(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(study_id, [card(), card(effect_key="other")])["items"]
+    ]
+    other_root = tmp_path / "other"
+    migrate_data(library.root, other_root)
+    other = EffectLibrary(other_root)
+    other.merge(ids, card(effect_key="merged"), "对象层", apply=True)
+    original = library._record_card(ids[0])
+    with Store(library.root).connection() as db:
+        original["title"] = "local divergent evidence"
+        db.execute(
+            "UPDATE template_effects SET payload=? WHERE card_id=?", (compact(original), ids[0])
+        )
+    result = import_data(other_root, library.root, apply=True)
+    assert library.search()["total"] == 2
+    assert result["counts"]["template_effects"]["conflicts"] == 2
+    report = import_records(library.root, result["import_id"], table="template_effects")
+    assert "component_card_conflict" in {r["reason"] for r in report["items"]}
+
+
+def test_nested_merge_keeps_old_layers_retired_and_tracks_current_total(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(
+            study_id, [card(effect_key="one"), card(effect_key="two"), card(effect_key="three")]
+        )["items"]
+    ]
+    merged = library.merge(ids[:2], card(effect_key="first-total"), "同类层", apply=True)["items"][
+        0
+    ]
+    total = library.merge(
+        [merged["card_id"], ids[2]], card(effect_key="final-total"), "同类层", apply=True
+    )["items"][0]
+    with pytest.raises(ValueError, match="merged"):
+        library.refine(ids[0], {"motion": "不能复活"}, ["effect_card:" + ids[0]], "修改")
+    assert library.search()["total"] == 1
+    assert library.get(ids[0])["merged_into_card_ids"] == [total["card_id"]]
+    assert library.get(ids[0])["current_card_ids"] == []
+
+
+def test_merged_questions_can_be_resolved_with_later_evidence(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(
+            study_id, [card(effect_key="one", questions=["用途待确认"]), card(effect_key="two")]
+        )["items"]
+    ]
+    merged = library.merge(
+        ids, card(effect_key="merged", questions=["用途待确认"]), "同类层", apply=True
+    )["items"][0]
+    revised = library.refine(
+        merged["card_id"], {"questions": []}, ["effect_card:" + merged["card_id"]], "根据新证据解疑"
+    )["items"][0]
+    assert library.get(revised["card_id"])["card"]["questions"] == []
+    assert library.get(ids[0])["card"]["questions"] == ["用途待确认"]
+
+
+def test_later_imported_source_revision_marks_merge_for_review(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    ids = [
+        r["card_id"]
+        for r in library.annotate(study_id, [card(), card(effect_key="other")])["items"]
+    ]
+    other_root = tmp_path / "other"
+    migrate_data(library.root, other_root)
+    library.merge(ids, card(effect_key="merged"), "同类层", apply=True)
+    EffectLibrary(other_root).refine(
+        ids[0], {"motion": "另一设备的新观察"}, ["effect_card:" + ids[0]], "新观察"
+    )
+    import_data(other_root, library.root, apply=True)
+    found = library.search()
+    assert found["total"] == 2
+    assert all(r["has_conflict"] for r in found["items"])
+    assert library.catalog(study_id)["has_conflict"] is True
