@@ -10,6 +10,133 @@ def _integer(value):
     return value
 
 
+def _toolset_path(nuke, node_class, explicit=None):
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_absolute() or path.suffix.lower() != ".nk" or not path.is_file():
+            raise ValueError("Toolset requires an existing absolute .nk path")
+        return path.resolve()
+    if not node_class or Path(node_class).name != node_class or any(c in node_class for c in "/\\:"):
+        raise ValueError("Specify a class name, or an explicit toolset_path")
+    roots = {Path(p).expanduser() for p in nuke.pluginPath()}
+    roots.add(Path.home() / ".nuke" / "ToolSets")
+    matches = {p.resolve() for root in roots if root.is_dir()
+               for p in root.rglob("*.nk") if p.stem.casefold() == node_class.casefold()}
+    if not matches:
+        raise ValueError(f"No .nk toolset found for {node_class}; specify toolset_path")
+    if len(matches) != 1:
+        raise ValueError(f"Ambiguous toolset {node_class}; specify toolset_path: {sorted(map(str, matches))}")
+    return matches.pop()
+
+
+def _describe(node):
+    return {"name": node.fullName(), "class": node.Class(),
+            "xpos": node.xpos(), "ypos": node.ypos()}
+
+
+def _configure(node, params):
+    knobs = params.get("knobs") or {}
+    missing = set(knobs) - set(node.knobs())
+    if missing:
+        raise ValueError(f"Unknown knobs: {sorted(missing)}")
+    if params.get("name"):
+        node.setName(params["name"])
+    for key, value in knobs.items():
+        node[key].setValue(value)
+
+
+def _position(params):
+    position = params.get("position")
+    if position is not None:
+        if not isinstance(position, (list, tuple)) or len(position) != 2:
+            raise ValueError("Position must contain x and y")
+        return [_integer(v) for v in position]
+    return None
+
+
+def import_toolset(params):
+    import nuke
+
+    path = _toolset_path(nuke, "", params["path"])
+    xy = _position(params)
+    parent = nuke.thisGroup()
+    before = list(parent.nodes())
+    selection = [(node, node.isSelected()) for node in before]
+    try:
+        with parent:
+            for node in before:
+                node.setSelected(False)
+            nuke.nodePaste(str(path))
+            created = [node for node in parent.nodes() if node not in before]
+            if not created:
+                raise ValueError("Toolset imported no nodes")
+            if len(created) != 1 and (params.get("single") or params.get("name") or params.get("knobs")):
+                raise ValueError("Toolset requires one top-level node for create/name/knobs")
+            if len(created) == 1:
+                _configure(created[0], params)
+            if xy is not None:
+                left, top = min(n.xpos() for n in created), min(n.ypos() for n in created)
+                for node in created:
+                    node.setXYpos(node.xpos() - left + xy[0], node.ypos() - top + xy[1])
+            for node in created:
+                node.setSelected(False)
+    except Exception as error:
+        try:
+            for node in reversed(parent.nodes()):
+                if node not in before:
+                    nuke.delete(node)
+        except Exception as rollback_error:
+            raise RuntimeError(f"Import failed: {error}; rollback failed: {rollback_error}") from error
+        raise
+    finally:
+        for node, selected in selection:
+            node.setSelected(selected)
+    result = {"nodes": [_describe(node) for node in created], "source_path": str(path),
+              "creation_method": "toolset"}
+    if len(created) == 1:
+        result.update(result["nodes"][0])
+    return {"status": "ok", "result": result}
+
+
+def create_node(params):
+    import nuke
+
+    xy = _position(params)
+    parent = nuke.thisGroup()
+    before = list(parent.nodes())
+    selection = [(node, node.isSelected()) for node in before]
+    try:
+        node = nuke.createNode(params["node_class"], inpanel=False)
+    except RuntimeError as error:
+        # A callback may fail after creating nodes: never paste a second copy then.
+        partial = [node for node in parent.nodes() if node not in before]
+        try:
+            for node in reversed(partial):
+                nuke.delete(node)
+        except Exception as rollback_error:
+            raise RuntimeError(f"Creation failed: {error}; rollback failed: {rollback_error}") from error
+        finally:
+            for node, selected in selection:
+                node.setSelected(selected)
+        if partial:
+            raise
+        message = str(error).lower()
+        if not any(text in message for text in ("unknown command", "unknown node", "unknown class")):
+            raise
+        path = _toolset_path(nuke, params["node_class"], params.get("toolset_path"))
+        return import_toolset({**params, "path": str(path), "single": True})
+    try:
+        _configure(node, params)
+        if xy is not None:
+            node.setXYpos(*xy)
+    except Exception:
+        nuke.delete(node)
+        for previous, selected in selection:
+            previous.setSelected(selected)
+        raise
+    return {"status": "ok", "result": {**_describe(node), "creation_method": "class"}}
+
+
 def _node(nuke, name):
     node = nuke.toNode(name)
     if node is None:
@@ -243,6 +370,7 @@ def duplicate_node(params):
 
 
 def install(addon):
+    addon.COMMANDS.update({"create_node": create_node, "import_nuke_toolset": import_toolset})
     addon.COMMANDS.update({"layout_nuke_nodes": layout_nodes, "duplicate_nuke_node": duplicate_node,
                            "get_nuke_graph_snapshot": graph_snapshot,
                            "get_selected_nodes": get_selected_nodes,

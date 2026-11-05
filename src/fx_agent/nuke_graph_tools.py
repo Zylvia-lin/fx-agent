@@ -2,6 +2,34 @@
 
 
 def register(mcp, connection):
+    @mcp.tool()
+    def create_node(node_class: str, name: str | None = None, knobs: dict | None = None,
+                    position: list[int] | None = None, toolset_path: str | None = None) -> dict:
+        """Create a native/plugin class first; if unknown, import a same-name .nk toolset.
+
+        Searches Nuke plugin paths and ~/.nuke/ToolSets recursively. Ambiguous matches
+        require toolset_path. Fallback requires exactly one top-level node/Group.
+        Parameter/license errors do not trigger fallback. Returns the actual class/name.
+        """
+        params = {
+            "node_class": node_class, "name": name, "knobs": knobs or {},
+            "position": position, "toolset_path": toolset_path,
+        }
+        return connection.send_command("create_node", {k: v for k, v in params.items() if v is not None})
+
+    @mcp.tool()
+    def import_nuke_toolset(path: str, name: str | None = None, knobs: dict | None = None,
+                            position: list[int] | None = None) -> dict:
+        """Paste an absolute .nk toolset path into the current Group without replacing the script.
+
+        Returns all imported top-level nodes. name/knobs require a single node;
+        position translates the imported block while preserving internal placement.
+        Restores existing selection and removes imported nodes on failure.
+        """
+        return connection.send_command("import_nuke_toolset", {
+            "path": path, "name": name, "knobs": knobs or {}, "position": position,
+        })
+
     @mcp.tool(annotations={"readOnlyHint": True})
     def get_selected_nodes() -> dict:
         """Read all selected node flags in the current script, including inside Groups.

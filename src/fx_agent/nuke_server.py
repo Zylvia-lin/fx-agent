@@ -112,6 +112,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
     mcp.remove_tool("execute_python")
     mcp.remove_tool("auto_layout")
     register_viewer_tools(mcp, connection)
+    mcp.remove_tool("create_node")
     register_graph_tools(mcp, connection)
 
     @mcp.tool()

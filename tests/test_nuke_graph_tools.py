@@ -88,6 +88,101 @@ def route(**changes):
             "waypoints": [[40, 100], [240, 100]], **changes}
 
 
+def toolset_host(graph, tmp_path):
+    module, host, parent, source, *_ = graph
+    host.thisGroup = lambda: parent
+    host.pluginPath = lambda: [str(tmp_path)]
+    path = tmp_path / "L_RealGlow.nk"
+    path.write_text("Group {}", encoding="utf8")
+    source.setSelected(True)
+    host.nodePaste = lambda path: Node(parent, "L_RealGlow", "Group", 20, 30)
+    return module, host, parent, source, path
+
+
+def test_create_unknown_class_falls_back_to_toolset(graph, tmp_path):
+    module, host, parent, source, path = toolset_host(graph, tmp_path)
+    def unknown(*args, **kwargs):
+        raise RuntimeError("L_RealGlow: Unknown command")
+    host.createNode = unknown
+    result = module.create_node({"node_class": "L_RealGlow", "position": [100, 200]})["result"]
+    assert result["creation_method"] == "toolset"
+    assert result["source_path"] == str(path.resolve())
+    assert (result["class"], result["xpos"], result["ypos"]) == ("Group", 100, 200)
+    assert source.isSelected()
+    assert not parent.nodes()[-1].isSelected()
+
+
+def test_native_create_wins_even_with_toolset_path(graph, tmp_path):
+    module, host, parent, _, _ = toolset_host(graph, tmp_path)
+    host.createNode = lambda cls, **kwargs: Node(parent, "Grade", cls)
+    host.nodePaste = lambda path: pytest.fail("Native class must win")
+    result = module.create_node({"node_class": "Grade", "toolset_path": "missing.nk"})
+    assert result["result"]["creation_method"] == "class"
+
+
+@pytest.mark.parametrize("message", ["License unavailable", "onCreate callback failed"])
+def test_create_does_not_fallback_on_other_errors(graph, tmp_path, message):
+    module, host, _, _, _ = toolset_host(graph, tmp_path)
+    def fail(*args, **kwargs):
+        raise RuntimeError(message)
+    host.createNode = fail
+    host.nodePaste = lambda path: pytest.fail("Must preserve original error")
+    with pytest.raises(RuntimeError, match=message):
+        module.create_node({"node_class": "L_RealGlow"})
+
+
+def test_native_callback_failure_cleans_partial_nodes_without_fallback(graph, tmp_path):
+    module, host, parent, source, _ = toolset_host(graph, tmp_path)
+    before = parent.nodes()
+    def fail(*args, **kwargs):
+        source.setSelected(False)
+        Node(parent, "Partial")
+        raise RuntimeError("Unknown command in callback")
+    host.createNode = fail
+    host.nodePaste = lambda path: pytest.fail("Do not fallback after callback failure")
+    with pytest.raises(RuntimeError, match="callback"):
+        module.create_node({"node_class": "L_RealGlow"})
+    assert parent.nodes() == before
+    assert source.isSelected()
+
+
+def test_ambiguous_toolset_requires_explicit_path(graph, tmp_path):
+    module, host, _, _, path = toolset_host(graph, tmp_path)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / path.name).write_text("Group {}")
+    with pytest.raises(ValueError, match="Ambiguous"):
+        module._toolset_path(host, "L_RealGlow")
+    assert module._toolset_path(host, "L_RealGlow", str(path)) == path.resolve()
+
+
+def test_import_multiple_nodes_and_rollback_single_requirement(graph, tmp_path):
+    module, host, parent, source, path = toolset_host(graph, tmp_path)
+    before = parent.nodes()
+    def paste(path):
+        Node(parent, "First", x=20, y=30)
+        Node(parent, "Second", x=40, y=60)
+    host.nodePaste = paste
+    with pytest.raises(ValueError, match="one top-level"):
+        module.import_toolset({"path": str(path), "single": True})
+    assert parent.nodes() == before
+    assert source.isSelected()
+    result = module.import_toolset({"path": str(path), "position": [100, 200]})["result"]
+    assert [(n["xpos"], n["ypos"]) for n in result["nodes"]] == [(100, 200), (120, 230)]
+
+
+def test_import_partial_failure_cleans_up_and_restores_selection(graph, tmp_path):
+    module, host, parent, source, path = toolset_host(graph, tmp_path)
+    before = parent.nodes()
+    def paste(path):
+        Node(parent, "Partial")
+        raise RuntimeError("Missing plugin")
+    host.nodePaste = paste
+    with pytest.raises(RuntimeError, match="Missing plugin"):
+        module.import_toolset({"path": str(path)})
+    assert parent.nodes() == before
+    assert source.isSelected()
+
+
 def test_dry_run_and_execute_touch_only_explicit_nodes(graph):
     module, _, parent, source, target, other = graph
     params = {"positions": [{"node_name": "Target", "x": 200, "y": 220}],
