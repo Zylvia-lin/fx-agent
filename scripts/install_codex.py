@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fx_agent.config import DEFAULT_HOUDINI_PORT
+from fx_agent.houdini_runtime import prepare_runtime, runtime_path, upstream_plugin
 from fx_agent.install_config import replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +72,7 @@ def houdini_package(port: int, existing: Path | None = None) -> str:
     generated = json.loads(package_json(existing=env))
     for item in generated["env"]:
         env.update(item)
+    env["FXHOUDINIMCP"] = str(runtime_path(ROOT, Path(env["FXHOUDINIMCP"]))).replace("\\", "/")
     package.update(generated)
     package["env"] = [{key: value} for key, value in env.items()]
     return json.dumps(package, ensure_ascii=False, indent=2) + "\n"
@@ -130,6 +132,9 @@ def main() -> None:
     )
     if not args.apply:
         return
+    # Publish a complete immutable plugin before updating profile references.
+    # Reinstalling never edits the dependency or an already-running runtime.
+    prepare_runtime(ROOT, upstream_plugin())
     # Backups stay local and may contain private settings. Never print their contents.
     backup = Path.home() / ".fx-agent-install-backups" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup.mkdir(parents=True)
