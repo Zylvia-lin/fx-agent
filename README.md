@@ -3,6 +3,10 @@
 让 Codex或者其他助手工具 在本地操作 Houdini、Nuke 与 Maya，并将制作规范、纠错过程和已确认方案保存为可追溯的经验。
 
 
+
+最近更新：
+    为了满足多人共享知识库以及多人团队共用，添加了专门的数据管理服务端，使用apikey的形式访问，带简单的web管理后台，可局域网部署或者云端部署知识库数据。具体请查看[服务端说明](services\data-service\README.md)
+
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Zylvia-lin/fx-agent?style=flat)](https://github.com/Zylvia-lin/fx-agent/stargazers)
