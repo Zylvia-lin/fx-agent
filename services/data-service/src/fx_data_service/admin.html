@@ -6,8 +6,8 @@ body{font:16px system-ui,sans-serif;background:#f4f6f8;color:#18212b;margin:0;pa
 fieldset{border:1px solid #d8e0e7;margin:16px 0;max-height:220px;overflow:auto}fieldset label{overflow-wrap:anywhere}td{vertical-align:top;overflow-wrap:anywhere}td button{margin:4px}table{table-layout:fixed}.table-scroll{overflow-x:auto}.table-scroll table{min-width:680px}
 </style>
 <main><h1>FX Agent 数据服务</h1><p class="muted">共享知识库 · 项目与 API Key 管理</p>
-<section id="login"><h2>管理员登录</h2><form id="loginForm"><label for="password">管理员密码</label><input type="password" id="password" autocomplete="current-password" required><button>登录</button></form></section>
-<section id="manage" hidden><h2>项目与 API Keys</h2><p class="muted">每个 Key 可关联多个项目，同一项目可被多个 Key 使用。删除 Key 只撤销访问凭据，项目和数据会保留。同一项目内知识共享，不同项目的数据相互独立。</p>
+<section id="login"><h2>管理员登录</h2><p class="muted">登录有效期为 8 小时，访问页面不会延长有效期。</p><form id="loginForm"><label for="password">管理员密码</label><input type="password" id="password" autocomplete="current-password" required><button>登录</button></form></section>
+<section id="manage" hidden><h2>项目与 API Keys</h2><button id="logout" type="button">退出登录</button><p class="muted">每个 Key 可关联多个项目，同一项目可被多个 Key 使用。删除 Key 只撤销访问凭据，项目和数据会保留。同一项目内知识共享，不同项目的数据相互独立。</p>
 <form id="projectForm"><label for="projectId">新建项目 ID</label><input id="projectId" maxlength="128" placeholder="例如：团队知识库；不是制作工程的 project_id" required><button>创建项目</button></form>
 <p id="projectList" class="muted"></p>
 <form id="createForm"><label for="name">新 Key 名称</label><input id="name" maxlength="128" placeholder="例如：制作团队" required><fieldset id="createProjects"><legend>关联项目（可多选）</legend></fieldset><p class="muted">每个项目是完整的数据空间；当前已有数据整体归入默认项目。未选择项目的 Key 无法访问数据。</p><button>生成 API Key</button></form>
@@ -16,7 +16,8 @@ fieldset{border:1px solid #d8e0e7;margin:16px 0;max-height:220px;overflow:auto}f
 <p id="message" role="status" aria-live="polite"></p></main>
 <script>
 const $=id=>document.getElementById(id);
-async function api(path,method='GET',body){const response=await fetch('/admin/api/'+path,{method,headers:{'Content-Type':'application/json','X-FX-Admin-Request':'1'},body:body?JSON.stringify(body):undefined});const result=await response.json();if(!response.ok){const error=new Error(result.error||'请求失败');error.status=response.status;throw error;}return result;}
+let authGeneration=0,loggingOut=false;
+async function api(path,method='GET',body){const generation=authGeneration;if(loggingOut&&path!=='logout')throw new DOMException('请求已取消','AbortError');const response=await fetch('/admin/api/'+path,{method,headers:{'Content-Type':'application/json','X-FX-Admin-Request':'1'},body:body?JSON.stringify(body):undefined});const result=await response.json();if(generation!==authGeneration)throw new DOMException('请求已取消','AbortError');if(!response.ok){const error=new Error(result.error||'请求失败');error.status=response.status;throw error;}return result;}
 function selected(fieldset){return [...fieldset.querySelectorAll('input:checked')].map(input=>input.value);}
 function projectChoices(projects,values,legend){const fieldset=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=legend;fieldset.append(title);for(const project of projects){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.value=project.id;input.checked=values.includes(project.id);label.append(input,document.createTextNode(' '+(project.name||project.id)));fieldset.append(label);}if(!projects.length)fieldset.append(document.createTextNode('暂无项目，请先创建项目。'));return fieldset;}
 async function load(){try{
@@ -31,15 +32,16 @@ async function load(){try{
     const fields=projectChoices(catalog.projects,key.project_ids,'关联 '+key.name+' 的项目');
     fields.disabled=!key.enabled;projects.append(fields);
     const save=document.createElement('button');save.textContent='保存关联';save.disabled=!key.enabled;
-    save.onclick=async()=>{save.disabled=true;try{await api('keys/'+key.id,'PATCH',{project_ids:selected(fields)});$('message').textContent='项目关联已保存。';await load();}catch(e){$('message').textContent=e.message;}finally{save.disabled=!key.enabled;}};
+    save.onclick=async()=>{save.disabled=true;try{await api('keys/'+key.id,'PATCH',{project_ids:selected(fields)});$('message').textContent='项目关联已保存。';await load();}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}finally{save.disabled=!key.enabled;}};
     const remove=document.createElement('button');remove.textContent='删除 Key';remove.disabled=!key.enabled;
-    remove.onclick=async()=>{if(!confirm('删除此 Key？项目和数据会保留，使用此 Key 的设备将无法继续访问。'))return;remove.disabled=true;try{await api('keys/'+key.id,'DELETE');$('message').textContent='Key 已删除，项目和数据已保留。';await load();}catch(e){$('message').textContent=e.message;}finally{remove.disabled=!key.enabled;}};
+    remove.onclick=async()=>{if(!confirm('删除此 Key？项目和数据会保留，使用此 Key 的设备将无法继续访问。'))return;remove.disabled=true;try{await api('keys/'+key.id,'DELETE');$('message').textContent='Key 已删除，项目和数据已保留。';await load();}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}finally{remove.disabled=!key.enabled;}};
     actions.append(save,remove);tr.append(name,projects,actions);$('keys').append(tr);
   }
-}catch(e){if(e.status===401){$('login').hidden=false;$('manage').hidden=true;}else{$('message').textContent=e.message;}}}
-$('loginForm').onsubmit=async e=>{e.preventDefault();try{await api('login','POST',{password:$('password').value});$('password').value='';$('message').textContent='';await load();}catch(e){$('message').textContent=e.message;}};
-$('projectForm').onsubmit=async e=>{e.preventDefault();try{await api('projects','POST',{id:$('projectId').value});$('projectId').value='';$('message').textContent='项目已创建，可关联到 API Key。';await load();}catch(e){$('message').textContent=e.message;}};
-$('createForm').onsubmit=async e=>{e.preventDefault();try{const data=await api('keys','POST',{name:$('name').value,project_ids:selected($('createProjects'))});$('newKey').value=data.api_key;$('created').hidden=false;$('name').value='';for(const input of $('createProjects').querySelectorAll('input'))input.checked=false;await load();}catch(e){$('message').textContent=e.message;}};
+}catch(e){if(e.name==='AbortError')return;if(e.status===401){$('login').hidden=false;$('manage').hidden=true;}else{$('message').textContent=e.message;}}}
+$('loginForm').onsubmit=async e=>{e.preventDefault();authGeneration++;try{await api('login','POST',{password:$('password').value});$('password').value='';$('message').textContent='';await load();}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}};
+$('logout').onclick=async()=>{if(loggingOut)return;loggingOut=true;authGeneration++;$('manage').hidden=true;$('newKey').value='';$('password').value='';$('name').value='';$('projectId').value='';$('created').hidden=true;$('keys').replaceChildren();for(const input of $('createProjects').querySelectorAll('input'))input.checked=false;try{await api('logout','POST');$('message').textContent='已退出登录。';}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}finally{loggingOut=false;$('login').hidden=false;$('password').focus();}};
+$('projectForm').onsubmit=async e=>{e.preventDefault();try{await api('projects','POST',{id:$('projectId').value});$('projectId').value='';$('message').textContent='项目已创建，可关联到 API Key。';await load();}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}};
+$('createForm').onsubmit=async e=>{e.preventDefault();try{const data=await api('keys','POST',{name:$('name').value,project_ids:selected($('createProjects'))});$('newKey').value=data.api_key;$('created').hidden=false;$('name').value='';for(const input of $('createProjects').querySelectorAll('input'))input.checked=false;await load();}catch(e){if(e.name!=='AbortError')$('message').textContent=e.message;}};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('newKey').value);$('message').textContent='已复制，请保存在私密配置中。';}catch(e){$('message').textContent='请选中 Key 后手动复制。';}};
 load();
 </script></html>

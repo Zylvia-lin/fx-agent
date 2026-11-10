@@ -83,6 +83,41 @@ async def test_module_knowledge_defaults_and_invalid_module_hint(tmp_path):
         assert "fx_get_module_catalog" in response.json()["error"]
 
 
+async def test_admin_session_fixed_expiry_and_explicit_logout(tmp_path, monkeypatch):
+    import fx_data_service.admin as admin_module
+
+    settings = ServiceConfig(
+        data_root=tmp_path / "data",
+        database_root=tmp_path / "db",
+        api_key="k" * 43,
+        admin_password="test-admin",
+    )
+    started = admin_module.time.time()
+    monkeypatch.setattr(admin_module.time, "time", lambda: started)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(settings)), base_url="https://test"
+    ) as client:
+        headers = {"X-FX-Admin-Request": "1", "Origin": "https://test"}
+        login = await client.post("/admin/api/login", json={"password": settings.admin_password})
+        assert login.json()["expires_in"] == 28800
+        assert "Max-Age=28800" in login.headers["set-cookie"]
+        assert "HttpOnly" in login.headers["set-cookie"] and "Secure" in login.headers["set-cookie"]
+        assert (await client.get("/admin/api/keys")).status_code == 200
+        assert (await client.post("/admin/api/logout")).status_code == 403
+        logout = await client.post("/admin/api/logout", headers=headers)
+        assert logout.status_code == 200 and "Max-Age=0" in logout.headers["set-cookie"]
+        assert (await client.get("/admin/api/keys")).status_code == 401
+        assert (await client.post("/admin/api/logout", headers=headers)).status_code == 200
+        await client.post("/admin/api/login", json={"password": settings.admin_password})
+        cookie = client.cookies.get("fx_admin")
+        monkeypatch.setattr(admin_module.time, "time", lambda: started + 28799)
+        assert (await client.get("/admin/api/keys")).status_code == 200
+        monkeypatch.setattr(admin_module.time, "time", lambda: started + 28800)
+        assert (
+            await client.get("/admin/api/keys", headers={"Cookie": "fx_admin=" + cookie})
+        ).status_code == 401
+
+
 def test_service_mode_accepts_ip_port_key_and_local_override(monkeypatch):
     monkeypatch.setenv("FX_AGENT_DATA_MODE", "service")
     monkeypatch.setenv("FX_AGENT_SERVER_IP", "127.0.0.1")

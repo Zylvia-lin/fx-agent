@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
+ADMIN_SESSION_SECONDS = 8 * 60 * 60
+
 
 @contextmanager
 def open_database(database):
@@ -146,7 +148,7 @@ class AdminConsole:
             expected = hmac.new(
                 self.password.encode(), payload.encode(), hashlib.sha256
             ).hexdigest()
-            return 0 <= time.time() - timestamp < 8 * 3600 and hmac.compare_digest(
+            return 0 <= time.time() - timestamp < ADMIN_SESSION_SECONDS and hmac.compare_digest(
                 signature, expected
             )
         except (ValueError, TypeError):
@@ -196,15 +198,29 @@ class AdminConsole:
             return JSONResponse({"error": "管理员密码错误"}, status_code=401)
         payload = f"{time.time()}:{secrets.token_hex(16)}"
         signature = hmac.new(self.password.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+        response = JSONResponse(
+            {"ok": True, "expires_in": ADMIN_SESSION_SECONDS}, headers={"Cache-Control": "no-store"}
+        )
         response.set_cookie(
             "fx_admin",
             payload + "." + signature,
-            max_age=8 * 3600,
+            max_age=ADMIN_SESSION_SECONDS,
             httponly=True,
             secure=True,
             samesite="strict",
             path="/admin",
+        )
+        return response
+
+    async def logout(self, request):
+        origin = urlsplit(request.headers.get("origin", ""))
+        if request.headers.get("x-fx-admin-request") != "1" or origin.netloc != request.headers.get(
+            "host"
+        ):
+            return JSONResponse({"error": "管理请求来源无效"}, status_code=403)
+        response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+        response.delete_cookie(
+            "fx_admin", path="/admin", secure=True, httponly=True, samesite="strict"
         )
         return response
 
@@ -281,6 +297,7 @@ class AdminConsole:
             Route("/admin", self.page),
             Route("/admin/", self.page),
             Route("/admin/api/login", self.login, methods=["POST"]),
+            Route("/admin/api/logout", self.logout, methods=["POST"]),
             Route("/admin/api/keys", self.keys, methods=["GET", "POST"]),
             Route("/admin/api/keys/{key_id}", self.keys, methods=["DELETE", "PATCH"]),
             Route("/admin/api/projects", self.projects, methods=["GET", "POST"]),

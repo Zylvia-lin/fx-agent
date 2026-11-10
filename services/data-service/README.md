@@ -20,6 +20,8 @@ docker compose --env-file /www/fx-agent/deployment.env \
 
 如果本机使用独立 `docker-compose` 命令，可等价替换。构建默认使用 PyPI，可用 `PIP_INDEX_URL` 指定部署网络可访问的 HTTPS 包镜像。
 
+当前服务器的部署配置保存在 `/www/fx-agent/deployment.env`。在发布源码目录运行 Compose 时显式传入 `--env-file /www/fx-agent/deployment.env`；该文件为 Compose 提供 MySQL 用户和各 secret 文件路径。`required variable ... is missing a value` 表示 Compose 尚未载入这些变量，容器还未启动，不代表 MySQL 连接失败。
+
 容器首次启动会把现有 `data/memory.sqlite3` 逐表迁移到专用 MySQL 数据库，保留记录内容、ID、修订及分页行序，并校验各表行数。迁移使用一个数据事务，拒绝覆盖非空的目标知识表。迁移标记确保重启不会重复导入。原 SQLite 和 ZIP 保留，案例与模板归档继续从挂载的数据目录读取。
 
 服务内部只监听 `127.0.0.1:18790`。生产环境用 Nginx/Caddy 提供 HTTPS；当前部署外部端口为 `18443`，`/admin` 为管理员网页，`/v1/*` 为认证数据接口。不要代理 `/internal/*`，它仅用于容器自身健康检查。
@@ -44,17 +46,19 @@ docker compose --env-file /www/fx-agent/deployment.env \
 
 ## 管理网页和 API Key
 
-访问 `https://服务端IP:18443/admin`，用管理员密码登录，可以创建项目、创建命名 Key 时多选关联项目，并通过“保存关联”调整已有 Key 的项目范围。同一项目可以关联多个 Key。项目 ID 应与插件请求中的 `project_id` 一致；已有进度、任务、经验、项目规范和案例中的项目会自动出现在目录中。
+访问 `https://服务端IP:18443/admin`，用管理员密码登录，可以创建完整数据空间、创建命名 Key 时多选关联空间，并通过“保存关联”调整范围。同一数据空间可以关联多个 Key。管理页中的项目 ID 与工具参数中的制作工程 `project_id` 属于不同层级；现有全部工程、经验和归档只对应一个 `default` 项目。
 
 项目独立于访问凭据保存。“删除 Key”会永久禁用该凭据，保留项目、进度和所有数据；新 Key 可以重新关联原项目。完整 Key 只在创建时返回一次；数据库只存哈希。主环境 Key 也可以被禁用，重启不会自动启用它；修改环境 Key 的值表示主动轮换，保留已配置的项目范围。
 
-新 Key 只能操作关联项目，包括嵌套参数中的项目和仅凭任务 ID 发起的访问；移除关联后，历史请求缓存也不能继续访问该项目。未选择项目的新 Key 仅可使用公共知识。升级前已有 Key 保留“全部项目”的兼容访问，保存关联后改为仅允许所选项目；配置文件中的旧设备凭据仍保留原有访问范围。
+Key 只能访问关联的数据空间；移除关联后，历史请求缓存也不能继续访问该空间。未关联空间的 Key 无法访问数据。旧凭据一次性归入默认空间，重启保留之后的关联调整。单空间 Key 自动选择，多空间 Key 必须提供 `X-FX-Data-Project` 请求头或客户端 `FX_AGENT_DATA_PROJECT`。
 
-管理接口：`GET/POST /admin/api/projects` 查询或创建项目（创建传 `id`）；`POST /admin/api/keys` 接收 `name` 和 `project_ids` 数组；`PATCH /admin/api/keys/{id}` 替换 `project_ids`；`DELETE /admin/api/keys/{id}` 撤销凭据。Key 列表与 `/v1/status` 返回的 `project_ids` 为 `null` 表示旧版兼容访问，为 `[]` 表示未关联任何项目。
+管理接口：`GET/POST /admin/api/projects` 查询或创建完整数据空间（创建传 `id`）；`POST /admin/api/keys` 接收 `name` 和 `project_ids` 数组；`PATCH /admin/api/keys/{id}` 替换 `project_ids`；`DELETE /admin/api/keys/{id}` 撤销凭据。`project_ids` 返回授权空间列表，`/v1/status` 的 `data_project` 返回当前空间。
 
-公共经验、模板、归档素材和全局规范仍作为共享知识复用，项目关联不提供独立租户级隔离。设备 ID 只防止日常任务误冲突，不能阻止持 Key 的团队成员主动冒充另一设备；项目进度和任务仍按设备区分，轮换 Key 时应保留原设备 ID。
+同一数据空间内经验、模板、归档和全局规范共用；不同空间的数据、文件及请求缓存独立。设备 ID 用于区分同一空间内的日常任务与进度，轮换 Key 时应保留设备 ID。
 
 登录有速率限制；管理员 Cookie 使用 Secure、HttpOnly 和 SameSite=Strict，管理写接口检查请求来源。应通过 HTTPS 访问；自签名证书需将专用 CA/证书交给客户端信任。
+
+登录后有效期固定为 8 小时，访问不会续期；浏览器 Max-Age 与服务端签名时间均参与校验。“退出登录”调用 `POST /admin/api/logout` 清除本机 Cookie、页面 Key 和敏感输入，并忽略退出前未完成请求的响应。
 
 ## 备份和验证
 
