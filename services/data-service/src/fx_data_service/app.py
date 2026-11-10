@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
@@ -725,6 +725,22 @@ def create_app(settings: ServiceConfig, backend=None):
                     response = {
                         "error": "Unknown module; read fx_get_module_catalog for supported module IDs",
                         "error_code": "unknown_module",
+                    }
+                from fx_agent.data_api import RULES_PAGINATION_ERROR
+
+                if name == "fx_get_production_rules" and (
+                    message == RULES_PAGINATION_ERROR
+                    or isinstance(exc, ValidationError)
+                    and any(error["loc"] in {("max_chars",), ("offset",)} for error in exc.errors())
+                ):
+                    status = 422
+                    response = {
+                        "error": RULES_PAGINATION_ERROR,
+                        "error_code": "invalid_pagination",
+                        "limits": {
+                            "max_chars": {"minimum": 1024, "maximum": 12000},
+                            "offset": {"minimum": 0},
+                        },
                     }
             except Exception:
                 LOG.exception(

@@ -4,7 +4,9 @@ import asyncio
 import threading
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 
 from fx_agent.archive import ArchiveCancelled, ArtifactInput, CaseArchive, create_case_async
 from fx_agent.baselines import sync_baselines
@@ -21,6 +23,10 @@ from fx_agent.modules import module_catalog
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store, compact, scope_id
 from fx_agent.templates import TemplateLibrary, TemplatePolicy
+
+RULES_PAGINATION_ERROR = (
+    "max_chars must be 1024..12000 and offset must be >= 0; paginate using next_offset"
+)
 
 
 async def fx_sync_module_baselines() -> dict:
@@ -71,8 +77,21 @@ async def fx_refresh_module_guides(project_id: str = "") -> dict:
 
 async def fx_get_production_rules(
     project_id: str = "",
-    max_chars: int = 6000,
-    offset: int = 0,
+    max_chars: Annotated[
+        int,
+        Field(
+            ge=1024,
+            le=12000,
+            description="JSON character budget: 1024..12000. Read subsequent pages with next_offset.",
+        ),
+    ] = 6000,
+    offset: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Non-negative rule offset; use next_offset from the previous response.",
+        ),
+    ] = 0,
     software: Literal["houdini", "nuke", "maya"] = "houdini",
 ) -> dict:
     """Read baseline and revisioned user rules before using learned recipes.
@@ -81,7 +100,7 @@ async def fx_get_production_rules(
     or silently change the bridge's machine checks.
     """
     if not 1024 <= max_chars <= 12000 or offset < 0:
-        raise ValueError("Invalid max_chars or offset")
+        raise ValueError(RULES_PAGINATION_ERROR)
     if project_id:
         scope_id.validate_python(project_id)
     from fx_agent.data_context import current_backend

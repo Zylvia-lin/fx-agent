@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import ssl
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -39,6 +40,30 @@ class ServiceUnavailable(RuntimeError):
     """No local fallback: a disconnected client must not fork the shared data."""
 
 
+def invalid_response(response, request_id, reason):
+    """Keep useful HTTP evidence without echoing private bodies or credentials."""
+    content_type = response.headers.get("content-type", "unknown").split(";", 1)[0].strip()
+    if not re.fullmatch(r"[A-Za-z0-9.+/-]{1,80}", content_type):
+        content_type = "unknown"
+    text = response.text[:2048].casefold()
+    markers = (
+        "bad gateway",
+        "gateway timeout",
+        "gateway time-out",
+        "service unavailable",
+        "internal server error",
+        "not found",
+        "nginx",
+        "cloudflare",
+        "envoy",
+    )
+    hint = ", ".join(marker for marker in markers if marker in text) or "unrecognized content"
+    return ServiceUnavailable(
+        f"FX data service {reason}; HTTP {response.status_code}; content_type={content_type}; "
+        f"body_bytes={len(response.content)}; response_hint={hint}; request_id={request_id}"
+    )
+
+
 class RemoteClient:
     def __init__(self, config_path: Path | None = None):
         config_path = config_path or os.getenv("FX_AGENT_CLIENT_CONFIG")
@@ -64,7 +89,9 @@ class RemoteClient:
                 "FX_AGENT_API_KEY", os.getenv("FX_AGENT_SERVICE_TOKEN", config.get("token", ""))
             )
         )
-        self.data_project = config.get("data_project", "") if explicit else os.getenv("FX_AGENT_DATA_PROJECT", "")
+        self.data_project = (
+            config.get("data_project", "") if explicit else os.getenv("FX_AGENT_DATA_PROJECT", "")
+        )
         import getpass
         import socket
         import uuid
@@ -123,7 +150,8 @@ class RemoteClient:
                     response = client.post(
                         self.url + "/v1/operations",
                         json=body,
-                        headers=self.headers() | {
+                        headers=self.headers()
+                        | {
                             "X-FX-Version": __version__,
                             "X-FX-Protocol": "1",
                             "X-FX-Device-ID": self.device_id,
@@ -139,7 +167,19 @@ class RemoteClient:
         try:
             value = response.json()
         except ValueError:
-            raise ServiceUnavailable("FX data service returned an invalid response") from None
+            raise invalid_response(
+                response, body["request_id"], "returned a non-JSON response"
+            ) from None
+        if (
+            not isinstance(value, dict)
+            or response.status_code == 200
+            and "result" not in value
+            or response.status_code != 200
+            and not isinstance(value.get("error"), str)
+        ):
+            raise invalid_response(
+                response, body["request_id"], "returned an invalid JSON envelope"
+            )
         if response.status_code == 403:
             raise PermissionError(value.get("error", "Data service access denied"))
         if response.status_code >= 500:

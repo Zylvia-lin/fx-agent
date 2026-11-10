@@ -6,8 +6,8 @@ import uuid
 
 import httpx
 import pytest
-
 from fx_data_service.app import DeviceConfig, ServiceConfig, create_app, snapshot_database
+
 from fx_agent.multidevice import RemoteClient, ServiceUnavailable, service_scope
 from fx_agent.store import Store
 
@@ -74,6 +74,70 @@ async def test_authentication_allowlist_and_size_limit(client):
         headers={"Authorization": "Bearer " + "a" * 40},
     )
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "arguments", [{"max_chars": 14000}, {"max_chars": 30000}, {"max_chars": 1023}, {"offset": -1}]
+)
+async def test_rule_pagination_returns_actionable_limits(client, arguments):
+    response = await call(client, "tool.fx_get_production_rules", arguments)
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "invalid_pagination"
+    assert "12000" in response.json()["error"]
+    assert response.json()["limits"]["max_chars"] == {"minimum": 1024, "maximum": 12000}
+    assert (
+        await call(client, "tool.fx_get_production_rules", {"max_chars": 12000, "offset": 16})
+    ).status_code == 200
+
+
+def test_rules_schema_advertises_budget_and_offset_bounds():
+    from mcp.server.fastmcp import FastMCP
+
+    from fx_agent.data_api import fx_get_production_rules
+
+    mcp = FastMCP("schema-test")
+    mcp.add_tool(fx_get_production_rules)
+    schema = mcp._tool_manager.get_tool("fx_get_production_rules").parameters["properties"]
+    assert schema["max_chars"]["minimum"] == 1024
+    assert schema["max_chars"]["maximum"] == 12000
+    assert schema["offset"]["minimum"] == 0
+
+
+@pytest.mark.parametrize(
+    "status,payload",
+    [
+        (502, b"<html><title>502 Bad Gateway</title>private data</html>"),
+        (200, b"null"),
+        (200, b"[]"),
+        (200, b'{"ok":true}'),
+        (502, b'{"ok":true}'),
+        (502, b'{"error":{"detail":"private data"}}'),
+    ],
+)
+def test_invalid_remote_envelope_has_safe_http_diagnostics(monkeypatch, status, payload):
+    monkeypatch.delenv("FX_AGENT_CLIENT_CONFIG", raising=False)
+    monkeypatch.setenv("FX_AGENT_SERVER_IP", "127.0.0.1")
+    monkeypatch.setenv("FX_AGENT_API_KEY", "k" * 43)
+    original = httpx.Client
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            status,
+            content=payload,
+            headers={
+                "Content-Type": "text/html" if payload.startswith(b"<") else "application/json"
+            },
+        )
+    )
+    monkeypatch.setattr(
+        "fx_agent.multidevice.httpx.Client",
+        lambda **kwargs: original(transport=transport, **kwargs),
+    )
+    with pytest.raises(ServiceUnavailable) as error:
+        RemoteClient().call("tool.fx_get_production_rules", request_id="a" * 32)
+    text = str(error.value)
+    assert f"HTTP {status}" in text
+    assert "request_id=" + "a" * 32 in text
+    assert "private data" not in text and "k" * 43 not in text
 
 
 async def test_shared_knowledge_but_isolated_checkpoint_and_revisions(client, settings):
