@@ -40,3 +40,4 @@ output/
 
 # Local development notes; published documentation lives in public-docs/
 /docs/
+.pytest_review_mcp_env
