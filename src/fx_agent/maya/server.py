@@ -2,7 +2,9 @@
 
 import argparse
 import asyncio
+import json
 import time
+from pathlib import Path
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -59,6 +61,25 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
     def get_maya_scene_info() -> dict:
         """Read selected scene with live session and scene identity validation."""
         return connection.info()
+
+    @mcp.tool()
+    def load_scene(file_path: str, discard_unsaved: bool = False) -> dict:
+        """Open the task's saved .ma/.mb in the explicitly selected session. Unsaved edits are refused unless discard_unsaved is explicitly true. No automatic retry."""
+        path = Path(file_path)
+        if not path.is_absolute() or path.suffix.lower() not in {".ma", ".mb"} or not path.is_file():
+            raise ValueError("Existing absolute .ma/.mb path required")
+        code = ("from maya import cmds\n"
+                "if cmds.file(query=True, modified=True) and not %s:\n"
+                "    raise RuntimeError('Unsaved scene changes; save first or explicitly discard')\n"
+                "cmds.file(u%s, open=True, force=%s, prompt=False)\n"
+                "result={'path':cmds.file(query=True, sceneName=True)}\n"
+                % (discard_unsaved, json.dumps(path.as_posix()), discard_unsaved))
+        response = connection.send("execute_python", {"code": code}, timeout=120)
+        if not response.get("success"):
+            raise RuntimeError(response.get("error", "Maya could not open scene"))
+        result = response["result"]
+        connection.target["scene_path"] = result["path"]
+        return result
 
     @mcp.tool()
     def get_maya_renderer_status() -> dict:

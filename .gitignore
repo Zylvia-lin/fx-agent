@@ -31,3 +31,12 @@ integrations/nuke/vendor/
 data/
 # Machine-specific configuration
 .fx-agent.local.json
+
+# Local proprietary software patch; no redistribution permission
+fix_info_panl_error/
+
+# Generated production reports and test output
+output/
+
+# Local development notes; published documentation lives in public-docs/
+/docs/

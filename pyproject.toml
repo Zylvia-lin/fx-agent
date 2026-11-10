@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Host-operated Houdini FX agent with persistent production knowledge"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
 dependencies = [
     "fxhoudinimcp==2.25.0",
     # The upstream SDK adapter uses private registration internals. Validate
@@ -33,6 +34,30 @@ nuke = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fx_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/integrations",
+    "/scripts",
+    "/skills",
+    "/tests",
+    "/public-docs",
+    "/licenses",
+    "/README.md",
+    "/LICENSE",
+    "/THIRD_PARTY_NOTICES.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/plugin.json",
+    "/mcp.json",
+    "/Install-FX-Agent.bat",
+    "/.gitattributes",
+    "/.gitignore",
+]
+exclude = ["/integrations/nuke/vendor", "**/__pycache__", "**/*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

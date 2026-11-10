@@ -64,7 +64,7 @@ async def test_maya_mcp_registers_shared_tools_and_blocks_ungated_writes(tmp_pat
     server = build_server(Connection())
     tools = {tool.name: tool for tool in await server.list_tools()}
     for name in ("create_maya_light", "update_maya_light", "set_maya_hdri", "set_maya_light_link",
-                 "execute_maya_python", "render_maya_frame", "save_scene"):
+                 "execute_maya_python", "render_maya_frame", "save_scene", "load_scene"):
         assert "fx_task_id" in tools[name].inputSchema["required"]
         with pytest.raises(ValueError, match="Task gate"):
             await server._tool_manager.call_tool(name, {})
