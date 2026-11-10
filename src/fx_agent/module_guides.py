@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from fx_agent.archive import contained, file_hash
-from fx_agent.modules import HOUDINI, NUKE, normalize_modules
+from fx_agent.modules import CATALOGS, normalize_modules
 from fx_agent.store import Store, compact, scope_id
 
 START = "<!-- FX MODULE LEARNING START -->"
@@ -153,19 +153,19 @@ class ModuleGuides(Store):
                 for path in base.glob("*/*.md"):
                     software, module = path.parent.name, path.stem
                     catalog = (
-                        HOUDINI if software == "houdini" else NUKE if software == "nuke" else {}
+                        CATALOGS.get(software, {})
                     )
                     if module in catalog and module != "unclassified":
                         known.add((software, module))
             if selected:
                 known &= {selected}
             for software, module in sorted(known):
-                label, topic = (HOUDINI if software == "houdini" else NUKE)[module]
+                label, topic = CATALOGS[software][module]
                 section, count = self._section(groups.get((software, module), []))
                 header = (
                     f"# {label}：全局工作流补充\n\n上游准则：get_workflow_guide({topic!r})\n\n"
                     if topic
-                    else f"# {label}：全局工作流补充\n\n基础工作流：nuke-workflow\n\n"
+                    else f"# {label}：全局工作流补充\n\n基础工作流：{software}-workflow\n\n"
                 )
                 header += "跨项目共享，按条目中的条件复用。归档在提炼时校验，复用前重新核验案例；不代表因果解释全部证实。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
                 path = self._path(project_id, software, module)
@@ -225,7 +225,7 @@ class ModuleGuides(Store):
         if refreshed is None:
             refreshed = self.refresh(project_id, module=module, software=software)
         path = self._path(project_id, software, module)
-        topic = (HOUDINI if software == "houdini" else NUKE)[module][1]
+        topic = CATALOGS[software][module][1]
         conflicts = refreshed["conflicts"].get(f"{software}/{module}", [])
         result = {
             "scope": "global",

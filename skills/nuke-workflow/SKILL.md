@@ -21,7 +21,7 @@ Nuke节点修改、批量操作、保存与渲染均携带fx_task_id，复用任
 
 遇到查证后仍不明确的问题，用fx_task_question记录并集中向用户提问；回答须保存真实user_quote和source_ref。开放问题不能被省略后宣称完成。重启或续作先核对现场并更新任务，不直接复用旧验证。
 
-1. 先调用 FX Agent 的 `fx_status` 确认共同数据目录，用 Nuke 入口 `get_nuke_connection_status`、`get_script_info` 核对版本、当前 NK、帧范围和色彩管理。没有 Nuke 连接时停止实际节点操作，不把离线模拟结果当作现场。
+1. 先调用 FX Agent 的 `fx_status` 确认共同数据目录，用 Nuke 入口 `get_nuke_connection_status`、`get_script_info` 核对版本、当前 NK、帧范围和色彩管理。没有 Nuke 连接时先检查是否有已开启的 Nuke 和工程；若没有开启的工程且用户已提供工程路径，可自行启动 Nuke 并打开该工程，无需再次确认。打开后建立桥接连接并重新核对真实工程、帧范围和色彩管理，再进行节点操作；不把离线模拟结果当作现场。
    多窗口先用 `list_nuke_sessions` 获取 PID、实际端口、session_id 和工程路径，再将目标记录传给 `connect_nuke(port, pid, session_id, expected_script)`；切换后重新核对真实工程与任务目标。登记是快照，身份/路径变化需重读，不能自动猜选其他窗口。基准端口默认8187，各实例使用独立端口；多个窗口时MCP可在未选择状态启动，列表与连接操作不需要制作任务放行。
 2. 用 `fx_get_production_rules` 读取共同用户规范。其 `$HIP` 和 File Cache 固定规则适用 Houdini，不能直接写进 Nuke 文件旋钮。遇到软件专属新规范，保存时使用带 `nuke-` 前缀的规则键并在 statement 写清适用软件。
 3. 参考工程只读检查，实际制作使用工作副本。先查 `get_node_info`、`find_broken_reads`，核实真实通道、帧段、Alpha/预乘与素材色彩空间；不足的信息不能凭名称猜测。

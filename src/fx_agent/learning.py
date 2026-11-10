@@ -30,7 +30,7 @@ class UserRule(BaseModel):
 class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
-    software: Literal["houdini", "nuke"] = "houdini"
+    software: Literal["houdini", "nuke", "maya"] = "houdini"
     modules: list[str] = Field(
         default_factory=lambda: ["unclassified"],
         min_length=1,
@@ -86,7 +86,7 @@ class LearningStore(MemoryStore):
             )
         return record
 
-    def get_rules(self, project_id: str = "", max_chars: int = 6000, offset: int = 0) -> dict:
+    def get_rules(self, project_id: str = "", max_chars: int = 6000, offset: int = 0, software: str = "houdini") -> dict:
         if not 1024 <= max_chars <= 12000 or offset < 0:
             raise ValueError("max_chars must be 1024..12000")
         scope = "project:" + scope_id.validate_python(project_id) if project_id else ""
@@ -95,7 +95,7 @@ class LearningStore(MemoryStore):
                 "SELECT r.payload FROM user_rules r JOIN (SELECT scope,rule_key,MAX(revision) AS rev FROM user_rules WHERE scope IN ('global',?) GROUP BY scope,rule_key) x ON r.scope=x.scope AND r.rule_key=x.rule_key AND r.revision=x.rev ORDER BY r.scope,r.rule_key",
                 (scope,),
             ).fetchall()
-        result = production_rules() | {
+        result = production_rules(software) | {
             "user_rules": [],
             "omitted_rules": max(0, len(rows) - offset),
             "budget_unit": "json_characters",
@@ -222,7 +222,7 @@ class LearningStore(MemoryStore):
         effect_type: str = "",
         max_chars: int = 6000,
         before_cursor: int = 0,
-        software: Literal["houdini", "nuke"] = "houdini",
+        software: Literal["houdini", "nuke", "maya"] = "houdini",
         module: str = "",
     ) -> dict:
         project_id, shot_id = (
@@ -231,7 +231,7 @@ class LearningStore(MemoryStore):
         )
         if not 1024 <= max_chars <= 12000 or before_cursor < 0:
             raise ValueError("max_chars must be 1024..12000")
-        if software not in ("houdini", "nuke"):
+        if software not in ("houdini", "nuke", "maya"):
             raise ValueError("Invalid software")
         selected_module = normalize_modules([module], software)[0] if module else ""
         with self.connection() as db:

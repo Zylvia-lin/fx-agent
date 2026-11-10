@@ -31,7 +31,7 @@ class CheckpointInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
-    software: Literal["houdini", "nuke"] = "houdini"
+    software: Literal["houdini", "nuke", "maya"] = "houdini"
     shot_id: Identifier
     summary: str = Field(min_length=1, max_length=10000)
     scene_path: str = Field(min_length=1, max_length=4096)
@@ -212,7 +212,7 @@ class Store:
             scope_id.validate_python(project_id),
             scope_id.validate_python(shot_id),
         )
-        if software not in ("houdini", "nuke"):
+        if software not in ("houdini", "nuke", "maya"):
             raise ValueError("Invalid software")
         with self.connection() as db:
             row = db.execute(

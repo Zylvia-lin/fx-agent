@@ -1,8 +1,9 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Both', 'Houdini', 'Nuke')][string]$Components = 'Both',
+    [ValidateSet('Both', 'Houdini', 'Nuke', 'Maya', 'All')][string]$Components = 'Both',
     [string]$HoudiniPrefDir,
     [string]$NukeExe,
+    [string]$MayaModulesDir,
     [ValidateRange(1, 65535)][int]$HoudiniPort = 18186,
     [ValidateRange(1, 65535)][int]$NukePort = 8187,
     [switch]$Plan
@@ -85,8 +86,8 @@ function Find-FxHoudiniPrefDir {
 function Invoke-FxInstall {
     param(
         [string]$AgentRoot = $script:FxAgentRoot,
-        [ValidateSet('Both', 'Houdini', 'Nuke')][string]$Components = 'Both',
-        [string]$HoudiniPrefDir, [string]$NukeExe,
+        [ValidateSet('Both', 'Houdini', 'Nuke', 'Maya', 'All')][string]$Components = 'Both',
+        [string]$HoudiniPrefDir, [string]$NukeExe, [string]$MayaModulesDir,
         [ValidateRange(1, 65535)][int]$HoudiniPort = 18186,
         [ValidateRange(1, 65535)][int]$NukePort = 8187,
         [string]$UserProfileRoot = [Environment]::GetFolderPath('UserProfile'),
@@ -96,8 +97,12 @@ function Invoke-FxInstall {
     foreach ($required in @('pyproject.toml', 'uv.lock')) {
         if (-not (Test-Path -LiteralPath (Join-Path $AgentRoot $required) -PathType Leaf)) { throw "工程缺少 $required。" }
     }
-    $withHoudini = $Components -ne 'Nuke'
-    $withNuke = $Components -ne 'Houdini'
+    $withHoudini = $Components -in @('Both', 'Houdini', 'All')
+    $withNuke = $Components -in @('Both', 'Nuke', 'All')
+    $withMaya = $Components -in @('Maya', 'All')
+    if ($withMaya -and -not $MayaModulesDir) {
+        $MayaModulesDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'maya/modules'
+    }
     if ($withHoudini) {
         if ($HoudiniPort -in @(8100, 54321)) { throw '不能使用原 MCP 默认端口 8100 或 54321，请选择独立端口。' }
         if (-not $HoudiniPrefDir) { $HoudiniPrefDir = Find-FxHoudiniPrefDir }
@@ -113,6 +118,7 @@ function Invoke-FxInstall {
     Write-Host "工程：$AgentRoot`n组件：$Components`n记忆：$(Join-Path $AgentRoot 'data')"
     if ($withHoudini) { Write-Host "Houdini 偏好：$HoudiniPrefDir；端口：$HoudiniPort" }
     if ($withNuke) { Write-Host "Nuke：$NukeExe；端口：$NukePort" }
+    if ($withMaya) { Write-Host "Maya 模块：$MayaModulesDir；默认端口：18770-18789" }
     if ($Plan) {
         Write-Host '仅预览：未安装依赖、未修改配置。实际安装前会检查端口。'
         return
@@ -134,7 +140,9 @@ function Invoke-FxInstall {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw '依赖同步后未找到工程 Python 环境。' }
     $houArgs = @((Join-Path $AgentRoot 'scripts/install_codex.py'), '--houdini-pref', $HoudiniPrefDir, '--port', "$HoudiniPort")
     $nukeArgs = @((Join-Path $AgentRoot 'scripts/install_nuke.py'), '--port', "$NukePort")
+    $mayaArgs = @((Join-Path $AgentRoot 'scripts/install_maya.py'), '--modules-dir', $MayaModulesDir)
     if ($Components -eq 'Nuke') { $nukeArgs += '--require-shared-agent' }
+    if ($withMaya) { Invoke-FxChecked -Executable $python -Arguments $mayaArgs -Label '检查Maya配置' }
     if ($withHoudini) { Invoke-FxChecked -Executable $python -Arguments $houArgs -Label '检查Houdini配置' }
     if ($withNuke) {
         Invoke-FxChecked -Executable $python -Arguments ($nukeArgs + @('--prepare')) -Label '准备Nuke桥接'
@@ -150,6 +158,7 @@ function Invoke-FxInstall {
     }
     if ($withHoudini) { Invoke-FxChecked -Executable $python -Arguments ($houArgs + @('--apply')) -Label '安装Houdini插件' }
     if ($withNuke) { Invoke-FxChecked -Executable $python -Arguments ($nukeArgs + @('--apply')) -Label '安装Nuke插件' }
+    if ($withMaya) { Invoke-FxChecked -Executable $python -Arguments ($mayaArgs + @('--apply')) -Label '安装Maya模块' }
     Write-Host "`n安装配置完成。请启动所选软件，并重启 Codex 或新建聊天。" -ForegroundColor Green
     Write-Host '软件连接与实际效果尚需启动后验证；旧配置备份位于 ~/.fx-agent-install-backups，记忆未删除。'
 }

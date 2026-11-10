@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maya 工作流"
+  short_description: "在选定 Maya 会话中完成 Arnold/Redshift 布光、渲染与共享经验归档"
+  default_prompt: "使用 $maya-workflow，先核对 Maya 会话和实际渲染器状态，再按共享知识与任务门禁完成灯光和渲染。"

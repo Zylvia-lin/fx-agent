@@ -225,7 +225,7 @@ def prune_baseline_copies(root: Path, manifest: dict) -> None:
 def write_baseline_indexes(root: Path) -> None:
     root = Path(root).resolve()
     snapshots = baseline_status(root)["snapshots"]
-    for software in ("houdini", "nuke"):
+    for software in ("houdini", "nuke", "maya"):
         relative = f"modules/global/{software}/README.md"
         path = contained(root, relative)
         if path != root / relative:
@@ -242,7 +242,7 @@ def write_baseline_indexes(root: Path) -> None:
             if (
                 software == "houdini"
                 and snapshot["source"] != "fxhoudinimcp"
-                or software == "nuke"
+                or software in ("nuke", "maya")
                 and snapshot["source"] != "fx-agent"
             ):
                 continue
@@ -255,7 +255,7 @@ def write_baseline_indexes(root: Path) -> None:
                     f"  [Pyro原始规范]({target}/markdown/workflows/pyro.md)；其他模块见当前规范目录。"
                 ]
             else:
-                lines += [f"  [Nuke工作流]({target}/skills/nuke-workflow/SKILL.md)。"]
+                lines += [f"  [{software}工作流]({target}/skills/{software}-workflow/SKILL.md)。"]
         lines += [
             "",
             "## 个人学习补充",
@@ -309,7 +309,7 @@ def _sync_baselines(root: Path) -> dict:
     project = Path(__file__).resolve().parents[2]
     skills = [
         (project / "skills" / name / "SKILL.md", f"skills/{name}/SKILL.md")
-        for name in ("fx-workflow", "fx-learning", "nuke-workflow", "fx-project-learn")
+        for name in ("fx-workflow", "fx-learning", "nuke-workflow", "maya-workflow", "fx-project-learn")
     ]
     if all(path.is_file() for path, _ in skills):
         sources.append(("fx-agent", __version__, skills))

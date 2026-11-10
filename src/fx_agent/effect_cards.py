@@ -876,7 +876,7 @@ class EffectLibrary:
             or not 1024 <= max_chars <= 200000
         ):
             raise ValueError("Invalid effect search parameters")
-        if software and software not in {"houdini", "nuke"}:
+        if software and software not in {"houdini", "nuke", "maya"}:
             raise ValueError("Invalid software")
         records = self._rows(study_id)
         current = _equivalent_heads(_heads(records))

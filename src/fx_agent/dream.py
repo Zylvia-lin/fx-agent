@@ -34,7 +34,7 @@ def snapshot(db):
 def _plan(db, cursor, limit, software, module):
     if cursor < 0 or not 1 <= limit <= 100:
         raise ValueError("Invalid cursor or limit")
-    if software and software not in ("houdini", "nuke"):
+    if software and software not in ("houdini", "nuke", "maya"):
         raise ValueError("Invalid software")
     clauses = ["status='active'", "rowid>?", usable_sql("memories")]
     params = [cursor]

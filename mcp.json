@@ -4,13 +4,37 @@
     "fx-agent": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--directory", "${PLUGIN_ROOT}", "--frozen", "--no-dev", "fx-agent"],
+      "args": [
+        "run",
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "--frozen",
+        "--no-dev",
+        "fx-agent"
+      ],
       "cwd": "${PLUGIN_ROOT}",
       "env": {
         "HOUDINI_HOST": "127.0.0.1",
         "HOUDINI_PORT": "18186",
         "FXHOUDINIMCP_AUTO_LAYOUT": "0",
         "NO_PROXY": "localhost,127.0.0.1,::1"
+      }
+    },
+    "fx-maya": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "--frozen",
+        "--no-dev",
+        "-m",
+        "fx_agent.maya.server"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "PYTHONUTF8": "1"
       }
     }
   }

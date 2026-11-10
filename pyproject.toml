@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 fx-agent = "fx_agent.__main__:main"
+fx-maya = "fx_agent.maya.server:main"
 
 [dependency-groups]
 dev = [
@@ -47,6 +48,13 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# These files deliberately run unchanged in Maya's Python 2.7 interpreter.
+"integrations/maya/**/*.py" = ["UP"]
+"integrations/maya/py*/plug-ins/fx_maya_plugin.py" = ["E402", "UP"]
+"integrations/maya/verify_runtime.py" = ["E402", "UP"]
+"src/fx_agent/maya/protocol.py" = ["UP"]
 
 [tool.uv.sources]
 nuke-mcp = { git = "https://github.com/kleer001/nuke-mcp.git", rev = "6cbed80a2f35b997263fc51c988c5bb1405657fd" }

@@ -21,7 +21,7 @@ class Experience(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier = "__global__"
-    software: Literal["houdini", "nuke"] = "houdini"
+    software: Literal["houdini", "nuke", "maya"] = "houdini"
     modules: list[str] = Field(
         default_factory=lambda: ["unclassified"],
         min_length=1,
@@ -236,14 +236,14 @@ class MemoryStore(Store):
         include_candidates: bool = False,
         limit: int = 5,
         max_chars: int = 3000,
-        software: Literal["houdini", "nuke"] = "houdini",
+        software: Literal["houdini", "nuke", "maya"] = "houdini",
         module: str = "",
         source_project: str = "",
     ) -> dict:
         """Literal multilingual substring matching, scoped before ranking and expansion."""
         if project_id:
             scope_id.validate_python(project_id)
-        if software not in ("houdini", "nuke"):
+        if software not in ("houdini", "nuke", "maya"):
             raise ValueError("Invalid software")
         selected_module = normalize_modules([module], software)[0] if module else ""
         if shot_id:

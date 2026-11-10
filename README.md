@@ -1,6 +1,6 @@
 # FX Agent
 
-供编程助手调用的本地 FX Agent：整合 Houdini 工具、制作记忆与工程案例归档，并提供 Nuke 15.2 独立合成入口。
+供编程助手调用的本地 FX Agent：整合 Houdini 工具、制作记忆与工程案例归档，并提供 Nuke 15.2 独立合成入口，以及 Maya 的 Arnold/Redshift 灯光与渲染入口。
 
 当前宿主助手负责规划、操作与效果判断，Agent 提供 MCP 能力、工作流与共享记忆，不另建模型调度器。Codex 插件是可选分发方式，不再是安装前提。
 
@@ -9,6 +9,8 @@
 开发设计见 [docs/开发方案.md](docs/开发方案.md)，复用基线见 [docs/上游依赖.md](docs/上游依赖.md)。
 
 首次安装与升级见 [Windows Codex 全局安装](docs/全局安装与首次连接.md)。当前仓库路径作为代码入口，固定数据目录作为所有客户端共用的状态源。
+
+Maya 使用公共 `Documents/maya/modules/fx_maya.mod`、独立 `fx-maya` stdio MCP 和 **FX Maya MCP** 状态/启停菜单，多会话显式选择，共用现有知识与任务门禁。安装见 [Maya 接入](docs/maya.md)，真实版本与渲染结果见 [Maya 验收记录](docs/maya-validation.md)。
 
 Windows 可直接双击根目录 `Install-FX-Agent.bat`，一键安装 Houdini/Nuke 桥接与 Codex 全局入口；PowerShell 参数和预览方式见 [一键安装](docs/一键安装.md)。安装前保存工程并关闭对应软件/桥接。
 
@@ -34,7 +36,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 启动 Houdini 和 Nuke；只做某一软件的任务时打开对应软件即可。安装或更新后重启 Codex，再新建聊天，以加载全局 MCP 与工作流。
 
-两个入口分别是 `fx-agent`（Houdini 与共同记忆）和 `fx-nuke`（Nuke 操作），默认桥接端口为18186、8187。不需要另外启动独立模型或 Agent 程序，由当前 Codex 负责规划、操作和效果判断。
+入口分别是 `fx-agent`（Houdini 与共同记忆）、`fx-nuke`（Nuke 操作）和可单独安装的 `fx-maya`（Maya 灯光与渲染）。桥接默认使用18186、8187、18770–18789。不需要另外启动独立模型或 Agent 程序，由当前 Codex 负责规划、操作和效果判断。
 
 首次聊天可以直接发送：
 

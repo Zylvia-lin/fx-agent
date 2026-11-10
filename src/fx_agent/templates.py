@@ -703,7 +703,7 @@ class TemplateLibrary:
             or len(query) > 1000
         ):
             raise ValueError("Invalid search parameters")
-        if software and software not in {"houdini", "nuke"}:
+        if software and software not in {"houdini", "nuke", "maya"}:
             raise ValueError("Invalid software")
         with Store(self.root).connection() as db:
             rows = db.execute(

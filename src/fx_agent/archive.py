@@ -200,8 +200,10 @@ class CaseArchive:
                 ".hiplc",
                 ".hipnc",
                 ".nk",
+                ".ma",
+                ".mb",
             ):
-                raise ValueError("Project must have a .hip, .hiplc, .hipnc or .nk suffix")
+                raise ValueError("Project must have a .hip, .hiplc, .hipnc, .nk, .ma or .mb suffix")
             total += source.stat().st_size
             sources.append((item, source))
         if total > request.max_total_bytes:
@@ -218,6 +220,8 @@ class CaseArchive:
                 folder = (
                     "projects/nuke"
                     if item.role == "project" and source.suffix.lower() == ".nk"
+                    else "projects/maya"
+                    if item.role == "project" and source.suffix.lower() in {".ma", ".mb"}
                     else ROLES[item.role]
                 )
                 relative = f"{folder}/{index:04d}_{source.name}"

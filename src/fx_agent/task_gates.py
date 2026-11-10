@@ -19,7 +19,7 @@ class TaskSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     project_id: Identifier
     shot_id: Identifier
-    software: Literal["houdini", "nuke"]
+    software: Literal["houdini", "nuke", "maya"]
     kind: Literal["production", "learning"] = "production"
     scene_path: str = Field(min_length=1, max_length=4096)
     endpoint: str = Field(pattern=r"^127\.0\.0\.1:[0-9]{1,5}$")

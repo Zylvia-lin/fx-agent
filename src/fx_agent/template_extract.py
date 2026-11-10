@@ -402,6 +402,8 @@ def extract_nuke(data: bytes) -> dict:
 
 
 def extract_project(data: bytes, software: str) -> dict:
+    if software not in ("houdini", "nuke"):
+        raise ValueError("Static project extraction is not implemented for " + software)
     try:
         result = extract_hip(data) if software == "houdini" else extract_nuke(data)
     except (ValueError, UnicodeError, OverflowError) as exc:

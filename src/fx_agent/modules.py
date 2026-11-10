@@ -50,6 +50,13 @@ NUKE = {
         ("unclassified", "未分类旧记录"),
     )
 }
+MAYA = {key: (label, None) for key, label in (
+    ("lighting", "灯光"), ("rendering", "渲染"), ("materials", "材质"),
+    ("io", "工程与素材"), ("troubleshooting", "故障排查"),
+    ("general", "通用"), ("unclassified", "未分类旧记录"),
+)}
+CATALOGS = {"houdini": HOUDINI, "nuke": NUKE, "maya": MAYA}
+
 ALIASES = {
     "pop": "particles",
     "dopparticles": "particles",
@@ -72,7 +79,7 @@ MODULE_MATCH_SQL = "EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(payloa
 
 
 def normalize_modules(values: list[str], software: str) -> list[str]:
-    catalog = HOUDINI if software == "houdini" else NUKE if software == "nuke" else None
+    catalog = CATALOGS.get(software)
     if catalog is None:
         raise ValueError("Invalid software")
     normalized = sorted(
@@ -87,7 +94,7 @@ def normalize_modules(values: list[str], software: str) -> list[str]:
 
 def module_catalog(software: str = "houdini") -> dict:
     normalize_modules(["general"], software)
-    catalog = HOUDINI if software == "houdini" else NUKE
+    catalog = CATALOGS[software]
     return {
         "version": 1,
         "software": software,
@@ -95,7 +102,7 @@ def module_catalog(software: str = "houdini") -> dict:
         "guide_tool": "get_workflow_guide" if software == "houdini" else None,
         "learned_guide_tool": "fx_get_module_knowledge",
         "update_policy": "accepted_finalized_project_recipes_only",
-        "workflow_skill": "fx-workflow" if software == "houdini" else "nuke-workflow",
+        "workflow_skill": {"houdini": "fx-workflow", "nuke": "nuke-workflow", "maya": "maya-workflow"}[software],
         "items": [
             {"module": key, "label": label, "guide_topic": topic}
             for key, (label, topic) in catalog.items()
