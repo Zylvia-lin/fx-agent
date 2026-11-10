@@ -49,7 +49,7 @@ async def fx_get_module_knowledge(
     software: Literal["houdini", "nuke", "maya"] = "houdini",
     max_chars: int = 4000,
 ) -> dict:
-    """Read the global module workflow supplement within a budget.
+    """Read the module workflow supplement; an omitted module selects general.
 
     Read the mapped upstream guide separately. Only accepted, finalized,
     globally reusable lessons enter generated sections; manual notes remain

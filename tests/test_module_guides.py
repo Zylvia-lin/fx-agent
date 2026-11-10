@@ -2,10 +2,19 @@
 
 from pathlib import Path
 
+import pytest
+
 from fx_agent.archive import CaseArchive
 from fx_agent.learning import LearningStore
 from fx_agent.module_guides import ModuleGuides
 from fx_agent.store import compact
+
+
+@pytest.mark.parametrize("software", ["houdini", "maya", "nuke"])
+def test_omitted_module_reads_general_knowledge(tmp_path, software):
+    result = ModuleGuides(tmp_path).get(software=software)
+    assert result["module"] == "general"
+    assert result["software"] == software
 
 
 def accepted(root, **changes):

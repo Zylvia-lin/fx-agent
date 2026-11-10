@@ -49,6 +49,40 @@ async def test_shared_api_key_authenticates_but_device_tasks_stay_separate(tmp_p
         assert bad.status_code == 401
 
 
+async def test_module_knowledge_defaults_and_invalid_module_hint(tmp_path):
+    settings = ServiceConfig(
+        data_root=tmp_path / "data", database_root=tmp_path / "db", api_key="k" * 43
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(settings)), base_url="https://test"
+    ) as client:
+        headers = {"Authorization": "Bearer " + settings.api_key}
+        for software in ("houdini", "maya", "nuke"):
+            response = await client.post(
+                "/v1/operations",
+                headers=headers,
+                json={
+                    "request_id": uuid.uuid4().hex,
+                    "operation": "tool.fx_get_module_knowledge",
+                    "arguments": {"software": software},
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["result"]["module"] == "general"
+        response = await client.post(
+            "/v1/operations",
+            headers=headers,
+            json={
+                "request_id": uuid.uuid4().hex,
+                "operation": "tool.fx_get_module_knowledge",
+                "arguments": {"software": "maya", "module": "not-a-module"},
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "unknown_module"
+        assert "fx_get_module_catalog" in response.json()["error"]
+
+
 def test_service_mode_accepts_ip_port_key_and_local_override(monkeypatch):
     monkeypatch.setenv("FX_AGENT_DATA_MODE", "service")
     monkeypatch.setenv("FX_AGENT_SERVER_IP", "127.0.0.1")

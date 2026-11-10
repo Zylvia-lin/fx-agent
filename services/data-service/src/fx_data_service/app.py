@@ -721,6 +721,11 @@ def create_app(settings: ServiceConfig, backend=None):
                     if status == 409
                     else "Invalid operation arguments or unavailable shared file"
                 }
+                if message == "Unknown module or too many modules; read fx_get_module_catalog":
+                    response = {
+                        "error": "Unknown module; read fx_get_module_catalog for supported module IDs",
+                        "error_code": "unknown_module",
+                    }
             except Exception:
                 LOG.exception(
                     "Data operation failed: %s device=%s request=%s",

@@ -218,7 +218,7 @@ class ModuleGuides(Store):
     ) -> dict:
         if project_id:
             scope_id.validate_python(project_id)
-        module = normalize_modules([module], software)[0]
+        module = normalize_modules([module or "general"], software)[0]
         if not 1024 <= max_chars <= 12000:
             raise ValueError("max_chars must be 1024..12000")
         refreshed = self._cached(project_id, software, module)
