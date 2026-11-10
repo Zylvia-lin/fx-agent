@@ -58,6 +58,8 @@ def test_service_mode_accepts_ip_port_key_and_local_override(monkeypatch):
     assert remote_enabled()
     assert connection.url == "https://127.0.0.1:18443"
     assert connection.token == "k" * 43
+    monkeypatch.setenv("FX_AGENT_DATA_PROJECT", "second-space")
+    assert RemoteClient().headers()["X-FX-Data-Project"] == "second-space"
     monkeypatch.setenv("FX_AGENT_DATA_MODE", "local")
     assert not remote_enabled()
 

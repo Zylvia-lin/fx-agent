@@ -5,6 +5,7 @@ contains the driver, dialect adaptation and one-time SQLite migration.
 """
 
 import gzip
+import hashlib
 import json
 import re
 import secrets
@@ -18,6 +19,21 @@ def identifier(value):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
         raise ValueError("Invalid SQL identifier")
     return "`" + value + "`"
+
+
+def project_sql(sql, tables, prefix):
+    """Rename known table identifiers without touching SQL literals or values."""
+    if not prefix:
+        return sql
+    identifier(prefix)
+    tokens = r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`[^`]+`|[A-Za-z_]\w*"
+
+    def replace(match):
+        token = match[0]
+        name = token.strip("`")
+        return identifier(prefix + name) if name in tables else token
+
+    return re.sub(tokens, replace, sql)
 
 
 def mysql_sql(sql, columns):
@@ -129,7 +145,7 @@ class Connection:
             return self.execute("SELECT 1 FROM DUAL WHERE 0")
         cursor = self.raw.cursor()
         try:
-            cursor.execute(mysql_sql(sql, self.backend.columns), parameters)
+            cursor.execute(self.backend.sql(mysql_sql(sql, self.backend.columns)), parameters)
         except self.backend.driver.IntegrityError as exc:
             raise sqlite3.IntegrityError(str(exc.args[0])) from exc
         if (
@@ -140,7 +156,8 @@ class Connection:
             if affected and affected[1] in self.backend.knowledge_tables:
                 with self.raw.cursor() as update:
                     update.execute(
-                        "UPDATE knowledge_state SET token=%s WHERE id=1", (secrets.token_hex(32),)
+                        self.backend.sql("UPDATE knowledge_state SET token=%s WHERE id=1"),
+                        (secrets.token_hex(32),),
                     )
         return Cursor(cursor)
 
@@ -150,7 +167,7 @@ class Connection:
 
 
 class MySQLBackend:
-    def __init__(self, *, host, port, user, password, database):
+    def __init__(self, *, host, port, user, password, database, prefix=""):
         import pymysql
 
         self.driver = pymysql
@@ -167,6 +184,9 @@ class MySQLBackend:
             write_timeout=120,
         )
         self.columns = {}
+        if prefix:
+            identifier(prefix)
+        self.prefix = prefix
         self.knowledge_tables = {
             "memories",
             "memory_aliases",
@@ -176,6 +196,15 @@ class MySQLBackend:
             "learning_results",
             "memory_conflicts",
         }
+
+    def sql(self, sql):
+        return project_sql(sql, self.columns, self.prefix)
+
+    def for_project(self, project):
+        return MySQLBackend(
+            **{key: self.options[key] for key in ("host", "port", "user", "password", "database")},
+            prefix="p_" + hashlib.sha256(project.encode()).hexdigest()[:24] + "_",
+        )
 
     def raw_connection(self):
         connection = self.driver.connect(**self.options)
@@ -243,7 +272,7 @@ class MySQLBackend:
         with self.connection() as db, db.raw.cursor() as cursor:
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS "
-                + identifier(name)
+                + identifier(self.prefix + name)
                 + " ("
                 + ",".join(definitions)
                 + ") ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
@@ -269,9 +298,16 @@ class MySQLBackend:
                 "INSERT IGNORE INTO fx_json_numbers VALUES (%s)", [(n,) for n in range(256)]
             )
             cursor.execute(
-                "CREATE TABLE IF NOT EXISTS fx_metadata (name VARCHAR(191) PRIMARY KEY,value LONGTEXT)"
+                "CREATE TABLE IF NOT EXISTS "
+                + identifier(self.prefix + "fx_metadata")
+                + " (name VARCHAR(191) PRIMARY KEY,value LONGTEXT)"
             )
         self.columns["fx_metadata"] = ["name", "value"]
+        if self.prefix:
+            with self.connection() as db:
+                db.execute(
+                    "INSERT OR IGNORE INTO knowledge_state VALUES (1,?)", (secrets.token_hex(32),)
+                )
 
     def migrate(self, source_path):
         """Copy rows once in one transaction, preserving row order and source data."""
@@ -280,7 +316,9 @@ class MySQLBackend:
             if db.execute("SELECT value FROM fx_metadata WHERE name='initial_import'").fetchone():
                 return {"already_imported": True}
         if not Path(source_path).is_file():
-            raise RuntimeError("Upload the original memory.sqlite3 before the first MySQL association")
+            raise RuntimeError(
+                "Upload the original memory.sqlite3 before the first MySQL association"
+            )
         with (
             self.connection() as db,
             closing(sqlite3.connect(Path(source_path).as_uri() + "?mode=ro", uri=True)) as source,

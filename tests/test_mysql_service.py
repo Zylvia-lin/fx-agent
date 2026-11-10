@@ -1,6 +1,6 @@
 """Dialect boundary: single-machine storage remains SQLite."""
 
-from fx_data_service.mysql import mysql_sql
+from fx_data_service.mysql import mysql_sql, project_sql
 
 
 def test_mysql57_module_json_and_upsert_translation():
@@ -15,3 +15,12 @@ def test_mysql57_module_json_and_upsert_translation():
     assert "ON DUPLICATE KEY UPDATE payload=VALUES(payload)" in converted
     assert "(`task_id`,`payload`)" in converted
     assert "`stored`" in mysql_sql("SELECT original,stored FROM files WHERE device_id=?", {})
+
+
+def test_project_tables_preserve_literals_aliases_and_json_paths():
+    sql = "SELECT memories.payload FROM `memories` WHERE json_extract(payload,'$.memories')='memories' AND title=\"memories\""
+    result = project_sql(sql, {"memories"}, "p_123_")
+    assert result.startswith("SELECT `p_123_memories`.payload FROM `p_123_memories`")
+    assert "'$.memories'" in result and "='memories'" in result
+    assert 'title="memories"' in result
+    assert project_sql(sql, {"memories"}, "") == sql

@@ -2,6 +2,8 @@
 
 本目录是独立服务端：自己的 Python 包、依赖、Docker 镜像与管理网页。本地插件只包含单机逻辑和 HTTP 客户端；两者复用明确的数据领域模块，服务端镜像不包含本地 MCP 入口、DCC 桥接和客户端安装器。
 
+管理页中的项目代表完整数据空间。现有全部数据属于 `default`，内部工程/镜头的 `project_id` 不参与 Key 授权。一个 Key 可关联多个空间；多空间 Key 需通过 `X-FX-Data-Project` 或客户端 `FX_AGENT_DATA_PROJECT` 选择当前空间。单空间 Key 自动选择；删除 Key 不删除项目及数据。默认空间原目录及 MySQL 表保持原样，新空间使用独立目录和同库表前缀，自动备份覆盖所有已登记空间。详见[共享模式说明](../../public-docs/多设备共享数据服务.md)。
+
 ## 已有 MySQL + Docker
 
 要求 Linux Docker/Compose、Python 3.12 镜像、已有的 MySQL 5.7+ 数据库和专用账号。Compose 只有数据服务一个容器，直接通过 host 网络访问本机 MySQL，不增加数据库容器。

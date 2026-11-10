@@ -64,6 +64,7 @@ class RemoteClient:
                 "FX_AGENT_API_KEY", os.getenv("FX_AGENT_SERVICE_TOKEN", config.get("token", ""))
             )
         )
+        self.data_project = config.get("data_project", "") if explicit else os.getenv("FX_AGENT_DATA_PROJECT", "")
         import getpass
         import socket
         import uuid
@@ -122,8 +123,7 @@ class RemoteClient:
                     response = client.post(
                         self.url + "/v1/operations",
                         json=body,
-                        headers={
-                            "Authorization": "Bearer " + self.token,
+                        headers=self.headers() | {
                             "X-FX-Version": __version__,
                             "X-FX-Protocol": "1",
                             "X-FX-Device-ID": self.device_id,
@@ -149,7 +149,10 @@ class RemoteClient:
         return value["result"]
 
     def headers(self):
-        return {"Authorization": "Bearer " + self.token, "X-FX-Device-ID": self.device_id}
+        headers = {"Authorization": "Bearer " + self.token, "X-FX-Device-ID": self.device_id}
+        if self.data_project:
+            headers["X-FX-Data-Project"] = quote(self.data_project, safe="")
+        return headers
 
     def prepare_files(self, operation, arguments):
         paths = []
@@ -218,10 +221,7 @@ class RemoteClient:
             ) as client:
                 response = client.get(
                     self.url + "/v1/status",
-                    headers={
-                        "Authorization": "Bearer " + self.token,
-                        "X-FX-Device-ID": self.device_id,
-                    },
+                    headers=self.headers(),
                 )
                 response.raise_for_status()
                 return response.json()

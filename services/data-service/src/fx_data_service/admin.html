@@ -7,10 +7,10 @@ fieldset{border:1px solid #d8e0e7;margin:16px 0;max-height:220px;overflow:auto}f
 </style>
 <main><h1>FX Agent 数据服务</h1><p class="muted">共享知识库 · 项目与 API Key 管理</p>
 <section id="login"><h2>管理员登录</h2><form id="loginForm"><label for="password">管理员密码</label><input type="password" id="password" autocomplete="current-password" required><button>登录</button></form></section>
-<section id="manage" hidden><h2>项目与 API Keys</h2><p class="muted">每个 Key 可关联多个项目，同一项目可被多个 Key 使用。删除 Key 只撤销访问凭据，项目和数据会保留。公共知识继续共享。</p>
-<form id="projectForm"><label for="projectId">新建项目 ID</label><input id="projectId" maxlength="128" placeholder="与插件使用的 project_id 一致" required><button>创建项目</button></form>
+<section id="manage" hidden><h2>项目与 API Keys</h2><p class="muted">每个 Key 可关联多个项目，同一项目可被多个 Key 使用。删除 Key 只撤销访问凭据，项目和数据会保留。同一项目内知识共享，不同项目的数据相互独立。</p>
+<form id="projectForm"><label for="projectId">新建项目 ID</label><input id="projectId" maxlength="128" placeholder="例如：团队知识库；不是制作工程的 project_id" required><button>创建项目</button></form>
 <p id="projectList" class="muted"></p>
-<form id="createForm"><label for="name">新 Key 名称</label><input id="name" maxlength="128" placeholder="例如：制作团队" required><fieldset id="createProjects"><legend>关联项目（可多选）</legend></fieldset><p class="muted">未选择项目时，Key 仅可使用公共知识。</p><button>生成 API Key</button></form>
+<form id="createForm"><label for="name">新 Key 名称</label><input id="name" maxlength="128" placeholder="例如：制作团队" required><fieldset id="createProjects"><legend>关联项目（可多选）</legend></fieldset><p class="muted">每个项目是完整的数据空间；当前已有数据整体归入默认项目。未选择项目的 Key 无法访问数据。</p><button>生成 API Key</button></form>
 <div id="created" hidden><p>请立即保存；完整 Key 仅本次显示。</p><textarea id="newKey" readonly aria-label="新生成的 API Key"></textarea><button id="copy" type="button">复制</button></div>
 <div class="table-scroll"><table><thead><tr><th>名称 / 状态</th><th>关联项目</th><th>操作</th></tr></thead><tbody id="keys"></tbody></table></div></section>
 <p id="message" role="status" aria-live="polite"></p></main>
@@ -18,18 +18,17 @@ fieldset{border:1px solid #d8e0e7;margin:16px 0;max-height:220px;overflow:auto}f
 const $=id=>document.getElementById(id);
 async function api(path,method='GET',body){const response=await fetch('/admin/api/'+path,{method,headers:{'Content-Type':'application/json','X-FX-Admin-Request':'1'},body:body?JSON.stringify(body):undefined});const result=await response.json();if(!response.ok){const error=new Error(result.error||'请求失败');error.status=response.status;throw error;}return result;}
 function selected(fieldset){return [...fieldset.querySelectorAll('input:checked')].map(input=>input.value);}
-function projectChoices(projects,values,legend){const fieldset=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=legend;fieldset.append(title);for(const project of projects){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.value=project.id;input.checked=values.includes(project.id);label.append(input,document.createTextNode(' '+project.id));fieldset.append(label);}if(!projects.length)fieldset.append(document.createTextNode('暂无项目，请先创建项目。'));return fieldset;}
+function projectChoices(projects,values,legend){const fieldset=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=legend;fieldset.append(title);for(const project of projects){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.value=project.id;input.checked=values.includes(project.id);label.append(input,document.createTextNode(' '+(project.name||project.id)));fieldset.append(label);}if(!projects.length)fieldset.append(document.createTextNode('暂无项目，请先创建项目。'));return fieldset;}
 async function load(){try{
   const [data,catalog]=await Promise.all([api('keys'),api('projects')]);
   $('login').hidden=true;$('manage').hidden=false;
-  $('projectList').textContent='已有项目：'+(catalog.projects.map(p=>p.id).join('、')||'暂无');
+  $('projectList').textContent='已有项目：'+(catalog.projects.map(p=>p.name||p.id).join('、')||'暂无');
   const choices=projectChoices(catalog.projects,selected($('createProjects')),'关联项目（可多选）');choices.id='createProjects';$('createProjects').replaceWith(choices);
   $('keys').replaceChildren();
   for(const key of data.keys){
     const tr=document.createElement('tr'),name=document.createElement('td'),projects=document.createElement('td'),actions=document.createElement('td');
     name.textContent=key.name+' / '+(key.enabled?'可用':'已删除（已禁用）');
-    if(key.project_ids===null){const note=document.createElement('p');note.textContent='全部项目（旧 Key 兼容模式，保存后仅允许所选项目）';projects.append(note);}
-    const fields=projectChoices(catalog.projects,key.project_ids===null?catalog.projects.map(p=>p.id):key.project_ids,'关联 '+key.name+' 的项目');
+    const fields=projectChoices(catalog.projects,key.project_ids,'关联 '+key.name+' 的项目');
     fields.disabled=!key.enabled;projects.append(fields);
     const save=document.createElement('button');save.textContent='保存关联';save.disabled=!key.enabled;
     save.onclick=async()=>{save.disabled=true;try{await api('keys/'+key.id,'PATCH',{project_ids:selected(fields)});$('message').textContent='项目关联已保存。';await load();}catch(e){$('message').textContent=e.message;}finally{save.disabled=!key.enabled;}};

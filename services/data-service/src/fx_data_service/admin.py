@@ -30,7 +30,10 @@ def initialize_keys(database, bootstrap):
         db.execute(
             "CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY,name TEXT,token_hash TEXT UNIQUE,enabled INTEGER,created REAL)"
         )
-        db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY,created REAL)")
+        db.execute("CREATE TABLE IF NOT EXISTS data_projects (id TEXT PRIMARY KEY,created REAL)")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS data_project_state (name TEXT PRIMARY KEY,value TEXT)"
+        )
         db.execute(
             "CREATE TABLE IF NOT EXISTS key_project_access (key_id TEXT PRIMARY KEY,project_ids TEXT NOT NULL)"
         )
@@ -47,6 +50,21 @@ def initialize_keys(database, bootstrap):
                     "UPDATE api_keys SET token_hash=?,enabled=1,created=? WHERE id='environment'",
                     (digest, time.time()),
                 )
+        # Earlier builds confused production labels with complete data spaces.
+        # Keep those labels/data intact; migrate credentials exactly once.
+        if not db.execute("SELECT 1 FROM data_project_state WHERE name='dataset-v1'").fetchone():
+            db.execute("INSERT OR IGNORE INTO data_projects VALUES ('default',?)", (time.time(),))
+            for row in db.execute("SELECT id FROM api_keys").fetchall():
+                db.execute(
+                    "INSERT INTO key_project_access VALUES (?,?) ON CONFLICT(key_id) DO UPDATE SET project_ids=excluded.project_ids",
+                    (row[0], json.dumps(["default"])),
+                )
+            db.execute("INSERT INTO data_project_state VALUES ('dataset-v1','done')")
+        # A newly provisioned bootstrap credential starts with the legacy data.
+        db.execute(
+            "INSERT OR IGNORE INTO key_project_access (key_id,project_ids) SELECT id,? FROM api_keys WHERE id='environment'",
+            (json.dumps(["default"]),),
+        )
 
 
 def matches_key(database, supplied):
@@ -61,32 +79,20 @@ def matches_key(database, supplied):
 
 
 def key_projects(database, supplied):
-    """None preserves legacy access; an empty list grants no project access."""
+    """Credentials grant complete data spaces, never production labels."""
     digest = hashlib.sha256(supplied.encode()).hexdigest()
     with open_database(database) as db:
         row = db.execute(
             "SELECT a.project_ids FROM api_keys k LEFT JOIN key_project_access a ON a.key_id=k.id WHERE k.token_hash=? AND k.enabled=1",
             (digest,),
         ).fetchone()
-    return json.loads(row[0]) if row and row[0] is not None else None
+    return json.loads(row[0]) if row and row[0] is not None else ["default"]
 
 
 class AdminConsole:
-    def __init__(self, database, password, discover_projects=lambda: []):
+    def __init__(self, database, password):
         self.database, self.password = database, password
-        self.discover_projects = discover_projects
         self.attempts = {}
-
-    def sync_projects(self):
-        from fx_agent.store import scope_id
-
-        projects = set()
-        for value in self.discover_projects():
-            if value:
-                projects.add(scope_id.validate_python(value))
-        with open_database(self.database) as db:
-            for project in sorted(projects):
-                db.execute("INSERT OR IGNORE INTO projects VALUES (?,?)", (project, time.time()))
 
     def access_error(self, request):
         if not self.authorized(request):
@@ -103,14 +109,18 @@ class AdminConsole:
         error = self.access_error(request)
         if error is not None:
             return error
-        self.sync_projects()
         with open_database(self.database) as db:
             if request.method == "GET":
                 return JSONResponse(
                     {
                         "projects": [
-                            {"id": row[0]}
-                            for row in db.execute("SELECT id FROM projects ORDER BY id")
+                            {
+                                "id": row[0],
+                                "name": "默认项目（现有全部数据）"
+                                if row[0] == "default"
+                                else row[0],
+                            }
+                            for row in db.execute("SELECT id FROM data_projects ORDER BY id")
                         ]
                     },
                     headers={"Cache-Control": "no-store"},
@@ -121,9 +131,9 @@ class AdminConsole:
                 project = scope_id.validate_python((await self.body(request)).get("id"))
             except ValueError:
                 return JSONResponse({"error": "请输入有效的项目 ID（1–128 字符）"}, status_code=422)
-            if db.execute("SELECT 1 FROM projects WHERE id=?", (project,)).fetchone():
+            if db.execute("SELECT 1 FROM data_projects WHERE id=?", (project,)).fetchone():
                 return JSONResponse({"error": "项目已存在"}, status_code=409)
-            db.execute("INSERT INTO projects VALUES (?,?)", (project, time.time()))
+            db.execute("INSERT INTO data_projects VALUES (?,?)", (project, time.time()))
         return JSONResponse({"id": project}, status_code=201)
 
     def authorized(self, request):
@@ -202,8 +212,6 @@ class AdminConsole:
         error = self.access_error(request)
         if error is not None:
             return error
-        if request.method in {"POST", "PATCH"}:
-            self.sync_projects()
         with open_database(self.database) as db:
             if request.method == "GET":
                 result = [
@@ -212,7 +220,7 @@ class AdminConsole:
                         "name": row[1],
                         "enabled": bool(row[2]),
                         "created": row[3],
-                        "project_ids": json.loads(row[4]) if row[4] is not None else None,
+                        "project_ids": json.loads(row[4]) if row[4] is not None else ["default"],
                     }
                     for row in db.execute(
                         "SELECT k.id,k.name,k.enabled,k.created,a.project_ids FROM api_keys k LEFT JOIN key_project_access a ON a.key_id=k.id ORDER BY k.created DESC"
@@ -226,14 +234,16 @@ class AdminConsole:
                 return JSONResponse({"ok": bool(changed)})
             try:
                 body = await self.body(request)
-                projects = body.get("project_ids", [])
+                projects = body.get("project_ids", ["default"])
                 if not isinstance(projects, list) or len(projects) > 100:
                     raise ValueError("项目列表无效")
                 from fx_agent.store import scope_id
 
                 projects = sorted({scope_id.validate_python(value) for value in projects})
                 for project in projects:
-                    if not db.execute("SELECT 1 FROM projects WHERE id=?", (project,)).fetchone():
+                    if not db.execute(
+                        "SELECT 1 FROM data_projects WHERE id=?", (project,)
+                    ).fetchone():
                         raise ValueError("项目不存在")
             except ValueError:
                 return JSONResponse({"error": "请选择已存在的项目（最多 100 个）"}, status_code=422)

@@ -188,7 +188,7 @@ def map_value(value, mappings: dict[str, str], field=""):
     return value
 
 
-def check_file_access(operation, arguments, settings):
+def check_file_access(operation, arguments, settings, forbidden_roots=()):
     paths = []
     name = operation.removeprefix("tool.")
     if name in {"fx_plan_template_import", "fx_learn_templates"}:
@@ -209,7 +209,11 @@ def check_file_access(operation, arguments, settings):
     roots = [settings.data_root.resolve(), *(p.resolve() for p in settings.allowed_roots)]
     for value in paths:
         path = Path(value)
-        if not path.is_absolute() or not any(path.resolve().is_relative_to(root) for root in roots):
+        if (
+            not path.is_absolute()
+            or not any(path.resolve().is_relative_to(root) for root in roots)
+            or any(path.resolve().is_relative_to(root.resolve()) for root in forbidden_roots)
+        ):
             raise PermissionError(
                 "File path is outside the service's allowed shared roots; configure a path mapping"
             )
@@ -302,36 +306,10 @@ def create_app(settings: ServiceConfig, backend=None):
 
     initialize_keys(control_connection, settings.api_key)
 
-    def discover_projects():
-        projects = set()
-        with (
-            service_scope(settings.data_root, settings.database_root, "", backend),
-            Store(settings.data_root).connection() as db,
-        ):
-            # Checkpoint keys are device hashes; the payload keeps the real project ID.
-            for table in (
-                "checkpoints",
-                "memories",
-                "learning_feedback",
-                "task_gates",
-                "render_issues",
-                "template_studies",
-                "dream_runs",
-            ):
-                for row in db.execute(f"SELECT payload FROM {table}"):
-                    value = json.loads(row[0]).get("project_id")
-                    if value:
-                        projects.add(value)
-            for row in db.execute("SELECT DISTINCT scope FROM user_rules"):
-                if row[0].startswith("project:"):
-                    projects.add(row[0][len("project:") :])
-        for manifest in (settings.data_root / "cases").glob("*/manifest.json"):
-            value = json.loads(manifest.read_text(encoding="utf-8")).get("project_id")
-            if value:
-                projects.add(value)
-        return projects
+    from fx_data_service.projects import DataProjects
 
-    admin = AdminConsole(control_connection, settings.admin_password, discover_projects)
+    projects = DataProjects(settings, backend)
+    admin = AdminConsole(control_connection, settings.admin_password)
 
     def backup():
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
@@ -339,12 +317,33 @@ def create_app(settings: ServiceConfig, backend=None):
         if backend:
             destination.mkdir(parents=True, exist_ok=True)
             backend.backup(destination / (stamp + "-mysql.json.gz"))
+            with control_connection() as db:
+                ids = [
+                    row[0]
+                    for row in db.execute("SELECT id FROM data_projects")
+                    if row[0] != "default"
+                ]
+            for project in ids:
+                _, project_backend = projects.get(project)
+                project_backend.backup(
+                    destination / (stamp + "-" + project_backend.prefix + "mysql.json.gz")
+                )
             backup_state.update(last_backup=stamp, backup_error=None)
             return
         snapshot_database(
             settings.database_root / "memory.sqlite3", destination / (stamp + "-memory.sqlite3")
         )
         snapshot_database(control_path, destination / (stamp + "-service.sqlite3"))
+        with control_connection() as db:
+            ids = [
+                row[0] for row in db.execute("SELECT id FROM data_projects") if row[0] != "default"
+            ]
+        for project in ids:
+            project_settings, _ = projects.get(project)
+            snapshot_database(
+                project_settings.database_root / "memory.sqlite3",
+                destination / (stamp + "-" + project_settings.database_root.name + ".sqlite3"),
+            )
         backup_state.update(last_backup=stamp, backup_error=None)
 
     async def periodic_backup():
@@ -372,6 +371,7 @@ def create_app(settings: ServiceConfig, backend=None):
                     await worker
 
     def authenticate(request):
+        request.state.auth_status = 401
         header = request.headers.get("authorization", "")
         if not header.startswith("Bearer "):
             return None
@@ -385,19 +385,50 @@ def create_app(settings: ServiceConfig, backend=None):
                 or not all(c.isascii() and (c.isalnum() or c in "-_") for c in device_id)
             ):
                 return None
-            return device_id
-        for device_id, device in settings.devices.items():
-            if hmac.compare_digest(supplied.encode(), device.token.encode()):
-                request.state.project_ids = None
-                return device_id
-        return None
+        else:
+            device_id = next(
+                (
+                    key
+                    for key, device in settings.devices.items()
+                    if hmac.compare_digest(supplied.encode(), device.token.encode())
+                ),
+                None,
+            )
+            if device_id is None:
+                return None
+            request.state.project_ids = ["default"]
+        allowed = request.state.project_ids
+        selected = unquote(request.headers.get("x-fx-data-project", "")) or getattr(
+            request.state, "data_project", ""
+        )
+        if not selected and len(allowed) == 1:
+            selected = allowed[0]
+        if not selected:
+            request.state.auth_status = 422 if allowed else 403
+            return None
+        if selected not in allowed:
+            request.state.auth_status = 403
+            return None
+        request.state.data_project = selected
+        request.state.project_settings, request.state.project_backend = projects.get(selected)
+        request.state.device_key = projects.device_key(selected, device_id)
+        return device_id
 
     def failure(message, status):
         return JSONResponse(
             {"error": message}, status_code=status, headers={"Cache-Control": "no-store"}
         )
 
-    def file_target(device_id, original):
+    def auth_failure(request):
+        code = getattr(request.state, "auth_status", 401)
+        return failure(
+            "Select an authorized data project using X-FX-Data-Project"
+            if code != 401
+            else "Invalid API key",
+            code,
+        )
+
+    def file_target(request, device_id, original):
         if (
             not isinstance(original, str)
             or len(original) > 4096
@@ -416,8 +447,9 @@ def create_app(settings: ServiceConfig, backend=None):
         if ntpath.splitdrive(original)[0]:
             basename = ntpath.basename(canonical)
         key = hashlib.sha256(canonical.encode()).hexdigest()
-        target = settings.data_root / "workspaces" / device_id / key / basename
-        if not target.resolve().is_relative_to(settings.data_root):
+        root = request.state.project_settings.data_root
+        target = root / "workspaces" / device_id / key / basename
+        if not target.resolve().is_relative_to(root):
             raise ValueError("Invalid workspace path")
         return target
 
@@ -436,7 +468,7 @@ def create_app(settings: ServiceConfig, backend=None):
     async def register_file(request):
         device_id = authenticate(request)
         if not device_id:
-            return failure("Invalid API key", 401)
+            return auth_failure(request)
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
@@ -444,21 +476,23 @@ def create_app(settings: ServiceConfig, backend=None):
                 return failure("Path request too large", 413)
         try:
             original = json.loads(body)["path"]
-            target = file_target(device_id, original)
+            target = file_target(request, device_id, original)
         except (ValueError, KeyError, TypeError):
             return failure("Invalid client path", 422)
         async with lock:
+            if not authenticate(request):
+                return auth_failure(request)
             target.unlink(missing_ok=True)
-            remember_file(device_id, original, target)
+            remember_file(request.state.device_key, original, target)
         return JSONResponse({"path": str(target)})
 
     async def upload_file(request):
         device_id = authenticate(request)
         if not device_id:
-            return failure("Invalid API key", 401)
+            return auth_failure(request)
         try:
             original = unquote(request.headers.get("x-fx-client-path", ""))
-            target = file_target(device_id, original)
+            target = file_target(request, device_id, original)
             expected = request.headers.get("x-fx-sha256", "")
             mtime = int(request.headers.get("x-fx-mtime-ns", "0"))
             if not re.fullmatch(r"[a-f0-9]{64}", expected) or not 0 <= mtime < 2**63:
@@ -479,28 +513,30 @@ def create_app(settings: ServiceConfig, backend=None):
             if digest.hexdigest() != expected:
                 return failure("File checksum mismatch", 422)
             async with lock:
+                if not authenticate(request):
+                    return auth_failure(request)
                 os.replace(staging, target)
                 os.utime(target, ns=(mtime, mtime))
-                remember_file(device_id, original, target)
+                remember_file(request.state.device_key, original, target)
             return JSONResponse({"path": str(target), "sha256": expected, "size": size})
         finally:
             staging.unlink(missing_ok=True)
 
     async def download_file(request):
         if not authenticate(request):
-            return failure("Invalid API key", 401)
+            return auth_failure(request)
         from fx_agent.archive import contained
 
         try:
-            path = contained(settings.data_root, request.path_params["path"])
+            path = contained(request.state.project_settings.data_root, request.path_params["path"])
         except ValueError:
             return failure("Invalid shared file path", 403)
         if (
             not path.is_file()
             or path.suffix in {".sqlite3", ".pem", ".key"}
             or any(
-                part in {"backups", ".stversions", "workspaces", "task-locks"}
-                for part in path.relative_to(settings.data_root).parts
+                part in {"backups", ".stversions", "workspaces", "task-locks", ".projects"}
+                for part in path.relative_to(request.state.project_settings.data_root).parts
             )
         ):
             return failure("File is not available", 404)
@@ -509,7 +545,7 @@ def create_app(settings: ServiceConfig, backend=None):
     async def status(request):
         device_id = authenticate(request)
         if not device_id:
-            return failure("Invalid device token", 401)
+            return auth_failure(request)
         return JSONResponse(
             {
                 "mode": "shared",
@@ -521,6 +557,7 @@ def create_app(settings: ServiceConfig, backend=None):
                 else device_id,
                 "offline_policy": "fail_closed",
                 "project_ids": request.state.project_ids,
+                "data_project": request.state.data_project,
                 **backup_state,
             },
             headers={"Cache-Control": "no-store"},
@@ -536,7 +573,7 @@ def create_app(settings: ServiceConfig, backend=None):
 
     async def devices(request):
         if not authenticate(request):
-            return failure("Invalid device token", 401)
+            return auth_failure(request)
         with control_connection() as db:
             seen = {
                 row[0]: row[1:]
@@ -561,7 +598,7 @@ def create_app(settings: ServiceConfig, backend=None):
     async def operation(request: Request):
         device_id = authenticate(request)
         if not device_id:
-            return failure("Invalid device token", 401)
+            return auth_failure(request)
         if request.headers.get("x-fx-protocol", "1") != "1":
             return failure("Unsupported data protocol; update the workstation plugin", 409)
         now = time.monotonic()
@@ -589,42 +626,14 @@ def create_app(settings: ServiceConfig, backend=None):
         async with lock:
             # Recheck after waiting, before returning any previously cached result.
             if not authenticate(request):
-                return failure("Invalid device token", 401)
-            allowed = request.state.project_ids
-            if allowed is not None:
-                from fx_agent.store import scope_id
-                from fx_agent.task_gates import TaskGates
-
-                def check_projects(value):
-                    if isinstance(value, dict):
-                        for field, child in value.items():
-                            if field in {"project_id", "source_project"} and child:
-                                if scope_id.validate_python(child) not in allowed:
-                                    raise PermissionError(
-                                        "Project is not associated with this API key"
-                                    )
-                            elif isinstance(child, (dict, list)):
-                                check_projects(child)
-                    elif isinstance(value, list):
-                        for child in value:
-                            check_projects(child)
-
-                try:
-                    check_projects(item.arguments)
-                    with service_scope(
-                        settings.data_root, settings.database_root, device_id, backend
-                    ):
-                        for task_id in {item.task_id, item.arguments.get("task_id", "")} - {""}:
-                            task = TaskGates(settings.data_root).get(task_id, True)
-                            check_projects({"project_id": task["project_id"]})
-                except PermissionError:
-                    return failure("Project is not associated with this API key", 403)
-                except (ValueError, TypeError):
-                    return failure("Invalid project or task", 422)
+                return auth_failure(request)
+            scoped = request.state.project_settings
+            scoped_backend = request.state.project_backend
+            control_device = request.state.device_key
             with control_connection() as db:
                 row = db.execute(
                     "SELECT payload_hash,response,status FROM requests WHERE device_id=? AND request_id=?",
-                    (device_id, item.request_id),
+                    (control_device, item.request_id),
                 ).fetchone()
                 if row:
                     if row[0] != payload_hash:
@@ -636,11 +645,15 @@ def create_app(settings: ServiceConfig, backend=None):
                     return JSONResponse(json.loads(row[1]), status_code=row[2])
                 db.execute(
                     "INSERT INTO requests VALUES (?,?,?,?,NULL,NULL,?)",
-                    (device_id, item.request_id, item.operation, payload_hash, time.time()),
+                    (control_device, item.request_id, item.operation, payload_hash, time.time()),
                 )
                 db.execute(
                     "INSERT INTO devices VALUES (?,?,?) ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen,version=excluded.version",
-                    (device_id, time.time(), request.headers.get("x-fx-version", "unknown")[:64]),
+                    (
+                        control_device,
+                        time.time(),
+                        request.headers.get("x-fx-version", "unknown")[:64],
+                    ),
                 )
             device = settings.devices.get(device_id)
             mappings = dict(device.path_maps if device else settings.path_maps)
@@ -649,17 +662,26 @@ def create_app(settings: ServiceConfig, backend=None):
                     {
                         row[0]: row[1]
                         for row in db.execute(
-                            "SELECT original,stored FROM files WHERE device_id=?", (device_id,)
+                            "SELECT original,stored FROM files WHERE device_id=?", (control_device,)
                         )
                     }
                 )
             arguments = map_value(item.arguments, mappings)
             status = 200
             try:
-                check_file_access(item.operation, arguments, settings)
-                with service_scope(settings.data_root, settings.database_root, device_id, backend):
+                check_file_access(
+                    item.operation,
+                    arguments,
+                    scoped,
+                    [settings.data_root / ".projects"]
+                    if request.state.data_project == "default"
+                    else [],
+                )
+                with service_scope(
+                    scoped.data_root, scoped.database_root, device_id, scoped_backend
+                ):
                     if kind == "tool":
-                        check_knowledge_gate(name, arguments, item.task_id, settings.data_root)
+                        check_knowledge_gate(name, arguments, item.task_id, scoped.data_root)
                         result = await tools[name](**arguments)
                     else:
                         from fx_agent.task_gates import TaskGates, TaskSpec
@@ -667,7 +689,7 @@ def create_app(settings: ServiceConfig, backend=None):
                         if name in {"begin", "update"}:
                             arguments["spec"] = TaskSpec.model_validate(arguments.get("spec"))
                         result = await asyncio.to_thread(
-                            getattr(TaskGates(settings.data_root), name), **arguments
+                            getattr(TaskGates(scoped.data_root), name), **arguments
                         )
                 # The pinned Houdini adapter compact-serializes dict results.
                 if isinstance(result, str) and result.lstrip().startswith(("{", "[")):
@@ -713,7 +735,12 @@ def create_app(settings: ServiceConfig, backend=None):
             with control_connection() as db:
                 db.execute(
                     "UPDATE requests SET response=?,status=? WHERE device_id=? AND request_id=?",
-                    (json.dumps(response, ensure_ascii=False), status, device_id, item.request_id),
+                    (
+                        json.dumps(response, ensure_ascii=False),
+                        status,
+                        control_device,
+                        item.request_id,
+                    ),
                 )
             return JSONResponse(response, status_code=status, headers={"Cache-Control": "no-store"})
 
