@@ -3,6 +3,8 @@
 import asyncio
 import copy
 
+from fx_agent.data_contracts import KNOWLEDGE_WRITES as KNOWLEDGE_WRITES
+
 from fx_agent.task_gates import TaskGates, TaskSpec, endpoint_lock, same_path
 
 GATE_TOOLS = {
@@ -12,14 +14,6 @@ GATE_TOOLS = {
     "fx_set_task_plan",
     "fx_task_question",
     "fx_finish_task",
-}
-KNOWLEDGE_WRITES = {
-    "fx_learn_templates",
-    "fx_annotate_template_effects",
-    "fx_refine_effect",
-    "fx_merge_effect_cards",
-    "fx_learn_template_experience",
-    "fx_export_template",
 }
 SAVES = {"save_scene", "save_script"}
 JOBS = {
@@ -89,6 +83,9 @@ def install_task_gates(mcp, software, root_provider, live_target):
     manager = mcp._tool_manager
     if getattr(manager, "_fx_gated", False):
         return
+    from fx_agent.multidevice import install_remote_tools
+
+    install_remote_tools(mcp)
 
     @mcp.tool()
     async def fx_begin_task(spec: TaskSpec) -> dict:
@@ -271,16 +268,26 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     feedback = arguments["feedback"]
                 else:
                     from fx_agent.learning import LearningStore
+                    from fx_agent.multidevice import RemoteClient, remote_enabled
 
-                    feedback = LearningStore(gates.root).get_feedback(
-                        arguments["feedback_id"], arguments["project_id"]
-                    )
+                    if remote_enabled():
+                        feedback = await asyncio.to_thread(
+                            RemoteClient().call, "tool.fx_get_feedback",
+                            {"feedback_id": arguments["feedback_id"], "project_id": arguments["project_id"]},
+                        )
+                    else:
+                        feedback = LearningStore(gates.root).get_feedback(
+                            arguments["feedback_id"], arguments["project_id"]
+                        )
                 if any(
                     feedback.get(k, "houdini" if k == "software" else "") != task[k]
                     for k in ("project_id", "shot_id", "software", "case_id")
                 ):
                     raise ValueError("Accepted feedback/archive must belong to the verified task")
-            result = await original(name, arguments, context=context, convert_result=False)
+            from fx_agent.multidevice import task_scope
+
+            with task_scope(task_id):
+                result = await original(name, arguments, context=context, convert_result=False)
             gates.observe(task_id, name, arguments, result)
             if isinstance(result, dict):
                 open_questions = [

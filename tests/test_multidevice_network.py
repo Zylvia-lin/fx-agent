@@ -9,7 +9,7 @@ import pytest
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 
-from fx_agent.data_service import DeviceConfig, ServiceConfig, create_app
+from fx_data_service.app import DeviceConfig, ServiceConfig, create_app
 from fx_agent.multidevice import RemoteClient
 from fx_agent.task_gates import TaskGates
 from fx_agent.task_tools import install_task_gates
@@ -18,9 +18,14 @@ from fx_agent.task_tools import install_task_gates
 @pytest.fixture
 def live_service(tmp_path):
     shared = tmp_path / "shared"
-    settings = ServiceConfig(data_root=shared, database_root=tmp_path / "database",
-                             devices={"a": DeviceConfig(name="A", token="a" * 40),
-                                      "b": DeviceConfig(name="B", token="b" * 40)})
+    settings = ServiceConfig(
+        data_root=shared,
+        database_root=tmp_path / "database",
+        devices={
+            "a": DeviceConfig(name="A", token="a" * 40),
+            "b": DeviceConfig(name="B", token="b" * 40),
+        },
+    )
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     url = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -55,8 +60,15 @@ async def test_remote_mcp_production_journey_keeps_dcc_local(live_service, monke
     # touch workstation storage; they must route through HTTP.
     from fx_agent.server import get_server
 
-    for name in ("fx_get_production_rules", "fx_get_module_knowledge", "fx_search_effects",
-                 "fx_search_memory", "fx_archive_case", "fx_record_feedback", "fx_finalize_learning"):
+    for name in (
+        "fx_get_production_rules",
+        "fx_get_module_knowledge",
+        "fx_search_effects",
+        "fx_search_memory",
+        "fx_archive_case",
+        "fx_record_feedback",
+        "fx_finalize_learning",
+    ):
         original = get_server()._tool_manager.get_tool(name)
         mcp.add_tool(original.fn, name=name)
 
@@ -92,9 +104,17 @@ async def test_remote_mcp_production_journey_keeps_dcc_local(live_service, monke
         except ValueError:
             return result[0].text
 
-    definition = dict(project_id="p", shot_id="s", software="houdini", scene_path=str(scene),
-                      endpoint="127.0.0.1:18186", goal="draft", acceptance=["preview"],
-                      budget="draft", modules=["particles"])
+    definition = dict(
+        project_id="p",
+        shot_id="s",
+        software="houdini",
+        scene_path=str(scene),
+        endpoint="127.0.0.1:18186",
+        goal="draft",
+        acceptance=["preview"],
+        budget="draft",
+        modules=["particles"],
+    )
     task = await call("fx_begin_task", {"spec": definition})
     scope = {"fx_task_id": task["task_id"]}
     for name, arguments in [
@@ -106,36 +126,92 @@ async def test_remote_mcp_production_journey_keeps_dcc_local(live_service, monke
         ("get_workflow_guide", {"topic": "dopparticles"}),
     ]:
         await call(name, arguments | scope)
-    task = await call("fx_set_task_plan", dict(task_id=task["task_id"], expected_revision=1,
-                      method="draft", applies_when="test", changes="node", selected_sources=[],
-                      no_match_reason="No applicable records in actual searches"))
+    task = await call(
+        "fx_set_task_plan",
+        dict(
+            task_id=task["task_id"],
+            expected_revision=1,
+            method="draft",
+            applies_when="test",
+            changes="node",
+            selected_sources=[],
+            no_match_reason="No applicable records in actual searches",
+        ),
+    )
     await call("create_node", {"name": "local-node"} | scope)
     await call("verify_network", scope)
     await call("save_scene", scope)
-    case = await call("fx_archive_case", dict(project_id="p", shot_id="s", title="test",
-                     files=[{"path": str(scene), "role": "project"},
-                            {"path": str(preview), "role": "preview"}]) | scope)
-    finished = await call("fx_finish_task", dict(task_id=task["task_id"], expected_revision=task["revision"],
-                          verification_note="synthetic preview inspected", case_id=case["case_id"]))
+    case = await call(
+        "fx_archive_case",
+        dict(
+            project_id="p",
+            shot_id="s",
+            title="test",
+            files=[
+                {"path": str(scene), "role": "project"},
+                {"path": str(preview), "role": "preview"},
+            ],
+        )
+        | scope,
+    )
+    finished = await call(
+        "fx_finish_task",
+        dict(
+            task_id=task["task_id"],
+            expected_revision=task["revision"],
+            verification_note="synthetic preview inspected",
+            case_id=case["case_id"],
+        ),
+    )
     assert finished["state"] == "verified"
     assert edits == ["local-node"]
     assert not (tmp_path / "forbidden-local-data").exists()
     assert not (shared / "memory.sqlite3").exists()
     assert RemoteClient().status()["device_id"] == "a"
     assert RemoteClient().status()["last_backup"]
-    accepted = await call("fx_record_feedback", {"feedback": dict(project_id="p", shot_id="s",
-                    effect_type="particles", attempt_id="draft-1", modules=["particles"],
-                    problem="draft", change="local node", reason="test", result="preview",
-                    outcome="accepted", user_quote="synthetic acceptance", source_ref="test",
-                    expected_revision=0, case_id=case["case_id"])} | scope)
-    learned = await call("fx_finalize_learning", dict(feedback_id=accepted["feedback_id"],
-                        project_id="p", method="local particle draft", reason="verified preview",
-                        applies_when="synthetic particle test") | scope)
+    accepted = await call(
+        "fx_record_feedback",
+        {
+            "feedback": dict(
+                project_id="p",
+                shot_id="s",
+                effect_type="particles",
+                attempt_id="draft-1",
+                modules=["particles"],
+                problem="draft",
+                change="local node",
+                reason="test",
+                result="preview",
+                outcome="accepted",
+                user_quote="synthetic acceptance",
+                source_ref="test",
+                expected_revision=0,
+                case_id=case["case_id"],
+            )
+        }
+        | scope,
+    )
+    learned = await call(
+        "fx_finalize_learning",
+        dict(
+            feedback_id=accepted["feedback_id"],
+            project_id="p",
+            method="local particle draft",
+            reason="verified preview",
+            applies_when="synthetic particle test",
+        )
+        | scope,
+    )
     assert learned
     monkeypatch.setenv("FX_AGENT_SERVICE_TOKEN", "b" * 40)
     with pytest.raises(PermissionError):
         TaskGates(shared).get(task["task_id"])
-    assert RemoteClient().call("tool.fx_get_case", {"case_id": case["case_id"], "project_id": "p"})["case_id"] == case["case_id"]
+    assert (
+        RemoteClient().call("tool.fx_get_case", {"case_id": case["case_id"], "project_id": "p"})[
+            "case_id"
+        ]
+        == case["case_id"]
+    )
     shared_memory = RemoteClient().call("tool.fx_search_memory", {"query": "local particle draft"})
     assert shared_memory["items"]
 

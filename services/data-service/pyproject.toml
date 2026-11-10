@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fx-agent-data-service"
+version = "0.1.0"
+description = "Independent authenticated FX knowledge data service"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.10,<3",
+  "starlette>=1.0,<2",
+  "uvicorn>=0.30,<1",
+  "fxhoudinimcp==2.25.0",
+  "PyMySQL>=1.1,<2",
+]
+
+[project.scripts]
+fx-data-service = "fx_data_service.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fx_data_service"]

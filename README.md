@@ -70,6 +70,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 默认数据根为仓库中的 `data/`，可通过绝对路径环境变量 `FX_AGENT_DATA_ROOT` 指定共享目录。数据包含制作记忆、SQLite 数据库及明确提供的归档文件。升级前备份数据；多设备合并见 [数据合并指南](public-docs/全局经验与数据合并.md)。
 
+多台设备同时使用时，请启用 [多设备共享数据服务](public-docs/多设备共享数据服务.md)：知识与案例共用，DCC 操作、任务和进度按设备隔离，运行数据库由服务主机本地磁盘管理。不要让多台客户端直接打开 NAS 上同一个 SQLite 文件。
+
 `data/`、`output/`、本机配置、工程与缓存不纳入源码版本控制。归档不自动查全外部依赖，也不包含未保存的软件内存状态。连接检查、单元测试和结构检查分别有验证边界，不能代替真实画面验收。
 
 桥接仅供可信的本地客户端使用，具有软件内操作与执行代码的能力。不要直接暴露到公网；具体说明和漏洞报告方式见 [SECURITY.md](SECURITY.md)。

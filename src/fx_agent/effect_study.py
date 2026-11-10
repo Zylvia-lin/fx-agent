@@ -99,6 +99,10 @@ def render_outputs(snapshot: dict) -> list[dict]:
 
 
 def _path_pattern(raw: str, project: Path, node_path: str) -> str | None:
+    from pathlib import PureWindowsPath
+
+    if PureWindowsPath(str(project)).drive:
+        project = PureWindowsPath(str(project))
     value = raw.strip().strip('"').replace("\\", "/")
     for name, replacement in (
         ("HIPNAME", project.stem),
@@ -110,7 +114,7 @@ def _path_pattern(raw: str, project: Path, node_path: str) -> str | None:
     value = re.sub(r"\$\{F(\d*)\}|\$F(\d*)|%0?(\d*)d|#+", "{FRAME}", value)
     if re.search(r"[$`\[\]\n]", value):
         return None
-    if not Path(value).is_absolute():
+    if not (Path(value).is_absolute() or PureWindowsPath(value).is_absolute()):
         value = project.parent.as_posix() + "/" + value
     return re.escape(posixpath.normpath(value).lower()).replace(re.escape("{frame}"), r"\d+")
 

@@ -9,7 +9,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from fx_agent.config import data_root
+from fx_agent.config import data_root, session_root
 from fx_agent.maya.client import DEFAULT_PORTS, MayaConnection, discover, validate_port
 from fx_agent.maya.launcher import start_maya as launch_maya
 from fx_agent.task_tools import GATE_TOOLS, install_task_gates
@@ -46,7 +46,7 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
     @mcp.tool()
     def list_maya_sessions() -> dict:
         """Probe configured ports and Maya registry live; never select the first window."""
-        result = discover(data_root(), ports)
+        result = discover(session_root(), ports)
         target = connection.target or {}
         for item in result["sessions"]:
             item["current"] = all(item[key] == target.get(key) for key in ("port", "pid", "session_id"))

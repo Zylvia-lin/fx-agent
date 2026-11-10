@@ -533,6 +533,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fxhoudinimcp" },
+    { name = "httpx" },
     { name = "mcp" },
 ]
 
@@ -551,6 +552,7 @@ nuke = [
 [package.metadata]
 requires-dist = [
     { name = "fxhoudinimcp", specifier = "==2.25.0" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.14.0,<2" },
 ]
 

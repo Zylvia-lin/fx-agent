@@ -145,7 +145,7 @@ def start(port=None, data_root=None):
         return identity(_bridge.port)
     configured = os.environ.get("FX_MAYA_PORT") if port is None else port
     ports = [int(configured)] if configured is not None else range(18770, 18790)
-    root = data_root or os.environ.get("FX_AGENT_DATA_ROOT") or os.path.abspath(
+    root = data_root or os.environ.get("FX_AGENT_LOCAL_ROOT") or os.environ.get("FX_AGENT_DATA_ROOT") or os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "data"))
     if isinstance(root, bytes):
         root = root.decode(sys.getfilesystemencoding() or "utf-8")

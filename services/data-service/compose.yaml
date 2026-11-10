@@ -1,0 +1,51 @@
+services:
+  data-service:
+    build:
+      context: ../..
+      dockerfile: services/data-service/Dockerfile
+      network: host
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: fx-agent-data-service:local
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      FX_AGENT_DATA_ROOT: /data
+      FX_AGENT_DATABASE_ROOT: /database
+      FX_AGENT_API_KEY_FILE: /run/secrets/api_key
+      FX_AGENT_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      FX_AGENT_HOST: ${FX_AGENT_HOST:-127.0.0.1}
+      FX_AGENT_PORT: ${FX_AGENT_PORT:-18790}
+      FX_AGENT_DB_ENGINE: mysql
+      FX_AGENT_MYSQL_HOST: ${FX_AGENT_MYSQL_HOST:-127.0.0.1}
+      FX_AGENT_MYSQL_PORT: ${FX_AGENT_MYSQL_PORT:-3306}
+      FX_AGENT_MYSQL_USER: ${FX_AGENT_MYSQL_USER:?Set the dedicated MySQL user}
+      FX_AGENT_MYSQL_DATABASE: ${FX_AGENT_MYSQL_DATABASE:?Set the dedicated database}
+      FX_AGENT_MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+    volumes:
+      - ${FX_AGENT_DATA_DIR:?Set the existing data directory}:/data
+      - ${FX_AGENT_DATABASE_DIR:?Set a separate database directory}:/database
+    secrets:
+      - api_key
+      - admin_password
+      - mysql_password
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  api_key:
+    file: ${FX_AGENT_API_KEY_FILE:?Set a private API key file}
+  admin_password:
+    file: ${FX_AGENT_ADMIN_PASSWORD_FILE:?Set a private admin password file}
+  mysql_password:
+    file: ${FX_AGENT_MYSQL_PASSWORD_FILE:?Set a private MySQL password file}

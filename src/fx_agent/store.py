@@ -45,9 +45,19 @@ class Store:
     SCHEMA_VERSION = 9
 
     def __init__(self, root: Path):
+        from fx_agent.config import database_path
+        from fx_agent.data_context import remote_enabled
+
+        if remote_enabled():
+            raise RuntimeError("Direct database access is disabled in remote data service mode")
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "memory.sqlite3"
+        self.path = database_path(self.root)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        from fx_agent.data_context import current_backend
+
+        if current_backend(self.root):
+            return
         with self.connection() as db:
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
@@ -115,7 +125,9 @@ class Store:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS template_effect_reviews (review_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,payload TEXT NOT NULL)"
             )
-            db.execute("CREATE TABLE IF NOT EXISTS task_gates (task_id TEXT PRIMARY KEY,payload TEXT NOT NULL)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS task_gates (task_id TEXT PRIMARY KEY,payload TEXT NOT NULL)"
+            )
             for table, columns, definition in (
                 (
                     "checkpoints",
@@ -170,6 +182,13 @@ class Store:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         """Commit successful operations, roll back errors, always close handles."""
+        from fx_agent.data_context import current_backend
+
+        backend = current_backend(self.root)
+        if backend:
+            with backend.connection() as db:
+                yield db
+            return
         with closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.row_factory = sqlite3.Row
             with db:
@@ -178,11 +197,12 @@ class Store:
     def save_checkpoint(self, **values: Any) -> dict:
         """Compare revisions within the same write transaction before updating."""
         checkpoint = CheckpointInput(**values)
+        key = checkpoint_key(checkpoint.project_id)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
                 "SELECT revision FROM checkpoints WHERE project_id=? AND shot_id=? AND software=?",
-                (checkpoint.project_id, checkpoint.shot_id, checkpoint.software),
+                (key, checkpoint.shot_id, checkpoint.software),
             ).fetchone()
             current = previous["revision"] if previous else 0
             if current != checkpoint.expected_revision:
@@ -195,7 +215,7 @@ class Store:
                 "INSERT INTO checkpoints VALUES (?,?,?,?,?) ON CONFLICT(project_id,shot_id,software) "
                 "DO UPDATE SET revision=excluded.revision,payload=excluded.payload",
                 (
-                    checkpoint.project_id,
+                    key,
                     checkpoint.shot_id,
                     current + 1,
                     compact(payload),
@@ -217,7 +237,7 @@ class Store:
         with self.connection() as db:
             row = db.execute(
                 "SELECT payload FROM checkpoints WHERE project_id=? AND shot_id=? AND software=?",
-                (project_id, shot_id, software),
+                (checkpoint_key(project_id), shot_id, software),
             ).fetchone()
         return json.loads(row["payload"]) if row else None
 
@@ -270,3 +290,15 @@ class Store:
                 else:
                     raise ValueError("max_chars too small for identifiers and checkpoint revision")
         return response
+
+
+def checkpoint_key(project_id: str) -> str:
+    """A NUL-prefixed internal key cannot collide with validated user identifiers."""
+    from fx_agent.data_context import current_device
+
+    device = current_device()
+    return (
+        "\x00device:" + hashlib.sha256(compact([device, project_id]).encode()).hexdigest()
+        if device
+        else project_id
+    )

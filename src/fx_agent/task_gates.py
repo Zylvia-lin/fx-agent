@@ -70,9 +70,13 @@ def endpoint_lock(root, endpoint):
     """Nonblocking OS lock, shared across processes and released even on process exit."""
     import os
 
+    from fx_agent.data_context import current_device
+
     folder = Path(root) / "task-locks"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / (hashlib.sha256(endpoint.encode()).hexdigest() + ".lock")
+    device = current_device()
+    identity = compact([device, endpoint]) if device else endpoint
+    path = folder / (hashlib.sha256(identity.encode()).hexdigest() + ".lock")
     with path.open("a+b") as handle:
         if not handle.tell():
             handle.write(b"0")
@@ -100,6 +104,15 @@ def endpoint_lock(root, endpoint):
 
 
 class TaskGates:
+    def __new__(cls, root):
+        from fx_agent.data_context import remote_enabled
+
+        if remote_enabled():
+            from fx_agent.multidevice import RemoteTaskGates
+
+            return RemoteTaskGates()
+        return super().__new__(cls)
+
     def __init__(self, root):
         self.root = Path(root)
         self.store = Store(self.root)
@@ -108,7 +121,12 @@ class TaskGates:
         row = db.execute("SELECT payload FROM task_gates WHERE task_id=?", (task_id,)).fetchone()
         if not row:
             raise ValueError("Unknown task_id; use fx_begin_task")
-        return json.loads(row[0])
+        from fx_agent.data_context import current_device
+
+        task = json.loads(row[0])
+        if current_device() and task.get("device_id") != current_device():
+            raise PermissionError("Task belongs to another device; create a local device task")
+        return task
 
     def _write(self, db, task):
         db.execute(
@@ -136,6 +154,8 @@ class TaskGates:
         return result
 
     def begin(self, spec: TaskSpec):
+        from fx_agent.data_context import current_device
+
         task = spec.model_dump() | {
             "task_id": uuid.uuid4().hex,
             "revision": 1,
@@ -150,6 +170,8 @@ class TaskGates:
             "case_id": "",
         }
         task["assets"] = self._assets(task)
+        if current_device():
+            task["device_id"] = current_device()
         with self.store.connection() as db:
             self._write(db, task)
         return self._summary(task)
@@ -384,7 +406,8 @@ class TaskGates:
                 "SELECT payload FROM task_gates WHERE task_id<>?", (task_id,)
             ).fetchall():
                 other = json.loads(row[0])
-                if other["endpoint"] == task["endpoint"]:
+                if (other.get("device_id", "") == task.get("device_id", "")
+                        and other["endpoint"] == task["endpoint"]):
                     other.update(saved_seq=-1, verified_seq=-1, case_id="")
                     if other["state"] == "verified":
                         other["state"] = "ready" if other["plan"] else "needs_knowledge"

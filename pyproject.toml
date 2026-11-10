@@ -14,11 +14,13 @@ dependencies = [
     # The upstream SDK adapter uses private registration internals. Validate
     # the 2.x transition separately rather than changing it during integration.
     "mcp>=1.14.0,<2",
+    "httpx>=0.28,<1",
 ]
 
 [project.scripts]
 fx-agent = "fx_agent.__main__:main"
 fx-maya = "fx_agent.maya.server:main"
+fx-data-client = "fx_agent.client_setup:main"
 
 [dependency-groups]
 dev = [
@@ -61,7 +63,7 @@ exclude = ["/integrations/nuke/vendor", "**/__pycache__", "**/*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "services/data-service/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["live: read-only verification against an explicitly enabled local Houdini session"]

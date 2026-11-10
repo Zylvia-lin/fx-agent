@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from mcp.server.fastmcp import FastMCP
 
-from fx_agent.config import data_root
+from fx_agent.config import data_root, session_root
 from fx_agent.nuke_graph_tools import register as register_graph_tools
 from fx_agent.nuke_sessions import list_sessions
 from fx_agent.nuke_viewer_tools import register as register_viewer_tools
@@ -142,7 +142,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
     def list_nuke_sessions() -> dict:
         """List local window snapshots; connect_nuke verifies PID, ID and script live."""
         current = connection.handshake or {}
-        return {"sessions": list_sessions(data_root(), connection.port, current.get("session_id"))}
+        return {"sessions": list_sessions(session_root(), connection.port, current.get("session_id"))}
 
     @mcp.tool()
     def connect_nuke(port: int, pid: int, session_id: str, expected_script: str) -> dict:
@@ -186,7 +186,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     connection = SerializedConnection(args.port)
     try:
-        sessions = list_sessions(data_root())
+        sessions = list_sessions(session_root())
         if len(sessions) == 1:
             target = sessions[0]
             try:

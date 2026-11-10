@@ -5,25 +5,49 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from fx_data_service.app import main
 
 from fx_agent.client_setup import configure_codex, configure_maya
-from fx_agent.data_service import main
+from fx_agent.install_config import forward_data_environment, replace_servers
 
 
 def test_client_setup_preserves_unrelated_configuration():
     source = '[other]\nkeep = 1\n[mcp_servers.unrelated.env]\nA = "B"\n'
     for name in ("fx-agent", "fx-maya", "fx-nuke"):
         source += f'[mcp_servers.{name}]\ncommand="python"\n[mcp_servers.{name}.env]\nFX_AGENT_DATA_ROOT="old"\nPYTHONUTF8="1"\n'
-    changed = configure_codex(source, Path("C:/private/client.json"), Path("C:/local"), Path("T:/FX-AGNET/data"))
+    changed = configure_codex(
+        source, Path("C:/private/client.json"), Path("C:/local"), Path("T:/FX-AGNET/data")
+    )
     config = tomllib.loads(changed)
     assert config["other"] == {"keep": 1}
     assert config["mcp_servers"]["unrelated"]["env"] == {"A": "B"}
     for name in ("fx-agent", "fx-maya", "fx-nuke"):
-        assert config["mcp_servers"][name]["env"]["FX_AGENT_CLIENT_CONFIG"] == str(Path("C:/private/client.json"))
+        assert config["mcp_servers"][name]["env"]["FX_AGENT_CLIENT_CONFIG"] == str(
+            Path("C:/private/client.json")
+        )
         assert config["mcp_servers"][name]["env"]["PYTHONUTF8"] == "1"
-    assert configure_codex(changed, Path("C:/private/client.json"), Path("C:/local"), Path("T:/FX-AGNET/data")) == changed
-    module = '+ fx_maya any C:/maya\nFX_AGENT_DATA_ROOT = T:/FX-AGNET/data\n'
+    assert (
+        configure_codex(
+            changed, Path("C:/private/client.json"), Path("C:/local"), Path("T:/FX-AGNET/data")
+        )
+        == changed
+    )
+    module = "+ fx_maya any C:/maya\nFX_AGENT_DATA_ROOT = T:/FX-AGNET/data\n"
     assert "FX_AGENT_LOCAL_ROOT = C:/local" in configure_maya(module, Path("C:/local"))
+
+
+def test_mcp_forwards_environment_names_without_copying_credentials():
+    source = '[mcp_servers.fx-agent]\ncommand="python"\nenv_vars=["EXISTING"]\n[mcp_servers.fx-agent.env]\nFX_AGENT_DATA_ROOT="data"\n[mcp_servers.other]\ncommand="other"\n'
+    changed = forward_data_environment(source)
+    config = tomllib.loads(changed)
+    assert config['mcp_servers']['other'] == {'command':'other'}
+    assert config['mcp_servers']['fx-agent']['env_vars'][0] == 'EXISTING'
+    assert 'FX_AGENT_DATA_MODE' in config['mcp_servers']['fx-agent']['env_vars']
+    assert 'FX_AGENT_API_KEY' in config['mcp_servers']['fx-agent']['env_vars']
+    assert config['mcp_servers']['fx-agent']['env'] == {'FX_AGENT_DATA_ROOT':'data'}
+    assert forward_data_environment(changed) == changed
+    replaced = replace_servers(source, {'fx-agent'}, '[mcp_servers.fx-agent]\ncommand="new"\n')
+    assert tomllib.loads(replaced)['mcp_servers']['fx-agent']['env_vars'][0] == 'EXISTING'
 
 
 def test_init_and_device_registration_do_not_print_tokens(tmp_path, monkeypatch, capsys):
@@ -31,14 +55,43 @@ def test_init_and_device_registration_do_not_print_tokens(tmp_path, monkeypatch,
     client = tmp_path / "private/client-a.json"
     shared = tmp_path / "shared"
     local = tmp_path / "local"
-    monkeypatch.setattr("sys.argv", ["fx-data-service", "init", "--config", str(config),
-                        "--client-config", str(client), "--data-root", str(shared),
-                        "--database-root", str(local), "--name", "A", "--url", "http://127.0.0.1:18790"])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "fx-data-service",
+            "init",
+            "--config",
+            str(config),
+            "--client-config",
+            str(client),
+            "--data-root",
+            str(shared),
+            "--database-root",
+            str(local),
+            "--name",
+            "A",
+            "--url",
+            "http://127.0.0.1:18790",
+        ],
+    )
     main()
     token = json.loads(client.read_text())["token"]
     assert token not in capsys.readouterr().out
-    monkeypatch.setattr("sys.argv", ["fx-data-service", "add-device", "--config", str(config),
-                        "--client-config", str(tmp_path / "client-b.json"), "--name", "B", "--url", "https://server.example"])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "fx-data-service",
+            "add-device",
+            "--config",
+            str(config),
+            "--client-config",
+            str(tmp_path / "client-b.json"),
+            "--name",
+            "B",
+            "--url",
+            "https://server.example",
+        ],
+    )
     main()
     assert len(json.loads(config.read_text())["devices"]) == 2
     with pytest.raises(SystemExit):

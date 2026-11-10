@@ -156,7 +156,9 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
             ).rowcount
         with closing(_connect(stage / "memory.sqlite3")) as incoming:
             import_id = _fingerprint(incoming, stage)
-            local_path = target / "memory.sqlite3"
+            from fx_agent.config import database_path
+
+            local_path = database_path(target)
             if local_path.exists():
                 local_copy = Path(temporary) / "local"
                 local_copy.mkdir()

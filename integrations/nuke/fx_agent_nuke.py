@@ -184,7 +184,7 @@ def _refresh_menu():
 
 
 def _session_directory():
-    root = os.getenv("FX_AGENT_DATA_ROOT")
+    root = os.getenv("FX_AGENT_LOCAL_ROOT") or os.getenv("FX_AGENT_DATA_ROOT")
     return (Path(root) if root else Path(__file__).resolve().parents[2] / "data") / "nuke_sessions"
 
 

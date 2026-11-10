@@ -11,7 +11,7 @@ from fx_agent.archive import CaseArchive
 from fx_agent.memory import MemoryStore
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
-from fx_agent.production import production_rules
+from fx_agent.production_rules import production_rules
 from fx_agent.store import Identifier, compact, scope_id
 
 
@@ -86,7 +86,13 @@ class LearningStore(MemoryStore):
             )
         return record
 
-    def get_rules(self, project_id: str = "", max_chars: int = 6000, offset: int = 0, software: str = "houdini") -> dict:
+    def get_rules(
+        self,
+        project_id: str = "",
+        max_chars: int = 6000,
+        offset: int = 0,
+        software: str = "houdini",
+    ) -> dict:
         if not 1024 <= max_chars <= 12000 or offset < 0:
             raise ValueError("max_chars must be 1024..12000")
         scope = "project:" + scope_id.validate_python(project_id) if project_id else ""
@@ -159,7 +165,10 @@ class LearningStore(MemoryStore):
         return result
 
     def record_feedback(self, **values) -> dict:
+        from fx_agent.data_context import current_device
+
         request = Feedback(**values)
+        attempt = feedback_attempt_key(request.attempt_id, current_device())
         if request.outcome == "accepted" and not request.case_id:
             raise ValueError("Accepted feedback requires an archived case")
         if request.case_id:
@@ -184,7 +193,7 @@ class LearningStore(MemoryStore):
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
                 "SELECT feedback_id,revision FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? AND software=? ORDER BY revision DESC LIMIT 1",
-                (request.project_id, request.shot_id, request.attempt_id, request.software),
+                (request.project_id, request.shot_id, attempt, request.software),
             ).fetchone()
             current = previous["revision"] if previous else 0
             if current != request.expected_revision:
@@ -194,13 +203,15 @@ class LearningStore(MemoryStore):
                 "revision": current + 1,
                 "created_at": datetime.now(UTC).isoformat(),
             }
+            if current_device():
+                record["device_id"] = current_device()
             db.execute(
                 "INSERT INTO learning_feedback VALUES (?,?,?,?,?,?,?)",
                 (
                     record["feedback_id"],
                     request.project_id,
                     request.shot_id,
-                    request.attempt_id,
+                    attempt,
                     current + 1,
                     compact(record),
                     request.software,
@@ -209,7 +220,7 @@ class LearningStore(MemoryStore):
             if previous:
                 db.execute(
                     "UPDATE memories SET status='disabled' WHERE memory_id IN (SELECT r.memory_id FROM learning_results r JOIN learning_feedback f ON f.feedback_id=r.feedback_id WHERE f.project_id=? AND f.shot_id=? AND f.attempt_id=? AND f.software=?)",
-                    (request.project_id, request.shot_id, request.attempt_id, request.software),
+                    (request.project_id, request.shot_id, attempt, request.software),
                 )
         if previous:
             return record | {"module_guides": refresh_guides(self.root, request.project_id)}
@@ -321,12 +332,16 @@ class LearningStore(MemoryStore):
             if row is None:
                 raise ValueError("Feedback not found in this project")
             feedback = json.loads(row["payload"])
+            from fx_agent.data_context import current_device
+
+            if current_device() and feedback.get("device_id") != current_device():
+                raise PermissionError("Only the source device can finalize its feedback")
             latest = db.execute(
                 "SELECT feedback_id FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? AND software=? ORDER BY revision DESC LIMIT 1",
                 (
                     project_id,
                     feedback["shot_id"],
-                    feedback["attempt_id"],
+                    feedback_attempt_key(feedback["attempt_id"], feedback.get("device_id", "")),
                     feedback.get("software", "houdini"),
                 ),
             ).fetchone()[0]
@@ -385,3 +400,14 @@ class LearningStore(MemoryStore):
         from fx_agent.dream import undo
 
         return undo(self, run_id)
+
+
+def feedback_attempt_key(attempt_id: str, device_id: str) -> str:
+    """Keep attempt revision chains local to their author; knowledge stays shared."""
+    import hashlib
+
+    return (
+        "\x00device:" + hashlib.sha256(json.dumps([device_id, attempt_id]).encode()).hexdigest()
+        if device_id
+        else attempt_id
+    )
