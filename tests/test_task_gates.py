@@ -7,7 +7,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.archive import CaseArchive
-from fx_agent.task_gates import TaskGates, TaskSpec, install_task_gates
+from fx_agent.task_gates import SourceAdaptation, TaskGates, TaskSpec, install_task_gates
 
 
 def spec(tmp_path, **changes):
@@ -69,6 +69,105 @@ def ready(tmp_path, *, root=None, scene_path=None):
         "已检索，无适用案例",
     )
     return gates, task
+
+
+def adaptation(source):
+    return {"source": source, "source_method": "读取源方法及关键连接",
+            "application": "保留速度平流并适配Y轴，改动写入节点方案",
+            "verification": "实际查看前中后帧的丝流和轮廓",
+            "source_node_paths": ["/obj/source"] if source.startswith("effect_card:") else []}
+
+
+@pytest.mark.parametrize("path", ["", " " * 3, "/" + "a" * 4096])
+def test_adaptation_source_paths_are_bounded(path):
+    with pytest.raises(ValueError):
+        SourceAdaptation.model_validate(adaptation("effect_card:" + "a" * 32)
+                                        | {"source_node_paths": [path]})
+
+
+def test_selected_card_needs_components_template_and_application_mapping(tmp_path):
+    gates, task = ready(tmp_path)
+    task_id = task["task_id"]
+    source = "effect_card:" + "a" * 32
+    gates.observe(task_id, "fx_get_effect", {"card_id": "a" * 32},
+                  {"card": {"card_id": "a" * 32, "study_id": "c" * 32,
+                            "modules": ["particles"], "component_card_ids": ["b" * 32],
+                            "node_paths": ["/obj/source"]}})
+    with pytest.raises(ValueError, match="adaptation"):
+        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source])
+    with pytest.raises(ValueError, match="component"):
+        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                   source_adaptations=[adaptation(source)])
+    gates.observe(task_id, "fx_get_effect", {"card_id": "b" * 32},
+                  {"card": {"card_id": "b" * 32, "study_id": "c" * 32}})
+    with pytest.raises(ValueError, match="template"):
+        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                   source_adaptations=[adaptation(source)])
+    for section in ("nodes", "connections"):
+        gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": section},
+                      {"study_id": "c" * 32, "content": [{"path": "/obj/unrelated"}],
+                       "truncated": True, "next_offset": 1})
+    with pytest.raises(ValueError, match="declared source node"):
+        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                   source_adaptations=[adaptation(source)])
+    gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": "nodes", "offset": 1},
+                  {"study_id": "c" * 32, "content": [{"path": "/obj/source"}], "truncated": True})
+    with pytest.raises(ValueError, match="related template connections"):
+        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                   source_adaptations=[adaptation(source)])
+    gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": "connections", "offset": 1},
+                  {"study_id": "c" * 32, "content": [{"src_path": "/obj/source", "dst_path": "/obj/out"}],
+                   "truncated": True})
+    result = gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                        source_adaptations=[adaptation(source)])
+    assert result["state"] == "ready"
+    assert gates.get(task_id, True)["plan"]["source_adaptations"][0]["source"] == source
+
+
+def test_empty_active_search_with_reference_hint_requires_reference_inspection(tmp_path):
+    gates, task = ready(tmp_path)
+    gates.observe(task["task_id"], "fx_search_memory", {"module": "particles", "query": "能量"},
+                  {"items": [], "reference_hint": {"has_matches": True}})
+    with pytest.raises(ValueError, match="candidate_search"):
+        gates.plan(task["task_id"], task["revision"], "方法", "条件", "差异", [], "没有正式经验")
+    gates.observe(task["task_id"], "fx_search_memory",
+                  {"module": "particles", "query": "能量", "include_candidates": True,
+                   "source_project": "unrelated"}, {"items": []})
+    assert "candidate_search:particles" in gates.get(task["task_id"])["missing"]
+    gates.observe(task["task_id"], "fx_search_memory",
+                  {"module": "particles", "query": "能量", "include_candidates": True},
+                  {"items": [{"memory_id": "a" * 32, "status": "candidate"}]})
+    result = gates.plan(task["task_id"], task["revision"], "方法", "条件", "差异", [],
+                        "候选依赖不同，按已读指南重新设计")
+    assert result["state"] == "ready"
+
+
+@pytest.mark.parametrize("offset,truncated,edges,allowed", [
+    (4, False, [], False),
+    (0, False, [], True),
+    (0, False, [{"src_path": "/other", "dst_path": "/other_out"}], True),
+    (0, True, [{"src_path": "/other", "dst_path": "/other_out"}], False),
+])
+def test_isolated_source_requires_complete_connections_not_an_empty_tail(
+    tmp_path, offset, truncated, edges, allowed
+):
+    gates, task = ready(tmp_path)
+    task_id, source, study_id = task["task_id"], "effect_card:" + "a" * 32, "c" * 32
+    gates.observe(task_id, "fx_get_effect", {"card_id": "a" * 32},
+                  {"card": {"card_id": "a" * 32, "study_id": study_id,
+                            "node_paths": ["/obj/source"]}})
+    gates.observe(task_id, "fx_get_template", {"study_id": study_id, "section": "nodes"},
+                  {"study_id": study_id, "content": [{"path": "/obj/source"}]})
+    gates.observe(task_id, "fx_get_template",
+                  {"study_id": study_id, "section": "connections", "offset": offset},
+                  {"study_id": study_id, "content": edges, "truncated": truncated})
+    if allowed:
+        assert gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                          source_adaptations=[adaptation(source)])["state"] == "ready"
+    else:
+        with pytest.raises(ValueError, match="template"):
+            gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
+                       source_adaptations=[adaptation(source)])
 
 
 def test_compact_json_receipt_retains_rules_offsets_and_errors(tmp_path):
@@ -280,7 +379,8 @@ def test_large_module_uses_scoped_search_and_full_relevant_source(tmp_path):
         {"memory_id": "a" * 32},
         {"memory_id": "a" * 32, "modules": ["particles"], "method": "完整方法"},
     )
-    task = gates.plan(task["task_id"], 1, "方法", "条件", "差异", ["memory:" + "a" * 32])
+    task = gates.plan(task["task_id"], 1, "方法", "条件", "差异", ["memory:" + "a" * 32],
+                      source_adaptations=[adaptation("memory:" + "a" * 32)])
     assert task["state"] == "ready" and not task["missing"]
 
 
@@ -339,7 +439,8 @@ def test_nuke_full_memory_reads_are_scoped_by_payload_not_missing_software_argum
         {"memory_id": "a" * 32},
         {"memory_id": "a" * 32, "software": "nuke", "modules": ["compositing"]},
     )
-    task = gates.plan(task["task_id"], 1, "发光", "当前输入", "调整阈值", ["memory:" + "a" * 32])
+    task = gates.plan(task["task_id"], 1, "发光", "当前输入", "调整阈值", ["memory:" + "a" * 32],
+                      source_adaptations=[adaptation("memory:" + "a" * 32)])
     assert task["state"] == "ready"
 
 

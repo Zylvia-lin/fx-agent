@@ -25,6 +25,15 @@ description: 使用 FX Agent操作 Houdini，检查连接、查询节点与指�
 
 ## 必须遵循的任务门禁
 
+## 历史知识召回与实际应用
+
+- `fx_get_module_knowledge.available=false` 或 `lesson_count=0` 只说明正式模块经验为空，不代表模板、效果卡或候选经验不存在。正式经验检索返回 `reference_hint.has_matches=true` 时，按提示使用同一 software/module/query 和 `include_candidates=true` 检索，并展开所用来源；保持其候选、未验证状态，不升级为成功经验。
+- 参考驱动制作先拆解外观、运动、尺度与材质特征，再用短关键词、近义词和构成词分别检索效果卡及模板。精确词零命中后至少补查一种近义词/构成词，例如光柱→柱状丝束/光束、能量环→环带/冲击环。检索限定实际 software；返回 truncated 时按 next_offset 继续查看候选，不把首屏当全部结果。允许基于比较结果说明不适用，不凭搜索排名认定最优方案。
+- 对选中的效果总卡，完整展开实际组成卡；按 study_id 读取关联模板中相关上下游的 nodes、connections、原参数和动画。预算不足返回空 content/required_chars 时增加预算或按 snapshot_text/分页读取，不能记为没有源内容。不要求读取无关节点或整本历史。
+- `fx_set_task_plan` 的每个 selected_sources 必须对应一条 `source_adaptations`：`source`、`source_method`（原方法及关键机制）、`application`（当前具体节点/参数、保留或替代内容及理由）、`verification`（预期画面差异、动态检查点）。效果卡另填 `source_node_paths`，从该卡及组成卡声明本次实际采用的源节点；这些节点须实际出现在读过的模板节点页，连接页须包含相关端点。合法孤立节点可读取 offset=0、非截断的完整 connections 节确认；不能以空尾页代替。大图可提高预算读取完整连接节，门禁不声称自动理解整个上下游。改用更简单机制时写清失去哪些表现、为何仍适合目标，不可把“参考了卡片”当作应用证明。复用节点时先导出工作副本；重建也须保留可追溯来源。
+- 粗、中、细是视觉尺度，不机械等同固定层数。先用最低成本验证轮廓、翻卷、连续性与主次，再加细节和采样。只有规则圆筒/圆环、只有表面噪声却缺少目标流动结构时，应回到造型与运动设计，不连续微调亮度冒充修复。
+- 放行只表示读取和应用记录齐备，不表示方法正确或画面通过。实际查看参考与草稿的差异；用户否定结果时保持 failed/pending，禁止成功提炼。用户要求停止时立即停止，不以记录经验或补验证为由继续操作工程。
+
 先理解目标外观、运动、输入与参考、验收要求和计算预算，再只读查询 `fx_status`、真实会话/工程与 `fx_get_module_catalog`。根据已有用户信息调用 `fx_begin_task(spec)`，kind=production；spec记录project_id、shot_id、software=houdini、真实scene_path、endpoint（127.0.0.1:实际端口）、goal、acceptance、budget、modules，以及已解析的input_paths（素材和参考）。无需让用户重复已经提供的信息。
 
 此后的规范、指南、模块知识、效果/经验检索及来源展开都携带 `fx_task_id`，否则不会计入该任务证据。规范带project_id并按next_offset从0连续翻页；detail_required规则用fx_get_user_rule展开。读取discipline及所选模块的原指南、模块补充，再按目标检索fx_search_effects和fx_search_memory。选中卡用fx_get_effect默认card读取全文，经验用fx_get_memory；尾页/截断内容不算全文。

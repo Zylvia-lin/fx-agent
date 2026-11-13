@@ -6,7 +6,7 @@ import ntpath
 import uuid
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -35,6 +35,19 @@ class TaskSpec(BaseModel):
         if not 1 <= int(self.endpoint.rsplit(":", 1)[1]) <= 65535:
             raise ValueError("Invalid endpoint port")
         return self
+
+
+class SourceAdaptation(BaseModel):
+    """Host-authored application record, not proof of visual correctness."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    source: str = Field(pattern=r"^(effect_card|memory|template_study):[a-f0-9]{32}$")
+    source_method: str = Field(min_length=1, max_length=1500)
+    application: str = Field(min_length=1, max_length=1500)
+    verification: str = Field(min_length=1, max_length=1500)
+    source_node_paths: list[Annotated[str, Field(min_length=1, max_length=4096)]] = Field(
+        default_factory=list, max_length=50
+    )
 
 
 def same_path(a, b):
@@ -229,6 +242,16 @@ class TaskGates:
                 for r in receipts
             ):
                 missing.append(name)
+        for receipt in receipts:
+            if receipt.get("reference_matches") and not any(
+                r["tool"] == "fx_search_memory"
+                and r.get("include_candidates")
+                and r.get("module") == receipt.get("module")
+                and r.get("query") == receipt.get("query")
+                and r.get("search_scope", {}) == receipt.get("search_scope", {})
+                for r in receipts
+            ):
+                missing.append("candidate_search:" + receipt.get("module", ""))
         return missing
 
     def _summary(self, task):
@@ -289,6 +312,7 @@ class TaskGates:
         changes,
         selected_sources,
         no_match_reason="",
+        source_adaptations=None,
     ):
         old = self.get(task_id, True)
         with endpoint_lock(self.root, old["endpoint"]), self.store.connection() as db:
@@ -306,6 +330,7 @@ class TaskGates:
                 raise ValueError("Selected knowledge must have been read in full for this task")
             if not selected_sources and not no_match_reason.strip():
                 raise ValueError("Explain why retrieved knowledge does not apply")
+            adaptations = self._source_adaptations(task, selected_sources, source_adaptations)
             if not all(v.strip() for v in (method, applies_when, changes)):
                 raise ValueError("Plan needs method, applicability and adaptation")
             if (
@@ -320,6 +345,7 @@ class TaskGates:
                     "changes": changes,
                     "selected_sources": selected_sources,
                     "no_match_reason": no_match_reason,
+                    "source_adaptations": adaptations,
                 },
                 revision=task["revision"] + 1,
                 state="ready",
@@ -327,6 +353,73 @@ class TaskGates:
             )
             self._write(db, task)
         return self._summary(task)
+
+    @staticmethod
+    def _source_adaptations(task, selected_sources, adaptations):
+        if len(adaptations or []) > 50:
+            raise ValueError("Too many source adaptations")
+        records = [SourceAdaptation.model_validate(a).model_dump() for a in adaptations or []]
+        if len({a["source"] for a in records}) != len(records) or {
+            a["source"] for a in records
+        } != set(selected_sources):
+            raise ValueError("Each selected source requires one source adaptation")
+        receipts = list(task["receipts"].values())
+        expanded = {s for r in receipts for s in r.get("sources", [])}
+        pending, visited, studies = list(selected_sources), set(), set()
+        while pending:
+            source = pending.pop()
+            if source in visited:
+                continue
+            visited.add(source)
+            for receipt in receipts:
+                if source not in receipt.get("sources", []):
+                    continue
+                if source.startswith("effect_card:") and receipt.get("card_read_version") != 1:
+                    raise ValueError("Read selected effect card again for source node evidence")
+                for card_id in receipt.get("component_card_ids", []):
+                    component = "effect_card:" + card_id
+                    if component not in expanded:
+                        raise ValueError("Read selected effect component in full: " + component)
+                    pending.append(component)
+                if source.startswith("effect_card:"):
+                    studies.update(receipt.get("study_ids", []))
+        for study_id in studies:
+            sections = {
+                r.get("template_section") for r in receipts if study_id in r.get("study_ids", [])
+            }
+            if "snapshot" not in sections and not {"nodes", "connections"} <= sections:
+                raise ValueError("Read relevant template nodes and connections: " + study_id)
+        for adaptation in records:
+            if not adaptation["source"].startswith("effect_card:"):
+                continue
+            related, queue = set(), [adaptation["source"]]
+            while queue:
+                source = queue.pop()
+                if source in related:
+                    continue
+                related.add(source)
+                queue.extend("effect_card:" + card_id for r in receipts
+                             if source in r.get("sources", [])
+                             for card_id in r.get("component_card_ids", []))
+            card_receipts = [r for r in receipts if related.intersection(r.get("sources", []))]
+            allowed = {p for r in card_receipts for p in r.get("source_node_paths", [])}
+            declared = set(adaptation["source_node_paths"])
+            if allowed and (not declared or not declared <= allowed):
+                raise ValueError("Source adaptation must identify source_node_paths from its read cards")
+            for path in declared:
+                source_studies = {s for r in card_receipts if path in r.get("source_node_paths", [])
+                                  for s in r.get("study_ids", [])}
+                node_studies = {s for r in receipts if path in r.get("template_nodes", [])
+                                for s in r.get("study_ids", [])} & source_studies
+                if not node_studies:
+                    raise ValueError("Read declared source node in template nodes: " + path)
+                if not any(
+                    set(r.get("study_ids", [])) & node_studies
+                    and (path in r.get("template_edge_nodes", []) or r.get("template_connections_complete"))
+                    for r in receipts
+                ):
+                    raise ValueError("Read related template connections for source node: " + path)
+        return records
 
     def question(
         self,
@@ -384,6 +477,12 @@ class TaskGates:
             task["project_id"]
         ):
             raise ValueError("Task environment/rules changed; update task and recheck knowledge")
+        if self._missing(task):
+            raise ValueError("Task knowledge changed; recheck reads and save a plan")
+        self._source_adaptations(
+            task, task["plan"].get("selected_sources", []),
+            task["plan"].get("source_adaptations", []),
+        )
         if any(not q.get("answer") for q in task["questions"]):
             raise ValueError("Unresolved task questions; ask the user before modifying")
         if scene_context is not None:
@@ -478,6 +577,10 @@ class TaskGates:
             if tool.startswith("fx_search_"):
                 receipt["query"] = arguments.get("query", "")
                 receipt["module"] = arguments.get("module", "")
+                receipt["include_candidates"] = bool(arguments.get("include_candidates"))
+                receipt["reference_matches"] = bool(value.get("reference_hint", {}).get("has_matches"))
+                receipt["search_scope"] = {key: arguments.get(key, "") for key in
+                                           ("project_id", "shot_id", "source_project")}
                 receipt["match_count"] = (
                     None
                     if value.get("truncated")
@@ -527,6 +630,30 @@ class TaskGates:
                         receipt["source_modules"] = source.get("modules", []) + source.get(
                             "component_modules", []
                         )
+                        receipt["component_card_ids"] = source.get("component_card_ids", [])
+                        if tool == "fx_get_effect":
+                            receipt["card_read_version"] = 1
+                            receipt["source_node_paths"] = source.get("node_paths", [])
+            if tool == "fx_get_template" and not value.get("detail_required"):
+                section = arguments.get("section", "summary")
+                if section in {"nodes", "connections"} and (
+                    value.get("content") or section == "connections" and not value.get("truncated")
+                ):
+                    receipt["template_section"] = section
+                elif section == "snapshot" and not value.get("truncated") and isinstance(value.get("content"), dict):
+                    receipt["template_section"] = "snapshot"
+                content = value.get("content")
+                nodes = content.get("nodes", []) if isinstance(content, dict) else content
+                edges = content.get("connections", []) if isinstance(content, dict) else content
+                if section in {"nodes", "snapshot"} and isinstance(nodes, list):
+                    receipt["template_nodes"] = [n["path"] for n in nodes if n.get("path")]
+                if section in {"connections", "snapshot"} and isinstance(edges, list):
+                    receipt["template_edge_nodes"] = sorted({
+                        e[key] for e in edges for key in ("src_path", "dst_path") if e.get(key)
+                    })
+                    receipt["template_connections_complete"] = (
+                        arguments.get("offset", 0) == 0 and not value.get("truncated")
+                    )
             questions = list(value.get("card", {}).get("questions", []))
             current_heads = set(value.get("current_card_ids", []))
             equivalent = set(value.get("equivalent_card_ids", []))

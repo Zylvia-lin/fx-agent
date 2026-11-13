@@ -330,6 +330,20 @@ class MemoryStore(Store):
                 result["truncated"] = True
                 break
         result["truncated"] = result["truncated"] or len(rows) > limit
+        if not include_candidates and not result["items"] and not result["truncated"]:
+            references = self.search(
+                project_id, query, shot_id, True, 1, 12000, software, module, source_project
+            )
+            if references["items"]:
+                result["reference_hint"] = {
+                    "has_matches": True,
+                    "knowledge_status": "reference_not_verified_success",
+                    "message": "无匹配正式经验，但存在候选参考；展开后判断适用性，不自动升级为成功经验。",
+                    "next_call": {
+                        "tool": "fx_search_memory", "include_candidates": True,
+                    },
+                    "repeat_same_arguments": True,
+                }
         return result
 
 

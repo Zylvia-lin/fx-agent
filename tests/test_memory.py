@@ -36,6 +36,31 @@ def test_unverified_ideas_stay_candidates_and_are_not_default_recall(tmp_path):
     assert found["items"][0]["evidence_status"] == "unverified"
 
 
+def test_empty_active_recall_points_to_scoped_references_without_promoting_them(tmp_path):
+    store = memories(tmp_path)
+    saved = store.submit(**experience(modules=["materials"], reuse_scope="global"))
+    result = store.search("其他项目", "逆光", module="materials")
+    assert result["items"] == []
+    hint = result["reference_hint"]
+    assert hint["has_matches"] is True
+    assert hint["next_call"]["include_candidates"] is True
+    assert hint["repeat_same_arguments"] is True
+    assert len(json.dumps(store.search("其他项目", "逆光", module="materials", max_chars=512),
+                          ensure_ascii=False, separators=(",", ":"))) <= 512
+    assert store.get(saved["memory_id"])["status"] == "candidate"
+    assert "reference_hint" not in store.search("其他项目", "不存在", module="materials")
+    assert "reference_hint" not in store.search("其他项目", "逆光", module="particles")
+
+
+def test_reference_hint_survives_long_candidate_with_minimum_budget(tmp_path):
+    store = memories(tmp_path)
+    store.submit(**experience(title="逆光" + "烟" * 180, method="烟" * 1000,
+                              modules=["materials"], reuse_scope="global"))
+    result = store.search("其他项目", "逆光", module="materials", max_chars=512)
+    assert result["items"] == [] and result["reference_hint"]["has_matches"]
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) <= 512
+
+
 def test_explicit_user_preference_is_saved_and_duplicates_are_not_reinserted(tmp_path):
     store = memories(tmp_path)
     values = experience(

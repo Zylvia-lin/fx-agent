@@ -96,6 +96,17 @@ def test_render_only_variant_and_alias_search_do_not_collapse(tmp_path):
     assert library.search("不存在的词xyz")["items"] == []
 
 
+def test_light_pillar_query_recalls_column_threads_without_claiming_verified_match(tmp_path):
+    library, study_id, _ = study(tmp_path)
+    library.annotate(study_id, [card(title="金色柱状丝束", effect_kind="柱状丝束",
+                                  effect_family=["能量"], behaviors=["波动"])])
+    for query in ("光柱", "light pillar", "beam"):
+        result = library.search(query)
+        assert result["total"] == 1
+        assert result["items"][0]["match_kind"] != "complete"
+        assert result["knowledge_status"] == "reference_not_verified_success"
+
+
 def test_revisions_are_idempotent_stale_protected_and_never_delete_variants(tmp_path):
     library, study_id, _ = study(tmp_path)
     first = library.annotate(study_id, [card()])["items"][0]

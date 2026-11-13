@@ -68,6 +68,8 @@ CONCEPTS = {
     "爆炸": ("爆炸", "爆破", "explosion", "explosive"),
     "环境": ("环境", "ambient", "environment"),
     "能量": ("能量", "energy"),
+    "光柱": ("光柱", "光束", "柱状丝束", "柱状", "beam", "light pillar", "light shaft"),
+    "环带": ("能量环", "冲击环", "环带", "圆环", "ring", "shock ring"),
     "环绕": ("环绕", "绕转", "绕圈", "orbit", "orbiting"),
     "吸引": ("吸引", "吸入", "向心", "收拢", "汇聚", "attract", "attraction", "attracting"),
     "外扩": ("外扩", "扩散", "向外", "expansion", "expanding"),

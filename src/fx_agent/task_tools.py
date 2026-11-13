@@ -4,8 +4,7 @@ import asyncio
 import copy
 
 from fx_agent.data_contracts import KNOWLEDGE_WRITES as KNOWLEDGE_WRITES
-
-from fx_agent.task_gates import TaskGates, TaskSpec, endpoint_lock, same_path
+from fx_agent.task_gates import SourceAdaptation, TaskGates, TaskSpec, endpoint_lock, same_path
 
 GATE_TOOLS = {
     "fx_begin_task",
@@ -111,12 +110,15 @@ def install_task_gates(mcp, software, root_provider, live_target):
         changes: str,
         selected_sources: list[str],
         no_match_reason: str = "",
+        source_adaptations: list[SourceAdaptation] | None = None,
     ) -> dict:
         """Release writes after actual scoped rules/module/effect/memory reads.
 
         selected_sources uses effect_card:/memory:/template_study: IDs actually
         expanded in this task. Explain no applicable match instead of inventing
-        knowledge. A plan is host-authored, not proof of semantic correctness.
+        knowledge. Each selected source needs source_method, application and
+        verification in source_adaptations. Read merged components and relevant
+        template nodes/connections. These records do not prove visual correctness.
         """
         return TaskGates(root_provider()).plan(
             task_id,
@@ -126,6 +128,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
             changes,
             selected_sources,
             no_match_reason,
+            source_adaptations,
         )
 
     @mcp.tool()
