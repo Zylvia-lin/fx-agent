@@ -6,6 +6,7 @@ from pathlib import Path
 import uvicorn
 
 from fx_data_service.app import ServiceConfig, create_app, snapshot_database
+from fx_data_service.diagnostics import configure_logging
 
 
 def secret(name):
@@ -14,6 +15,7 @@ def secret(name):
 
 
 def main():
+    log_level = configure_logging()
     key = secret("FX_AGENT_API_KEY")
     settings = ServiceConfig(
         data_root=Path(os.getenv("FX_AGENT_DATA_ROOT", "/data")),
@@ -53,6 +55,7 @@ def main():
         host=os.getenv("FX_AGENT_HOST", "0.0.0.0"),
         port=int(os.getenv("FX_AGENT_PORT", "18790")),
         workers=1,
+        log_level=log_level,
     )
 
 

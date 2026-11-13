@@ -41,8 +41,15 @@ docker compose --env-file /www/fx-agent/deployment.env \
 | `FX_AGENT_ADMIN_PASSWORD` 或 `_FILE` | 独立网页管理员密码；不设置则关闭管理网页 |
 | `FX_AGENT_BACKUP_ROOT` | 可选备份目录，默认数据目录下 `backups/` |
 | `PIP_INDEX_URL` | 镜像构建使用的 Python 包源 |
+| `FX_AGENT_LOG_LEVEL` | Docker应用日志级别：默认INFO，可设置DEBUG；修改后重新创建容器 |
 
 同一敏感项同时设置时，`_FILE` 优先。Docker Compose 将宿主机的私密文件作为 secrets 挂载，不把内容写进镜像。
+
+## 请求诊断与文件传输
+
+升级步骤见根目录[升级说明](../../升级说明.md)。操作失败返回request_id、error_code和脱敏的校验字段；Docker日志用同一request_id关联操作名、耗时、异常类型和代码位置。未知JSON字段名、请求正文、认证头、输入值和异常局部变量不写入日志。`/v1/status`的service_revision可确认容器运行的代码版本。
+
+上传与下载保留认证和数据空间隔离。上传响应包含download_path；工作区文件只能由同一逻辑设备读取。共享模板导出改为云端生成SHA256校验包、由更新后的共用客户端在本机落盘，避免将Windows目标路径当作容器目录。新下载流程需要同步更新本机客户端；三个DCC入口共用同一个multidevice模块。
 
 ## 管理网页和 API Key
 

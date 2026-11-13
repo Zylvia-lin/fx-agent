@@ -4,9 +4,12 @@ import asyncio
 import hashlib
 import inspect
 import json
+import ntpath
 import os
 import re
 import ssl
+import tempfile
+import zipfile
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -25,6 +28,7 @@ from fx_agent.data_contracts import DATA_TOOLS as DATA_TOOLS
 from fx_agent.data_contracts import TASK_METHODS as TASK_METHODS
 
 _task = ContextVar("fx_remote_task", default="")
+MAX_TRANSFER_BYTES = 512 * 1024 * 1024
 
 
 @contextmanager
@@ -132,6 +136,12 @@ class RemoteClient:
         import uuid
 
         arguments = arguments or {}
+        if operation == "tool.fx_export_template":
+            destination = Path(arguments["destination"])
+            if not destination.is_absolute():
+                raise ValueError("Destination must be absolute")
+            if destination.exists():
+                raise FileExistsError("Destination exists; refusing to overwrite")
         if self.upload_files:
             self.prepare_files(operation, json_value(arguments))
         body = {
@@ -155,6 +165,7 @@ class RemoteClient:
                             "X-FX-Version": __version__,
                             "X-FX-Protocol": "1",
                             "X-FX-Device-ID": self.device_id,
+                            "X-FX-File-Protocol": "1",
                         },
                     )
                     break
@@ -180,12 +191,27 @@ class RemoteClient:
             raise invalid_response(
                 response, body["request_id"], "returned an invalid JSON envelope"
             )
+        diagnostic = (f"; HTTP {response.status_code}; operation={operation}; "
+                      f"request_id={body['request_id']}")
+        code = value.get("error_code", "")
+        if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+            diagnostic += f"; error_code={code}"
+        details = value.get("details", [])
+        if isinstance(details, list):
+            fields = [".".join(str(part) for part in d.get("field", []))
+                      for d in details[:10] if isinstance(d, dict)
+                      and isinstance(d.get("field"), list)]
+            fields = [f for f in fields if re.fullmatch(r"[A-Za-z0-9_.]{1,128}", f)]
+            if fields:
+                diagnostic += "; fields=" + ",".join(fields)
         if response.status_code == 403:
-            raise PermissionError(value.get("error", "Data service access denied"))
+            raise PermissionError(value.get("error", "Data service access denied") + diagnostic)
         if response.status_code >= 500:
-            raise ServiceUnavailable(value.get("error", "FX data service failed"))
+            raise ServiceUnavailable(value.get("error", "FX data service failed") + diagnostic)
         if response.status_code != 200:
-            raise ValueError(value.get("error", "FX data service request rejected"))
+            raise ValueError(value.get("error", "FX data service request rejected") + diagnostic)
+        if operation == "tool.fx_export_template":
+            return self.receive_export(value["result"], destination)
         return value["result"]
 
     def headers(self):
@@ -230,7 +256,7 @@ class RemoteClient:
                     )
                 else:
                     before = path.stat()
-                    if before.st_size > 512 * 1024 * 1024:
+                    if before.st_size > MAX_TRANSFER_BYTES:
                         raise ValueError("Cloud archive files must not exceed 512 MiB")
                     with path.open("rb") as stream:
                         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -248,11 +274,117 @@ class RemoteClient:
                     after = path.stat()
                     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                         raise ValueError("Local file changed during upload; inspect and retry")
-                result.raise_for_status()
+                self.check_transfer(result)
         except httpx.HTTPError:
             raise ServiceUnavailable(
                 "Shared file transfer failed; no local fallback was used"
             ) from None
+
+    @staticmethod
+    def check_transfer(response):
+        if response.is_success:
+            return
+        request_id = response.headers.get("x-fx-request-id", "unknown")
+        if not re.fullmatch(r"[a-f0-9]{32}", request_id):
+            request_id = "unknown"
+        raise ServiceUnavailable(f"Shared file transfer failed; HTTP {response.status_code}; "
+                                 f"request_id={request_id}; inspect server logs")
+
+    def download_file(self, relative, destination, sha256):
+        """Download a verified file atomically, without replacing local files."""
+        import uuid
+
+        from fx_agent.archive import contained
+
+        # A relative server member is data, never a URL or an arbitrary local path.
+        relative = str(relative)
+        if "\\" in relative or ntpath.isabs(relative) or ":" in relative:
+            raise ValueError("Invalid download path")
+        contained(Path.cwd(), relative)
+        if not re.fullmatch(r"[a-f0-9]{64}", sha256):
+            raise ValueError("A SHA256 checksum is required")
+        target = Path(destination)
+        if not target.is_absolute():
+            raise ValueError("Destination must be absolute")
+        if target.exists():
+            raise FileExistsError("Destination exists; refusing to overwrite")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(".fx-download-" + uuid.uuid4().hex)
+        digest, size = hashlib.sha256(), 0
+        try:
+            with (httpx.Client(timeout=120, verify=self.verify, trust_env=False) as client,
+                  client.stream("GET", self.url + "/v1/files/" + quote(relative, safe="/"),
+                                headers=self.headers()) as response,
+                  temporary.open("xb") as output):
+                self.check_transfer(response)
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > MAX_TRANSFER_BYTES:
+                        raise ValueError("Download exceeds 512 MiB")
+                    output.write(chunk)
+                    digest.update(chunk)
+            if digest.hexdigest() != sha256:
+                raise ValueError("Download checksum mismatch")
+            if os.name == "nt":
+                temporary.rename(target)  # Windows rename refuses an existing target
+            else:
+                os.link(temporary, target)  # exclusive publication on POSIX
+            return {"path": str(target), "sha256": sha256, "size": size}
+        except httpx.HTTPError:
+            raise ServiceUnavailable("Shared download interrupted; no local file published") from None
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def receive_export(self, result, destination):
+        """Materialize an authenticated server export as a local working copy."""
+        from fx_agent.archive import contained, publish_directory
+
+        target = Path(destination)
+        if not target.is_absolute():
+            raise ValueError("Destination must be absolute")
+        if target.exists():
+            raise FileExistsError("Destination exists; refusing to overwrite")
+        if not isinstance(result, dict) or not isinstance(result.get("download"), dict):
+            raise ServiceUnavailable("Server lacks export download support; upgrade data service")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".fx-export-", dir=target.parent) as folder:
+            folder = Path(folder)
+            bundle = result["download"]
+            self.download_file(bundle["path"], folder / "bundle.zip", bundle["sha256"])
+            stage = folder / "complete"
+            stage.mkdir()
+            with zipfile.ZipFile(folder / "bundle.zip") as archive:
+                members = archive.infolist()
+                if len(members) > 10000 or sum(m.file_size for m in members) > MAX_TRANSFER_BYTES:
+                    raise ValueError("Export archive exceeds transfer limits")
+                seen = set()
+                for member in members:
+                    name = member.filename
+                    if ("\\" in name or ":" in name or ntpath.isabs(name)
+                            or member.external_attr >> 16 & 0o170000 == 0o120000):
+                        raise ValueError("Invalid export archive member")
+                    path = contained(stage, name)
+                    identity = os.path.normcase(str(path))
+                    if identity in seen:
+                        raise ValueError("Duplicate export archive member")
+                    seen.add(identity)
+                    if member.is_dir():
+                        path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.open(member) as source, path.open("xb") as output:
+                            import shutil
+                            shutil.copyfileobj(source, output, 1024 * 1024)
+            manifest_member = result.get("manifest_member", "template-manifest.json")
+            if not isinstance(manifest_member, str) or "\\" in manifest_member or ":" in manifest_member:
+                raise ValueError("Invalid export archive manifest")
+            manifest = contained(stage, manifest_member)
+            if not manifest.is_file():
+                raise ValueError("Export archive manifest is missing")
+            publish_directory(stage, target)
+        return {k: v for k, v in result.items() if k != "download"} | {
+            "destination": str(target), "downloaded": True,
+            "manifest_path": str(target / manifest_member)}
 
     def status(self):
         try:

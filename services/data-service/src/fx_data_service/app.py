@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
@@ -27,6 +28,12 @@ from starlette.routing import Route
 from fx_agent import __version__
 from fx_agent.data_context import json_value, service_scope
 from fx_agent.data_contracts import DATA_TOOLS, TASK_METHODS
+from fx_data_service.diagnostics import (
+    RequestLoggingMiddleware,
+    error_details,
+    log_rejection,
+    safe_reason,
+)
 
 LOG = logging.getLogger(__name__)
 MAX_BODY = 2 * 1024 * 1024
@@ -178,12 +185,14 @@ def map_value(value, mappings: dict[str, str], field=""):
             return [[map_value(item[0], mappings, "path"), *item[1:]] for item in value]
         return [map_value(item, mappings, field) for item in value]
     if isinstance(value, str) and field in PATH_FIELDS:
-        normalized = value.replace("\\", "/")
+        windows = bool(ntpath.splitdrive(value)[0])
+        normalized = ntpath.normpath(value).replace("\\", "/") if windows else value
         for source, target in sorted(mappings.items(), key=lambda item: -len(item[0])):
-            prefix = source.replace("\\", "/").rstrip("/")
-            if normalized.casefold() == prefix.casefold() or normalized.casefold().startswith(
-                prefix.casefold() + "/"
-            ):
+            prefix = (ntpath.normpath(source).replace("\\", "/")
+                      if ntpath.splitdrive(source)[0] else source).rstrip("/")
+            compared, match = ((normalized.casefold(), prefix.casefold())
+                               if windows else (normalized, prefix))
+            if compared == match or compared.startswith(match + "/"):
                 return target.replace("\\", "/").rstrip("/") + normalized[len(prefix) :]
     return value
 
@@ -222,7 +231,7 @@ def check_file_access(operation, arguments, settings, forbidden_roots=()):
 class Operation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    operation: str = Field(min_length=1, max_length=100)
+    operation: str = Field(pattern=r"^(tool|task)\.[A-Za-z_][A-Za-z0-9_]{0,94}$", max_length=100)
     arguments: dict = Field(default_factory=dict)
     task_id: str = Field(default="", max_length=128)
 
@@ -410,13 +419,20 @@ def create_app(settings: ServiceConfig, backend=None):
             request.state.auth_status = 403
             return None
         request.state.data_project = selected
+        request.state.log_device = device_id
         request.state.project_settings, request.state.project_backend = projects.get(selected)
         request.state.device_key = projects.device_key(selected, device_id)
         return device_id
 
-    def failure(message, status):
+    def failure(message, status, request=None):
+        payload = {"error": message}
+        if request is not None:
+            payload["request_id"] = request.state.request_id
+            LOG.warning("request_rejected request_id=%s project=%s device=%s reason=%s",
+                        request.state.request_id, getattr(request.state, "data_project", "-"),
+                        getattr(request.state, "log_device", "-"), message)
         return JSONResponse(
-            {"error": message}, status_code=status, headers={"Cache-Control": "no-store"}
+            payload, status_code=status, headers={"Cache-Control": "no-store"}
         )
 
     def auth_failure(request):
@@ -478,7 +494,7 @@ def create_app(settings: ServiceConfig, backend=None):
             original = json.loads(body)["path"]
             target = file_target(request, device_id, original)
         except (ValueError, KeyError, TypeError):
-            return failure("Invalid client path", 422)
+            return failure("Invalid client path", 422, request)
         async with lock:
             if not authenticate(request):
                 return auth_failure(request)
@@ -498,7 +514,7 @@ def create_app(settings: ServiceConfig, backend=None):
             if not re.fullmatch(r"[a-f0-9]{64}", expected) or not 0 <= mtime < 2**63:
                 raise ValueError("Invalid file metadata")
         except ValueError:
-            return failure("Invalid file metadata", 422)
+            return failure("Invalid file metadata", 422, request)
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = target.with_name(".upload-" + uuid.uuid4().hex)
         digest, size = hashlib.sha256(), 0
@@ -507,18 +523,22 @@ def create_app(settings: ServiceConfig, backend=None):
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > 512 * 1024 * 1024:
-                        return failure("File exceeds 512 MiB", 413)
+                        return failure("File exceeds 512 MiB", 413, request)
                     stream.write(chunk)
                     digest.update(chunk)
             if digest.hexdigest() != expected:
-                return failure("File checksum mismatch", 422)
+                return failure("File checksum mismatch", 422, request)
             async with lock:
                 if not authenticate(request):
                     return auth_failure(request)
                 os.replace(staging, target)
                 os.utime(target, ns=(mtime, mtime))
                 remember_file(request.state.device_key, original, target)
-            return JSONResponse({"path": str(target), "sha256": expected, "size": size})
+            LOG.info("file_uploaded request_id=%s project=%s device=%s size=%s sha256=%s file_id=%s",
+                     request.state.request_id, request.state.data_project, device_id,
+                     size, expected, target.parent.name)
+            return JSONResponse({"path": str(target), "sha256": expected, "size": size,
+                                 "download_path": target.relative_to(request.state.project_settings.data_root).as_posix()})
         finally:
             staging.unlink(missing_ok=True)
 
@@ -535,9 +555,14 @@ def create_app(settings: ServiceConfig, backend=None):
             not path.is_file()
             or path.suffix in {".sqlite3", ".pem", ".key"}
             or any(
-                part in {"backups", ".stversions", "workspaces", "task-locks", ".projects"}
+                part in {"backups", ".stversions", "task-locks", ".projects"}
                 for part in path.relative_to(request.state.project_settings.data_root).parts
             )
+        ):
+            return failure("File is not available", 404)
+        relative = path.relative_to(request.state.project_settings.data_root)
+        if relative.parts[0] == "workspaces" and (
+            len(relative.parts) < 3 or relative.parts[1] != request.state.log_device
         ):
             return failure("File is not available", 404)
         return FileResponse(path, headers={"Cache-Control": "no-store"})
@@ -551,6 +576,9 @@ def create_app(settings: ServiceConfig, backend=None):
                 "mode": "shared",
                 "protocol": 1,
                 "version": __version__,
+                "service_revision": "cloud-repair-20261113",
+                "file_protocol": 1,
+                "task_source_adaptations": True,
                 "device_id": device_id,
                 "device_name": settings.devices[device_id].name
                 if device_id in settings.devices
@@ -615,8 +643,13 @@ def create_app(settings: ServiceConfig, backend=None):
                 return failure("Request exceeds 2 MiB", 413)
         try:
             item = Operation.model_validate_json(bytes(body))
-        except ValueError:
-            return failure("Invalid operation request", 422)
+        except ValueError as exc:
+            log_rejection(request, exc, "invalid_request")
+            return JSONResponse({"error": "Invalid operation request", "error_code": "invalid_request",
+                                 "request_id": request.state.request_id, "details": error_details(exc)},
+                                status_code=422)
+        request.state.request_id = item.request_id
+        request.state.operation = item.operation
         kind, _, name = item.operation.partition(".")
         if not (kind == "tool" and name in tools or kind == "task" and name in TASK_METHODS):
             return failure("Operation is not allowed", 403)
@@ -669,28 +702,35 @@ def create_app(settings: ServiceConfig, backend=None):
             arguments = map_value(item.arguments, mappings)
             status = 200
             try:
-                check_file_access(
-                    item.operation,
-                    arguments,
-                    scoped,
-                    [settings.data_root / ".projects"]
-                    if request.state.data_project == "default"
-                    else [],
-                )
+                if item.operation != "tool.fx_export_template":
+                    check_file_access(
+                        item.operation,
+                        arguments,
+                        scoped,
+                        [settings.data_root / ".projects"]
+                        if request.state.data_project == "default"
+                        else [],
+                    )
                 with service_scope(
                     scoped.data_root, scoped.database_root, device_id, scoped_backend
                 ):
                     if kind == "tool":
                         check_knowledge_gate(name, arguments, item.task_id, scoped.data_root)
-                        result = await tools[name](**arguments)
+                        if name == "fx_export_template":
+                            from fx_data_service.transfers import export_bundle
+                            if request.headers.get("x-fx-file-protocol") != "1":
+                                raise ValueError("Client update required for verified export downloads")
+                            result = await asyncio.to_thread(validate_call(export_bundle),
+                                                            scoped.data_root, **arguments)
+                        else:
+                            result = await tools[name](**arguments)
                     else:
                         from fx_agent.task_gates import TaskGates, TaskSpec
 
                         if name in {"begin", "update"}:
                             arguments["spec"] = TaskSpec.model_validate(arguments.get("spec"))
-                        result = await asyncio.to_thread(
-                            getattr(TaskGates(scoped.data_root), name), **arguments
-                        )
+                        method = validate_call(getattr(TaskGates(scoped.data_root), name))
+                        result = await asyncio.to_thread(method, **arguments)
                 # The pinned Houdini adapter compact-serializes dict results.
                 if isinstance(result, str) and result.lstrip().startswith(("{", "[")):
                     with suppress(json.JSONDecodeError):
@@ -698,7 +738,8 @@ def create_app(settings: ServiceConfig, backend=None):
                 response = {
                     "result": map_value(json_value(result), {v: k for k, v in mappings.items()})
                 }
-            except PermissionError:
+            except PermissionError as exc:
+                log_rejection(request, exc, "access_denied")
                 status, response = (
                     403,
                     {
@@ -709,7 +750,7 @@ def create_app(settings: ServiceConfig, backend=None):
                 message = str(exc)
                 status = (
                     409
-                    if any(
+                    if not isinstance(exc, ValidationError) and any(
                         word in message.lower() for word in ("conflict", "stale", "busy", "changed")
                     )
                     else 422
@@ -721,6 +762,13 @@ def create_app(settings: ServiceConfig, backend=None):
                     if status == 409
                     else "Invalid operation arguments or unavailable shared file"
                 }
+                response["error_code"] = ("invalid_arguments" if isinstance(exc, ValidationError)
+                                          else "file_not_found" if isinstance(exc, FileNotFoundError)
+                                          else "operation_conflict" if status == 409
+                                          else "operation_rejected")
+                response["details"] = error_details(exc)
+                response["reason"] = safe_reason(exc)
+                log_rejection(request, exc, response["error_code"])
                 if message == "Unknown module or too many modules; read fx_get_module_catalog":
                     response = {
                         "error": "Unknown module; read fx_get_module_catalog for supported module IDs",
@@ -742,17 +790,13 @@ def create_app(settings: ServiceConfig, backend=None):
                             "offset": {"minimum": 0},
                         },
                     }
-            except Exception:
-                LOG.exception(
-                    "Data operation failed: %s device=%s request=%s",
-                    item.operation,
-                    device_id,
-                    item.request_id,
-                )
+            except Exception as exc:
+                log_rejection(request, exc, "internal_error")
                 status, response = (
                     500,
                     {"error": "Data service operation failed; inspect server logs"},
                 )
+            response["request_id"] = item.request_id
             with control_connection() as db:
                 db.execute(
                     "UPDATE requests SET response=?,status=? WHERE device_id=? AND request_id=?",
@@ -766,6 +810,7 @@ def create_app(settings: ServiceConfig, backend=None):
             return JSONResponse(response, status_code=status, headers={"Cache-Control": "no-store"})
 
     return Starlette(
+        middleware=[Middleware(RequestLoggingMiddleware)],
         routes=[
             Route("/v1/operations", operation, methods=["POST"]),
             Route("/v1/devices", devices),
