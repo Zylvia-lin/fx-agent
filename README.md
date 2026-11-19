@@ -60,6 +60,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 > 使用 fx-agent。先检查 Houdini 和 Nuke 的连接，读取制作规范与已有记忆。项目名为“测试项目”，镜头为 sh010。
 
+### 可选搭配特效模板库
+
+如果你需要归档工程、预览和依赖文件，可以另行安装 [特效模板库（FX Template）](https://github.com/Zylvia-lin/FX-Template)。
+
+1. 按特效模板库仓库 README 安装 Windows 桌面端，配置素材目录和 PostgreSQL。连接后保持桌面端运行，可以最小化到托盘。
+2. 如果当前 FX Agent 版本提供 `fx_search_published_templates`，重新连接 Codex 中的 `fx-agent`，再用此工具 按名称或标签查询本机已发布模板。若自定义了 `VFX_USER_DATA`，桌面端和 FX Agent 需使用同一配置目录。
+
 ### 开始制作
 
 提供目标、参考和工程路径，例如：
