@@ -5,8 +5,6 @@ from unittest.mock import Mock
 
 import pytest
 
-pytest_plugins = ["test_nuke_graph_tools"]
-
 
 @pytest.mark.parametrize("selected", [False, True])
 def test_selection_snapshot_is_complete_and_read_only(graph, selected):
@@ -37,7 +35,7 @@ def test_selection_snapshot_is_complete_and_read_only(graph, selected):
 
 
 def test_selection_includes_nested_groups_with_duplicate_short_names(graph):
-    from test_nuke_graph_tools import Node
+    from conftest import NukeNode as Node
 
     module, host, parent, source, target, other = graph
     parent.name = lambda: "shot.nk"

@@ -109,8 +109,11 @@ def _serve_with_cleanup(self):
 
 def _handle_client_with_cleanup(self, client):
     import fx_agent_nuke_addon as addon
+
     try:
         if self._running:
+            with suppress(OSError):
+                client.settimeout(30.0)
             return self._fx_original_handle_client(client)
     finally:
         with suppress(OSError):
@@ -192,19 +195,30 @@ def _publish_session(addon, server, state):
     path = _session_directory() / f"{os.getpid()}.json"
     try:
         if state != "Running":
+            addon._fx_last_session_pub = None
             path.unlink(missing_ok=True)
             return
         nuke = addon._get_nuke()
+        script = nuke.root().name()
+        now = time.time()
+        last = getattr(addon, "_fx_last_session_pub", None)
+        sig = (state, server.port, server._fx_session_id, script)
+        # Avoid 1Hz disk churn: rewrite immediately on state/script change or every 5s heartbeat.
+        if last is not None and last[0] == sig and (now - last[1]) < 5.0 and path.is_file():
+            return
         record = {
-            "pid": os.getpid(), "port": server.port,
+            "pid": os.getpid(),
+            "port": server.port,
             "session_id": server._fx_session_id,
-            "script": nuke.root().name(),
-            "nuke_version": nuke.NUKE_VERSION_STRING, "updated_at": time.time(),
+            "script": script,
+            "nuke_version": nuke.NUKE_VERSION_STRING,
+            "updated_at": now,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         temporary.replace(path)
+        addon._fx_last_session_pub = (sig, now)
     except OSError as error:
         _write_console_log(f"Cannot publish Nuke session: {error}")
 
@@ -289,6 +303,9 @@ def start(port=8187, auto_port=True):
     addon._handshake_data = _session_handshake
     reload(import_module("fx_agent_nuke_viewer")).install(addon)
     reload(import_module("fx_agent_nuke_graph")).install(addon)
+    # Remove disabled commands at the Nuke TCP bridge layer as well as MCP surface.
+    addon.COMMANDS.pop("execute_python", None)
+    addon.COMMANDS.pop("auto_layout", None)
     addon.COMMANDS["reload_nuke_tools"] = _reload_tool_modules
     _install_dispatch(addon)
     _install_lifecycle(addon)

@@ -17,6 +17,8 @@ COPY src/fx_agent/__init__.py src/fx_agent/archive.py src/fx_agent/baselines.py 
 COPY src/fx_agent/vendor /app/shared/fx_agent/vendor
 COPY skills /app/skills
 COPY services/data-service/src /app/server
+RUN groupadd --system fxagent && useradd --system --gid fxagent --no-create-home fxagent
+USER fxagent
 EXPOSE 18790
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -m fx_data_service.healthcheck

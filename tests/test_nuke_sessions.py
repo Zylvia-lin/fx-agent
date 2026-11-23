@@ -60,7 +60,7 @@ def test_switch_rejects_changed_script_and_old_nuke(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mcp_starts_disconnected_and_lists_without_task_gate(tmp_path, monkeypatch):
-    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("FX_AGENT_LOCAL_ROOT", str(tmp_path))
     conn = SerializedConnection()
     server = build_server(conn)
     names = {tool.name for tool in await server.list_tools()}
@@ -74,6 +74,49 @@ async def test_mcp_starts_disconnected_and_lists_without_task_gate(tmp_path, mon
         "port": 8188, "pid": 42, "session_id": "abc", "expected_script": "shot.nk",
     })
     conn.select.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_status_recovers_single_session_after_connection_refused(monkeypatch):
+    import nukemcp.connection
+
+    import fx_agent.nuke_server as module
+
+    conn = SerializedConnection()
+    target = dict(port=8187, pid=42, session_id="new", script="A.nk")
+    monkeypatch.setattr(module, "list_sessions", lambda *args: [target])
+    candidate = Mock()
+    candidate.connect.side_effect = [
+        nukemcp.connection.NukeConnectionError("connection refused"),
+        dict(nuke_version="15.2v1", pid=42, session_id="new"),
+    ]
+    candidate.send_command.return_value = {"name": "A.nk"}
+    monkeypatch.setattr(nukemcp.connection, "NukeConnection", lambda *args: candidate)
+    server = build_server(conn)
+
+    unavailable = await server.call_tool("get_nuke_connection_status", {})
+    assert "connection refused" in str(unavailable)
+    recovered = await server.call_tool("get_nuke_connection_status", {})
+    assert '"connected":true' in str(recovered).replace(" ", "")
+    assert conn.handshake["session_id"] == "new"
+    candidate.send_command.assert_called_once_with("get_script_info")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_count", "failed"), [(2, False), (1, True)])
+async def test_status_does_not_guess_target_or_recover_after_timeout(
+    monkeypatch, session_count, failed
+):
+    import fx_agent.nuke_server as module
+
+    conn = SerializedConnection()
+    conn.failed = failed
+    monkeypatch.setattr(module, "list_sessions", lambda *args: [{}] * session_count)
+    conn.select = Mock()
+    status = await build_server(conn).call_tool("get_nuke_connection_status", {})
+    assert '"connected":false' in str(status).replace(" ", "")
+    assert ("reselect_required" in str(status)) is failed
+    conn.select.assert_not_called()
 
 
 def test_failed_new_connection_keeps_previous_target(monkeypatch):

@@ -52,9 +52,11 @@ def main():
         raise ValueError("FX_AGENT_DB_ENGINE must be mysql or sqlite")
     uvicorn.run(
         create_app(settings, backend),
-        host=os.getenv("FX_AGENT_HOST", "0.0.0.0"),
+        host=os.getenv("FX_AGENT_HOST", "127.0.0.1"),
         port=int(os.getenv("FX_AGENT_PORT", "18790")),
         workers=1,
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv("FX_AGENT_FORWARDED_ALLOW_IPS", "127.0.0.1"),
         log_level=log_level,
     )
 

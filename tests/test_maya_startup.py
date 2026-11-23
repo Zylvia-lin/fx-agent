@@ -1,7 +1,6 @@
 """Simulate shared module startup; no Maya process is launched."""
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +17,7 @@ def test_module_startup_defers_once_skips_batch_and_existing_plugin(monkeypatch,
                            loadPlugin=Mock(), warning=Mock())
     deferred = Mock()
     monkeypatch.setitem(sys.modules, "maya", SimpleNamespace(cmds=cmds, utils=SimpleNamespace(executeDeferred=deferred)))
-    path = ROOT / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/fx_maya_bridge/startup.py"
+    path = ROOT / "integrations/maya/shared/fx_maya_bridge/startup.py"
     spec = importlib.util.spec_from_file_location("fx_startup_test", path)
     startup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(startup)
@@ -50,10 +49,7 @@ def test_shared_mod_routes_versions_to_separate_runtimes():
         assert "+ MAYAVERSION:2020 PLATFORM:win64 fx_maya any " in content
         assert "+ MAYAVERSION:2024 PLATFORM:win64 fx_maya any " in content
         for line in content.splitlines():
-            if line.startswith("+ MAYAVERSION:2020 "):
-                assert line.endswith("py2")
-            elif line.startswith("+ MAYAVERSION:2024 "):
-                assert line.endswith("py3")
-    for runtime in ['py2', 'py3']:
-        hook = (ROOT / 'integrations/maya' / runtime / 'scripts/userSetup.py').read_text()
-        assert "fx_maya_bridge.startup" in hook
+            if line.startswith("+ MAYAVERSION:2020 ") or line.startswith("+ MAYAVERSION:2024 "):
+                assert line.endswith("shared")
+    hook = (ROOT / "integrations/maya/shared/scripts/userSetup.py").read_text()
+    assert "fx_maya_bridge.startup" in hook

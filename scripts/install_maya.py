@@ -12,9 +12,7 @@ from fx_agent.install_config import replace_servers
 from fx_agent.maya.client import DEFAULT_PORTS, validate_port
 
 ROOT = Path(__file__).resolve().parents[1]
-MAYA_RUNTIMES = [(version, "py2") for version in (2017, 2018, 2019, 2020)] + [
-    (version, "py3") for version in (2022, 2023, 2024, 2025, 2026, 2027)
-]
+MAYA_RUNTIMES = [(version, "shared") for version in (2017, 2018, 2019, 2020, 2022, 2023, 2024, 2025, 2026, 2027)]
 
 
 def maya_config(original, root, data, ports):

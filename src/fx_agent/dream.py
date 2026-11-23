@@ -126,11 +126,12 @@ def _plan(db, cursor, limit, software, module):
             ).fetchone()
             if not existing or existing[0] != group[0]:
                 actions.append({"duplicate_id": duplicate, "canonical_id": group[0]})
+    has_deferred = len(actions) > 20
     return {
         "snapshot": snapshot(db),
         "items": items,
-        "next_cursor": items[-1]["cursor"] if items else cursor,
-        "truncated": len(rows) > limit,
+        "next_cursor": cursor if has_deferred else (items[-1]["cursor"] if items else cursor),
+        "truncated": len(rows) > limit or has_deferred,
         "actions": actions[:20],
         "deferred_actions": max(0, len(actions) - 20),
         "active_memories": db.execute(
@@ -225,7 +226,19 @@ def dream(store, mode, expected_snapshot, actions, cursor, limit, software, modu
                 if len({r["software"] for r in records}) != 1:
                     raise ValueError("Cannot mix software")
                 touched.update(source_ids)
-                modules = action.modules or sorted({m for r in records for m in r["modules"]})
+                if action.modules:
+                    modules = action.modules
+                else:
+                    counts: dict[str, int] = {}
+                    for r in records:
+                        for m in r["modules"]:
+                            counts[m] = counts.get(m, 0) + 1
+                    known_mods = {m: c for m, c in counts.items() if m != "unclassified"}
+                    ranked = sorted(
+                        (known_mods or counts).items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )
+                    modules = sorted(m for m, _ in ranked[:4])
                 request = Experience(
                     project_id="__knowledge__",
                     software=records[0]["software"],
@@ -251,6 +264,21 @@ def dream(store, mode, expected_snapshot, actions, cursor, limit, software, modu
                 }
                 status = "disputed" if action.operation == "conflict" else "active"
                 payload = compact(record)
+                content_digest = hashlib.sha256(
+                    compact(
+                        {
+                            "software": request.software,
+                            "modules": request.modules,
+                            "kind": request.kind,
+                            "title": action.title,
+                            "method": action.method,
+                            "reason": action.reason,
+                            "applies_when": action.applies_when,
+                            "operation": action.operation,
+                            "sources": sorted(source_ids),
+                        }
+                    ).encode()
+                ).hexdigest()
                 db.execute(
                     "INSERT INTO memories VALUES (?,?,?,?,?,?,?)",
                     (
@@ -258,10 +286,17 @@ def dream(store, mode, expected_snapshot, actions, cursor, limit, software, modu
                         "__knowledge__",
                         "",
                         status,
-                        hashlib.sha256(payload.encode()).hexdigest(),
+                        content_digest,
                         payload,
                         " ".join(
-                            [action.title, action.method, action.reason, action.applies_when]
+                            [
+                                action.title,
+                                action.method,
+                                action.reason,
+                                action.applies_when,
+                                request.kind,
+                                *request.modules,
+                            ]
                         ).casefold(),
                     ),
                 )

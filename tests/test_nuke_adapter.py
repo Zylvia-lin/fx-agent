@@ -34,6 +34,7 @@ def connection():
 async def test_curated_tools_work_without_second_memory_system(connection, tmp_path, monkeypatch):
     from fx_agent.task_gates import TaskGates, TaskSpec
 
+    monkeypatch.setenv("FX_AGENT_DATA_MODE", "local")
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
     conn, handshake = connection
     server = build_server(conn, handshake)

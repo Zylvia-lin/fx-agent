@@ -43,8 +43,8 @@ def start(node_path, pane_name='FX_Render_View', frame=None, preview=False):
     viewer.setPreview(preview)
     viewer.setRopNode(rop)
     record = {'token': uuid.uuid4().hex, 'rop': rop.path(), 'frame': hou.frame()}
-    _records()[pane_name] = record
     viewer.startRender()
+    _records()[pane_name] = record
     return {'state': 'requested', 'pane': pane_name, 'preview': viewer.isPreviewOn(), **record}
 
 
@@ -84,23 +84,57 @@ def save(output_path, pane_name='FX_Render_View', token=None, overwrite=False):
     pixels = viewer.pixels('C')
     if not pixels:
         raise ValueError('Render View has no color pixels')
-    maxima = [float('-inf')] * 4
-    alpha_nonzero = 0
-    rgb_nonzero = 0
-    invalid = 0
-    for pixel in pixels:
-        values = list(pixel) + [0.0] * (4 - len(pixel))
-        invalid += int(not all(math.isfinite(v) for v in values))
-        for component in range(4):
-            maxima[component] = max(maxima[component], values[component])
-        rgb_nonzero += int(any(v > 0 for v in values[:3]))
-        alpha_nonzero += int(values[3] > 0)
+    total_pixels = len(pixels)
+    # Use vectorized numpy inspection when available, or bounded strided sampling on
+    # very large frames so pure Python never freezes Houdini's main thread.
+    sampled = False
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+
+        arr = np.asarray(pixels, dtype=np.float64)
+        if arr.ndim == 2 and arr.shape[1] >= 1:
+            if arr.shape[1] < 4:
+                pad = np.zeros((arr.shape[0], 4 - arr.shape[1]), dtype=np.float64)
+                arr = np.hstack((arr, pad))
+            else:
+                arr = arr[:, :4]
+            finite_mask = np.isfinite(arr)
+            invalid = int(np.sum(~np.all(finite_mask, axis=1)))
+            safe = np.where(finite_mask, arr, 0.0)
+            maxima = [
+                float(np.max(safe[:, c])) if np.any(finite_mask[:, c]) else 0.0
+                for c in range(4)
+            ]
+            rgb_nonzero = int(np.sum(np.any(safe[:, :3] > 0, axis=1)))
+            alpha_nonzero = int(np.sum(safe[:, 3] > 0))
+        else:
+            raise TypeError('unexpected pixel array shape')
+    except Exception:
+        stride = max(1, total_pixels // 250000)
+        sampled = stride > 1
+        maxima_opt = [None, None, None, None]
+        alpha_nonzero = 0
+        rgb_nonzero = 0
+        invalid = 0
+        for index in range(0, total_pixels, stride):
+            pixel = pixels[index]
+            values = list(pixel) + [0.0] * (4 - len(pixel))
+            if not all(math.isfinite(v) for v in values):
+                invalid += 1
+            for component in range(4):
+                v = values[component]
+                if math.isfinite(v) and (maxima_opt[component] is None or v > maxima_opt[component]):
+                    maxima_opt[component] = v
+            rgb_nonzero += int(any(math.isfinite(v) and v > 0 for v in values[:3]))
+            alpha_nonzero += int(math.isfinite(values[3]) and values[3] > 0)
+        maxima = [0.0 if m is None else m for m in maxima_opt]
     saved = viewer.saveFrame(path, 0, -1, -1, 'C', 'C', '*', '', 1.0, False)
     exists = os.path.isfile(path)
     size = os.path.getsize(path) if exists else 0
     return {**state, 'saved': bool(saved and exists and size), 'path': path, 'size_bytes': size,
-            'pixel_count': len(pixels), 'rgba_max': maxima, 'rgb_nonzero_pixels': rgb_nonzero,
-            'alpha_nonzero_pixels': alpha_nonzero, 'nonfinite_pixels': invalid}
+            'pixel_count': total_pixels, 'pixel_sampled': sampled, 'rgba_max': maxima,
+            'rgb_nonzero_pixels': rgb_nonzero, 'alpha_nonzero_pixels': alpha_nonzero,
+            'nonfinite_pixels': invalid}
 
 
 def stop(pane_name='FX_Render_View', token=None):

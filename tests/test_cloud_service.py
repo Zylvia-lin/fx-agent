@@ -90,7 +90,7 @@ async def test_admin_session_fixed_expiry_and_explicit_logout(tmp_path, monkeypa
         data_root=tmp_path / "data",
         database_root=tmp_path / "db",
         api_key="k" * 43,
-        admin_password="test-admin",
+        admin_password="test-admin-password",
     )
     started = admin_module.time.time()
     monkeypatch.setattr(admin_module.time, "time", lambda: started)

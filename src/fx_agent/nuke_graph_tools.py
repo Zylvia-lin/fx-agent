@@ -61,7 +61,7 @@ def register(mcp, connection):
         if len(names) != len(set(names)):
             raise ValueError("Effect blocks cannot share processing nodes")
         snapshot = connection.send_command("get_nuke_graph_snapshot", {"node_names": names})
-        if snapshot.get("status") == "error" or "nodes" not in snapshot:
+        if "nodes" not in snapshot:
             return snapshot
         nodes = {node["name"]: node for node in snapshot["nodes"]}
         positions, bounds = [], []

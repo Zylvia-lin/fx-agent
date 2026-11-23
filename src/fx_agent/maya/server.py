@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import json
 import time
 from pathlib import Path
 from typing import Literal
@@ -68,17 +67,14 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         path = Path(file_path)
         if not path.is_absolute() or path.suffix.lower() not in {".ma", ".mb"} or not path.is_file():
             raise ValueError("Existing absolute .ma/.mb path required")
-        code = ("from maya import cmds\n"
-                "if cmds.file(query=True, modified=True) and not %s:\n"
-                "    raise RuntimeError('Unsaved scene changes; save first or explicitly discard')\n"
-                "cmds.file(u%s, open=True, force=%s, prompt=False)\n"
-                "result={'path':cmds.file(query=True, sceneName=True)}\n"
-                % (discard_unsaved, json.dumps(path.as_posix()), discard_unsaved))
-        response = connection.send("execute_python", {"code": code}, timeout=120)
-        if not response.get("success"):
-            raise RuntimeError(response.get("error", "Maya could not open scene"))
-        result = response["result"]
-        connection.target["scene_path"] = result["path"]
+        result = connection.send(
+            "load_scene",
+            {"path": path.as_posix(), "discard_unsaved": bool(discard_unsaved)},
+            timeout=120,
+        )
+        with connection.lock:
+            if connection.target is not None:
+                connection.target["scene_path"] = result["path"]
         return result
 
     @mcp.tool()
@@ -117,21 +113,32 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         return connection.send("light_link", {"renderer": renderer, "node": node, "objects": objects, "linked": linked})
 
     @mcp.tool()
-    def render_maya_frame(renderer: Renderer, camera: str, frame: int, output_dir: str, width: int = 640, height: int = 480, timeout: float = 600) -> dict:
+    async def render_maya_frame(renderer: Renderer, camera: str, frame: int, output_dir: str, width: int = 640, height: int = 480, timeout: float = 600) -> dict:
         """Render once, wait outside Maya for native completion and image decoding. Timeout never repeats the render; inspect the returned job ID after reconnecting."""
         deadline = time.monotonic() + timeout
-        receipt = connection.send("render_frame", {"renderer": renderer, "camera": camera, "frame": frame, "output_dir": output_dir, "width": width, "height": height}, timeout)
+        receipt = await asyncio.to_thread(
+            connection.send,
+            "render_frame",
+            {"renderer": renderer, "camera": camera, "frame": frame, "output_dir": output_dir, "width": width, "height": height},
+            timeout,
+        )
         try:
             job_id = receipt["job_id"]
             while time.monotonic() < deadline:
-                result = connection.send("render_status", {"job_id": job_id}, timeout=min(10, max(0.01, deadline - time.monotonic())))
+                remaining = max(0.01, deadline - time.monotonic())
+                result = await asyncio.to_thread(
+                    connection.send,
+                    "render_status",
+                    {"job_id": job_id},
+                    min(10, remaining),
+                )
                 if result.get("success") is True and result.get("status") == "complete":
                     return result
-                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+                await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
             raise TimeoutError(f"Render outcome not verified; inspect job {job_id}, {receipt['output_dir']} and Maya/plugin/license logs after explicitly reconnecting. Do not replay automatically.")
-        except Exception:
-            # Any monitoring failure leaves an uncertain native operation. The
-            # Maya side independently blocks writes until its completion callback.
+        except (TimeoutError, OSError, ValueError, KeyError):
+            # Transport/timeout monitoring failures leave an uncertain native operation.
+            # Application-level RuntimeErrors reported by Maya do not poison the connection.
             connection.failed = True
             raise
 
@@ -151,7 +158,9 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         result = connection.send("save_scene", {"path": path})
         # The naming operation was identity-checked in Maya. Adopt only its actual
         # returned path, so subsequent requests still validate the selected scene.
-        connection.target["scene_path"] = result["path"]
+        with connection.lock:
+            if connection.target is not None:
+                connection.target["scene_path"] = result["path"]
         return result
 
     @mcp.tool()
@@ -168,9 +177,13 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
     original = manager.call_tool
     lock = asyncio.Lock()
 
-    async def serialized(*args, **kwargs):
+    async def serialized(name, *args, **kwargs):
+        # Do not hold the server-wide lock across long-running async render polling;
+        # MayaConnection.lock still serializes individual socket requests safely.
+        if name == "render_maya_frame":
+            return await original(name, *args, **kwargs)
         async with lock:
-            return await original(*args, **kwargs)
+            return await original(name, *args, **kwargs)
 
     manager.call_tool = serialized
     return mcp

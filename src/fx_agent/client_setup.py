@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tomllib
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -108,13 +109,26 @@ def main():
         / ("shared-data-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f"))
     )
     backup.mkdir(parents=True)
+    backups: list[tuple[Path, Path]] = []
     for index, path in enumerate(writes):
-        shutil.copy2(path, backup / (str(index) + "-" + path.name))
-    for path, text in writes.items():
-        temporary = path.with_name(path.name + ".shared-data.tmp")
-        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(text)
-        os.replace(temporary, path)
+        saved = backup / (str(index) + "-" + path.name)
+        shutil.copy2(path, saved)
+        backups.append((path, saved))
+    written: list[tuple[Path, Path]] = []
+    try:
+        for (path, text), (_, saved) in zip(writes.items(), backups, strict=True):
+            temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.shared-data.tmp")
+            try:
+                with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+                    stream.write(text)
+                os.replace(temporary, path)
+                written.append((path, saved))
+            finally:
+                temporary.unlink(missing_ok=True)
+    except Exception:
+        for path, saved in reversed(written):
+            shutil.copy2(saved, path)
+        raise
     if os.name == "nt":
         import winreg
 

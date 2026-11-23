@@ -54,6 +54,7 @@ async def fx_get_module_knowledge(
     module: str = "",
     software: Literal["houdini", "nuke", "maya"] = "houdini",
     max_chars: int = 4000,
+    offset: int = 0,
 ) -> dict:
     """Read the module workflow supplement; an omitted module selects general.
 
@@ -62,7 +63,7 @@ async def fx_get_module_knowledge(
     unverified references. get refreshes derived MDs from authoritative DB.
     """
     return await asyncio.to_thread(
-        lambda: ModuleGuides(data_root()).get(project_id, module, software, max_chars)
+        lambda: ModuleGuides(data_root()).get(project_id, module, software, max_chars, offset)
     )
 
 
@@ -233,6 +234,7 @@ async def fx_search_memory(
     software: Literal["houdini", "nuke", "maya"] = "houdini",
     module: str = "",
     source_project: str = "",
+    offset: int = 0,
 ) -> dict:
     """Recall global experience cards within a JSON character budget.
 
@@ -251,6 +253,7 @@ async def fx_search_memory(
             software,
             module,
             source_project,
+            offset,
         )
     )
 
@@ -667,10 +670,10 @@ async def fx_search_templates(
             max_chars=max_chars,
         )
         result["effect_matches"] = effects
-        # Preserve useful discovery cards when the combined response is small-budget.
+        # Preserve primary template results by trimming secondary effect_matches first.
         for collection, start, id_key in (
-            (result, offset, "study_id"),
             (effects, 0, "card_id"),
+            (result, offset, "study_id"),
         ):
             while collection["items"] and len(compact(result)) > max_chars:
                 if len(collection["items"]) == 1 and not collection["items"][0].get(

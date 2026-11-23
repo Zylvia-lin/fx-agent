@@ -53,19 +53,28 @@ def _cache(path: Path) -> bool:
     return path.suffix.lower() in CACHES or path.name.lower().endswith((".bgeo.sc", ".geo.sc"))
 
 
-def _tokens(text):
-    """English identifiers plus Chinese bigrams, without an external search service."""
+def _tokens(text, *, include_cjk_unigrams: bool = False):
+    """English identifiers (including underscore sub-tokens) plus Chinese bigrams.
+
+    When indexing documents (include_cjk_unigrams=True), CJK unigrams are also
+    emitted so 1-character queries (e.g. '水', '雷') match compound words without
+    making multi-character queries match common stop characters like '的'/'不'.
+    """
     lowered = text.lower()
     words = re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]+", lowered)
-    return [
-        part
-        for word in words
-        for part in (
-            [word]
-            if word.isascii() or len(word) < 2
-            else [word[i : i + 2] for i in range(len(word) - 1)]
-        )
-    ]
+    tokens: list[str] = []
+    for word in words:
+        if word.isascii():
+            tokens.append(word)
+            if "_" in word:
+                tokens.extend(part for part in word.split("_") if part and part != word)
+        elif len(word) < 2:
+            tokens.append(word)
+        else:
+            tokens.extend(word[i : i + 2] for i in range(len(word) - 1))
+            if include_cjk_unigrams:
+                tokens.extend(word)
+    return tokens
 
 
 class TemplateLibrary:
@@ -168,7 +177,9 @@ class TemplateLibrary:
         for node in snapshot["nodes"]:
             for parm, raw in node["parameters"].items():
                 if not re.search(r"file|texture|map|filename|font", parm, re.I) or re.search(
-                    r"output|sopoutput|picture|snippet|script|callback", parm, re.I
+                    r"output|sopoutput|picture|snippet|script|callback|remap|colormap|font_size|filemode|filemethod",
+                    parm,
+                    re.I,
                 ):
                     continue
                 if not isinstance(raw, str):
@@ -197,10 +208,10 @@ class TemplateLibrary:
                     dependencies.append(item)
                     continue
                 value = value.replace("[file dirname [value root.name]]", str(project.parent))
-                value = value.replace("${HIPNAME}", project.stem).replace("$HIPNAME", project.stem)
-                value = value.replace("${HIP}", str(project.parent)).replace(
-                    "$HIP", str(project.parent)
-                )
+                value = value.replace("${HIPNAME}", project.stem)
+                value = re.sub(r"\$HIPNAME\b", lambda _: project.stem, value)
+                value = value.replace("${HIP}", str(project.parent))
+                value = re.sub(r"\$HIP\b", lambda _: str(project.parent), value)
                 if SEQUENCE.search(value):
                     item["status"] = "sequence_not_archived"
                 elif not re.search(r"\$|\[|`|\n", value):
@@ -355,7 +366,8 @@ class TemplateLibrary:
             if not candidate.is_absolute():
                 raise ValueError("Artifact paths must be absolute")
             if candidate.is_symlink() or candidate.is_junction():
-                reason = "link_not_archived"
+                omitted.append({"path": str(candidate), "reason": "link_not_archived"})
+                continue
             candidate = candidate.resolve()
             if str(candidate) in selected_paths:
                 continue
@@ -437,109 +449,124 @@ class TemplateLibrary:
                 path = work / filename
                 path.write_text(text, encoding="utf-8")
                 selected.append({"path": str(path), "role": "dependency"})
-            with store.connection() as db:
-                db.execute("BEGIN IMMEDIATE")
-                # Re-check after acquiring the write lock; concurrent imports do not duplicate.
-                existing = db.execute(
-                    "SELECT study_id FROM template_studies WHERE source_id=? AND fingerprint=?",
-                    (source_id, fingerprint),
-                ).fetchone()
-                if existing:
-                    return {"state": "unchanged", "study_id": existing[0]}
-                history = db.execute(
-                    "SELECT study_id,payload FROM template_studies WHERE source_id=? ORDER BY rowid",
-                    (source_id,),
-                ).fetchall()
-                ancestors = {p for row in history for p in json.loads(row[1])["parent_ids"]}
-                parents = [row[0] for row in history if row[0] not in ancestors]
-                case = CaseArchive(self.root).create(
-                    project_id=project_id,
-                    shot_id=shot_id,
-                    title=project.name,
-                    files=selected,
-                    max_total_bytes=max_bytes,
-                    cancellation=cancellation,
-                    expected_hashes={
-                        f["path"]: h["sha256"] for f, h in zip(selected, hashes, strict=False)
-                    },
-                )
-                study_id = uuid.uuid4().hex
-                metadata_dir = ".fx-template-" + study_id
-                artifacts = []
-                for f in case["files"]:
-                    original = Path(f["source_path"])
-                    generated = original.parent == work
-                    destination = (
-                        metadata_dir + "/" + original.name
-                        if generated
-                        else original.relative_to(project.parent).as_posix()
-                        if original.is_relative_to(project.parent)
-                        else "external/" + f["sha256"][:12] + "/" + original.name
+            # Copy and verify archive outside SQLite BEGIN IMMEDIATE to avoid holding write locks over disk I/O.
+            case = CaseArchive(self.root).create(
+                project_id=project_id,
+                shot_id=shot_id,
+                title=project.name,
+                files=selected,
+                max_total_bytes=max_bytes,
+                cancellation=cancellation,
+                expected_hashes={
+                    f["path"]: h["sha256"] for f, h in zip(selected, hashes, strict=False)
+                },
+            )
+            case_dir = Path(case["case_path"])
+            committed = False
+            try:
+                with store.connection() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    # Re-check after acquiring the write lock; concurrent imports do not duplicate.
+                    existing = db.execute(
+                        "SELECT study_id FROM template_studies WHERE source_id=? AND fingerprint=?",
+                        (source_id, fingerprint),
+                    ).fetchone()
+                    if existing:
+                        return {"state": "unchanged", "study_id": existing[0]}
+                    history = db.execute(
+                        "SELECT study_id,payload FROM template_studies WHERE source_id=? ORDER BY rowid",
+                        (source_id,),
+                    ).fetchall()
+                    ancestors = {p for row in history for p in json.loads(row[1])["parent_ids"]}
+                    parents = [row[0] for row in history if row[0] not in ancestors]
+                    study_id = uuid.uuid4().hex
+                    metadata_dir = ".fx-template-" + study_id
+                    artifacts = []
+                    for f in case["files"]:
+                        original = Path(f["source_path"])
+                        generated = original.parent == work
+                        destination = (
+                            metadata_dir + "/" + original.name
+                            if generated
+                            else original.relative_to(project.parent).as_posix()
+                            if original.is_relative_to(project.parent)
+                            else "external/" + f["sha256"][:12] + "/" + original.name
+                        )
+                        artifacts.append(
+                            {
+                                "role": f["role"],
+                                "archive_path": f["archive_path"],
+                                "export_path": destination,
+                                "sha256": f["sha256"],
+                            }
+                        )
+                    snapshot_member = next(
+                        a["archive_path"]
+                        for a in artifacts
+                        if a["export_path"] == metadata_dir + "/snapshot.json"
                     )
-                    artifacts.append(
+                    patterns_member = next(
+                        a["archive_path"]
+                        for a in artifacts
+                        if a["export_path"] == metadata_dir + "/patterns.json"
+                    )
+                    record = {
+                        "schema_version": 1,
+                        "study_id": study_id,
+                        "source_id": source_id,
+                        "template_key": key,
+                        "fingerprint": fingerprint,
+                        "source_sha256": source_hash,
+                        "source_path": str(project),
+                        "project_id": project_id,
+                        "shot_id": shot_id,
+                        "software": software,
+                        "modules": tags,
+                        "title": project.name,
+                        "case_id": case["case_id"],
+                        "parent_ids": parents,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "snapshot_path": snapshot_member,
+                        "patterns_path": patterns_member,
+                        "artifacts": artifacts,
+                        "export_manifest_path": metadata_dir + "/template-manifest.json",
+                        "dependencies": dependencies,
+                        "omitted_files": omitted,
+                        "limitations": snapshot["limitations"],
+                        "parse_status": snapshot["parse_status"],
+                        "node_count": len(snapshot["nodes"]),
+                        "pattern_count": len(patterns),
+                        "archive_bytes": sum(f["size_bytes"] for f in case["files"]),
+                        "visual_validation": "not_performed",
+                        "extractor_version": EXTRACTOR_VERSION,
+                    }
+                    search_text = compact(
                         {
-                            "role": f["role"],
-                            "archive_path": f["archive_path"],
-                            "export_path": destination,
-                            "sha256": f["sha256"],
+                            "title": record["title"],
+                            "modules": tags,
+                            "nodes": [
+                                {
+                                    k: v
+                                    for k, v in n.items()
+                                    if k not in {"raw_sections", "raw_script"}
+                                }
+                                for n in snapshot["nodes"]
+                            ],
+                            "notes": snapshot["sticky_notes"],
+                            "boxes": snapshot["netboxes"],
                         }
                     )
-                snapshot_member = next(
-                    a["archive_path"]
-                    for a in artifacts
-                    if a["export_path"] == metadata_dir + "/snapshot.json"
-                )
-                patterns_member = next(
-                    a["archive_path"]
-                    for a in artifacts
-                    if a["export_path"] == metadata_dir + "/patterns.json"
-                )
-                record = {
-                    "schema_version": 1,
-                    "study_id": study_id,
-                    "source_id": source_id,
-                    "template_key": key,
-                    "fingerprint": fingerprint,
-                    "source_sha256": source_hash,
-                    "source_path": str(project),
-                    "project_id": project_id,
-                    "shot_id": shot_id,
-                    "software": software,
-                    "modules": tags,
-                    "title": project.name,
-                    "case_id": case["case_id"],
-                    "parent_ids": parents,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "snapshot_path": snapshot_member,
-                    "patterns_path": patterns_member,
-                    "artifacts": artifacts,
-                    "export_manifest_path": metadata_dir + "/template-manifest.json",
-                    "dependencies": dependencies,
-                    "omitted_files": omitted,
-                    "limitations": snapshot["limitations"],
-                    "parse_status": snapshot["parse_status"],
-                    "node_count": len(snapshot["nodes"]),
-                    "pattern_count": len(patterns),
-                    "archive_bytes": sum(f["size_bytes"] for f in case["files"]),
-                    "visual_validation": "not_performed",
-                    "extractor_version": EXTRACTOR_VERSION,
-                }
-                search_text = compact(
-                    {
-                        "title": record["title"],
-                        "modules": tags,
-                        "nodes": [
-                            {k: v for k, v in n.items() if k not in {"raw_sections", "raw_script"}}
-                            for n in snapshot["nodes"]
-                        ],
-                        "notes": snapshot["sticky_notes"],
-                        "boxes": snapshot["netboxes"],
-                    }
-                )
-                db.execute(
-                    "INSERT INTO template_studies VALUES (?,?,?,?,?,?)",
-                    (study_id, source_id, fingerprint, project_id, compact(record), search_text),
-                )
+                    db.execute(
+                        "INSERT INTO template_studies VALUES (?,?,?,?,?,?)",
+                        (study_id, source_id, fingerprint, project_id, compact(record), search_text),
+                    )
+                    committed = True
+            finally:
+                if not committed and case_dir.exists():
+                    import shutil
+
+                    if case_dir.parent == (self.root / "cases").resolve():
+                        shutil.rmtree(case_dir, ignore_errors=True)
         return {
             "state": "imported" if snapshot["parse_status"] == "parsed" else "partial",
             **self._card(record),
@@ -626,10 +653,10 @@ class TemplateLibrary:
         elif section not in {"snapshot", "patterns", "nodes", "connections", "snapshot_text"}:
             raise ValueError("Unknown section")
         else:
-            if not self.validate(study_id)["valid"]:
-                raise ValueError("Template study checksum validation failed")
             case_root = self.root / "cases" / record["case_id"]
             filename = record["patterns_path"] if section == "patterns" else record["snapshot_path"]
+            # Verify only the target metadata member on paginated reads instead of re-hashing the whole case.
+            CaseArchive(self.root).verify_member(record["case_id"], record["project_id"], filename)
             text = contained(case_root, filename).read_text(encoding="utf-8")
             expected_hash = next(
                 a["sha256"] for a in record["artifacts"] if a["archive_path"] == filename
@@ -637,9 +664,12 @@ class TemplateLibrary:
             if hashlib.sha256(text.encode("utf-8")).hexdigest() != expected_hash:
                 raise ValueError("Template metadata checksum changed during reading")
             if section == "snapshot_text":
-                chunk = text[offset : offset + limit]
-                while len(compact(chunk)) > max_chars - 300:
-                    chunk = chunk[: len(chunk) // 2]
+                budget = max(limit, max_chars - 300)
+                chunk = text[offset : offset + budget]
+                while len(compact(chunk)) > max_chars - 300 and chunk:
+                    overflow = len(compact(chunk)) - (max_chars - 300)
+                    keep = max(0, len(chunk) - max(1, overflow // 2))
+                    chunk = chunk[:keep]
                 return {
                     "study_id": study_id,
                     "content": chunk,
@@ -731,7 +761,7 @@ class TemplateLibrary:
                 continue
             record["equivalent_study_ids"] = [record["study_id"]]
             equivalents[equivalent_key] = record
-            tokens = Counter(_tokens(row[1]))
+            tokens = Counter(_tokens(row[1], include_cjk_unigrams=True))
             docs.append((record, tokens, sum(tokens.values())))
         wanted = set(_tokens(query))
         average = sum(d[2] for d in docs) / max(len(docs), 1) or 1
@@ -821,13 +851,21 @@ class TemplateLibrary:
     def export(self, study_id: str, destination: str) -> dict:
         """Export an independent working copy; original parameter/path text is unchanged."""
         record = self._record(study_id)
-        target = Path(destination)
-        if not target.is_absolute():
+        raw_target = Path(destination).expanduser()
+        if not raw_target.is_absolute():
             raise ValueError("Destination must be absolute")
-        target = target.resolve()
+        if raw_target.is_symlink() or raw_target.is_junction():
+            raise ValueError("Export destination must not be a link")
+        target = raw_target.resolve()
         if target.exists():
             raise FileExistsError("Destination exists; refusing to overwrite")
-        if target.is_relative_to(self.root) or self.root.is_relative_to(target):
+        source_file = Path(record["source_path"]).expanduser().resolve()
+        if (
+            target.is_relative_to(self.root)
+            or self.root.is_relative_to(target)
+            or target == source_file.parent
+            or source_file.is_relative_to(target)
+        ):
             raise ValueError("Export must not overlap data or the original project directory")
         if not self.validate(study_id)["valid"]:
             raise ValueError("Template study checksum validation failed")

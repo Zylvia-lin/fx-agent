@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from importlib.metadata import distribution
 from pathlib import Path
 
@@ -84,31 +84,62 @@ def validate_baselines(root: Path) -> dict:
         return {"valid": False, "error": str(exc)}
 
 
+def _replace_retry(src: Path, dst: Path) -> None:
+    """Replace destination tolerating brief Windows antivirus/indexer locks."""
+    for attempt in range(5):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError as exc:
+            if attempt == 4 or getattr(exc, "winerror", None) not in {5, 32, 33}:
+                raise
+            time.sleep(0.02 * 2**attempt)
+
+
 @contextmanager
 def baseline_lock(root: Path):
-    """Serialize baseline synchronization without creating or upgrading the memory DB."""
+    """Serialize baseline synchronization using an OS file lock released automatically on crash."""
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock = root / ".baseline.lock"
     deadline = time.monotonic() + 30
-    while True:
-        try:
-            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            break
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise ValueError(
-                    "Baseline writer is busy; verify no writer is running before removing a stale .baseline.lock"
-                ) from None
-            time.sleep(0.02)
     try:
-        yield
+        with lock.open("a+b") as handle:
+            if not handle.tell():
+                handle.write(b"0")
+                handle.flush()
+            while True:
+                handle.seek(0)
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise ValueError(
+                            "Baseline writer is busy; wait for the active synchronization to finish"
+                        ) from None
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
     finally:
-        os.close(descriptor)
-        lock.unlink()
+        with suppress(OSError):
+            lock.unlink(missing_ok=True)
 
 
-def baseline_destination(root: Path, manifest: dict, reserved: set[str]) -> tuple[Path, bool]:
+def baseline_destination(root: Path, manifest: dict, reserved: set[str] | None = None) -> tuple[Path, bool]:
     """Use one stable directory per source; retain legacy API/hash field names."""
     baseline_status(root)
     name = "houdini" if manifest["source"] == "fxhoudinimcp" else "project"
@@ -177,10 +208,10 @@ def publish_baseline(source: Path, target: Path) -> None:
             for name in sorted(desired_paths):
                 destination = contained(target, name)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                contained(copied, name).replace(destination)
+                _replace_retry(contained(copied, name), destination)
             for name in old_paths - desired_paths:
                 contained(target, name).unlink()
-            (copied / "manifest.json").replace(target / "manifest.json")
+            _replace_retry(copied / "manifest.json", target / "manifest.json")
             validate_baseline(target)
             complete = True
         except BaseException:
@@ -191,7 +222,7 @@ def publish_baseline(source: Path, target: Path) -> None:
                     copy_verified(contained(retired, name), restored)
                     destination = contained(target, name)
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    restored.replace(destination)
+                    _replace_retry(restored, destination)
                 for name in desired_paths - old_paths:
                     contained(target, name).unlink(missing_ok=True)
                 validate_baseline(target)

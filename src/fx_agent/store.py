@@ -43,6 +43,22 @@ class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
     SCHEMA_VERSION = 9
+    _verified_paths: set[tuple] = set()
+
+    def _schema_cache_key(self) -> tuple | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        if stat.st_size == 0:
+            return None
+        wal = Path(str(self.path) + "-wal")
+        try:
+            wstat = wal.stat()
+            wal_sig = (wstat.st_mtime_ns, wstat.st_size)
+        except OSError:
+            wal_sig = (0, 0)
+        return (str(self.path), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size, wal_sig)
 
     def __init__(self, root: Path):
         from fx_agent.config import database_path
@@ -58,9 +74,15 @@ class Store:
 
         if current_backend(self.root):
             return
+        cache_key = self._schema_cache_key()
+        if cache_key and cache_key in self._verified_paths:
+            return
         with self.connection() as db:
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
+                key = self._schema_cache_key()
+                if key:
+                    self._verified_paths.add(key)
                 return
             if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
@@ -68,6 +90,9 @@ class Store:
             # A concurrent initializer may have upgraded while we waited for the lock.
             schema = db.execute("PRAGMA user_version").fetchone()[0]
             if schema == self.SCHEMA_VERSION:
+                key = self._schema_cache_key()
+                if key:
+                    self._verified_paths.add(key)
                 return
             if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
@@ -177,7 +202,20 @@ class Store:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS learning_results_memory ON learning_results(memory_id)"
             )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS task_gates_endpoint ON task_gates("
+                "json_extract(payload,'$.endpoint'),COALESCE(json_extract(payload,'$.device_id'),''))"
+            )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+        try:
+            with closing(sqlite3.connect(self.path, timeout=10)) as wal_db:
+                wal_db.execute("PRAGMA journal_mode=WAL")
+                wal_db.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass
+        key = self._schema_cache_key()
+        if key:
+            self._verified_paths.add(key)
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -191,6 +229,7 @@ class Store:
             return
         with closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=10000")
             with db:
                 yield db
 
@@ -280,7 +319,9 @@ class Store:
                 if checkpoint["next_steps"]:
                     checkpoint["next_steps"].pop()
                 elif checkpoint["summary"]:
-                    checkpoint["summary"] = checkpoint["summary"][: len(checkpoint["summary"]) // 2]
+                    overflow = len(compact(response)) - max_chars
+                    keep = max(0, len(checkpoint["summary"]) - overflow)
+                    checkpoint["summary"] = checkpoint["summary"][:keep] if keep < len(checkpoint["summary"]) else checkpoint["summary"][:-1]
                 elif "scene_path" in checkpoint:
                     del checkpoint["scene_path"]
                 elif "project_id" in checkpoint:

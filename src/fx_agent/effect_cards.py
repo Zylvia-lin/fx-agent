@@ -19,6 +19,7 @@ from fx_agent.templates import TemplateLibrary, _tokens
 
 CardId = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
 Tag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+AuthorLabel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 NodePath = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
 
 
@@ -63,18 +64,26 @@ def identity_status(record: dict) -> str:
 
 
 CONCEPTS = {
-    "粒子": ("粒子", "particle", "particles"),
-    "烟雾": ("烟", "雾", "smoke", "fog", "mist"),
-    "爆炸": ("爆炸", "爆破", "explosion", "explosive"),
-    "环境": ("环境", "ambient", "environment"),
-    "能量": ("能量", "energy"),
-    "光柱": ("光柱", "光束", "柱状丝束", "柱状", "beam", "light pillar", "light shaft"),
-    "环带": ("能量环", "冲击环", "环带", "圆环", "ring", "shock ring"),
-    "环绕": ("环绕", "绕转", "绕圈", "orbit", "orbiting"),
+    "粒子": ("粒子", "particle", "particles", "pop"),
+    "烟雾": ("烟", "雾", "smoke", "fog", "mist", "pyro", "volume"),
+    "爆炸": ("爆炸", "爆破", "explosion", "explosive", "blast"),
+    "环境": ("环境", "ambient", "environment", "atmosphere"),
+    "能量": ("能量", "energy", "aura"),
+    "光柱": ("光柱", "光束", "柱状丝束", "柱状", "beam", "light pillar", "light shaft", "laser"),
+    "环带": ("能量环", "冲击环", "环带", "圆环", "ring", "shock ring", "shockwave"),
+    "环绕": ("环绕", "绕转", "绕圈", "orbit", "orbiting", "swirl", "vortex"),
     "吸引": ("吸引", "吸入", "向心", "收拢", "汇聚", "attract", "attraction", "attracting"),
-    "外扩": ("外扩", "扩散", "向外", "expansion", "expanding"),
-    "消散": ("消散", "dissipate", "dissipation"),
-    "火焰": ("火焰", "fire", "flame"),
+    "外扩": ("外扩", "扩散", "向外", "expansion", "expanding", "burst"),
+    "消散": ("消散", "dissipate", "dissipation", "fade"),
+    "火焰": ("火焰", "火", "fire", "flame", "burn"),
+    "流体": ("流体", "液体", "水流", "水花", "翻涌", "海洋", "波浪", "flip", "fluid", "liquid", "water", "ocean", "splash"),
+    "破碎": ("破碎", "破坏", "坍塌", "裂纹", "碎块", "rbd", "destruction", "fracture", "debris", "shatter"),
+    "布料": ("布料", "毛发", "丝带", "柔体", "vellum", "cloth", "hair", "fur", "fabric", "softbody"),
+    "电弧": ("电弧", "闪电", "雷电", "火花", "lightning", "arc", "electric", "spark", "sparks"),
+    "魔法": ("魔法", "法阵", "传送门", "符文", "magic", "portal", "rune", "spell"),
+    "天气": ("雪", "雨", "风沙", "暴风", "snow", "rain", "weather", "sandstorm"),
+    "合成": ("抠像", "溢色", "发光", "辉光", "边缘", "合成", "keyer", "despill", "glow", "comp", "compositing"),
+    "群集": ("群集", "人群", "群体", "crowd", "crowds", "agent"),
 }
 
 
@@ -126,7 +135,7 @@ class EffectCardInput(BaseModel):
     effect_kind: str = Field(default="", max_length=200)
     behaviors: list[Tag] = Field(default_factory=list, max_length=20)
     naming_basis: Literal["author", "preview", "user", "provisional"] = "provisional"
-    author_labels: list[Tag] = Field(default_factory=list, max_length=30)
+    author_labels: list[AuthorLabel] = Field(default_factory=list, max_length=30)
     questions: list[Step] = Field(default_factory=list, max_length=30)
     visual_evidence: list[VisualEvidence] = Field(default_factory=list, max_length=30)
     reuse_mode: Literal["rebuild", "copy_nodes", "hybrid"] = "rebuild"
@@ -338,8 +347,10 @@ class EffectLibrary:
 
     def _source(self, study_id: str) -> tuple[dict, dict, set[str], set[str]]:
         study = self.templates._record(study_id)
-        if not self.templates.validate(study_id)["valid"]:
-            raise ValueError("Source study checksum validation failed")
+        # Verify snapshot member directly instead of re-hashing the whole multi-hundred-MB case on every call.
+        CaseArchive(self.root).verify_member(
+            study["case_id"], study["project_id"], study["snapshot_path"]
+        )
         path = contained(self.root / "cases" / study["case_id"], study["snapshot_path"])
         data = path.read_bytes()
         expected = next(
@@ -418,17 +429,29 @@ class EffectLibrary:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
-    def annotate(self, study_id: str, cards: list[dict]) -> dict:
-        if not 1 <= len(cards) <= 50:
-            raise ValueError("Supply between 1 and 50 effect cards per call")
-        definitions = [EffectCardInput(**card) for card in cards]
-        if len({d.effect_key for d in definitions}) != len(definitions):
-            raise ValueError("Each effect_key must be unique in the batch")
-        study, snapshot, nodes, previews = self._source(study_id)
-        author_texts = {x.get("label", "") for x in snapshot.get("netboxes", [])}
-        author_texts.update(x.get("text", "") for x in snapshot.get("sticky_notes", []))
-        author_texts.update(n.get("comment", "") for n in snapshot["nodes"])
-        author_texts.update(n.get("parameters", {}).get("label", "") for n in snapshot["nodes"])
+    def _validate_definitions(
+        self,
+        study: dict,
+        snapshot: dict,
+        nodes: set[str],
+        previews: set[str],
+        definitions: list[EffectCardInput],
+    ) -> None:
+        raw_author_texts = {
+            (x.get("label") or "").strip() for x in snapshot.get("netboxes", []) if x.get("label")
+        }
+        raw_author_texts.update(
+            (x.get("text") or "").strip() for x in snapshot.get("sticky_notes", []) if x.get("text")
+        )
+        raw_author_texts.update(
+            (n.get("comment") or "").strip() for n in snapshot["nodes"] if n.get("comment")
+        )
+        raw_author_texts.update(
+            str(n.get("parameters", {}).get("label", "")).strip()
+            for n in snapshot["nodes"]
+            if n.get("parameters", {}).get("label")
+        )
+        raw_author_texts.discard("")
         for definition in definitions:
             definition.modules = normalize_modules(definition.modules, study["software"])
             if set(definition.node_paths) - nodes:
@@ -437,8 +460,9 @@ class EffectLibrary:
                 raise ValueError("Effect card preview must reference an archived preview/reference")
             if set(definition.reuse_node_paths) - nodes:
                 raise ValueError("Reuse node references a node absent from the source snapshot")
-            if set(definition.author_labels) - author_texts:
-                raise ValueError("Author labels must preserve actual source annotations")
+            for label in definition.author_labels:
+                if not any(label == text or label in text for text in raw_author_texts):
+                    raise ValueError("Author labels must preserve actual source annotations")
             for evidence in definition.visual_evidence:
                 allowed = previews
                 if evidence.case_id:
@@ -457,6 +481,15 @@ class EffectLibrary:
                     )
                 if evidence.render_node_path and evidence.render_node_path not in nodes:
                     raise ValueError("Visual evidence render node is absent from source snapshot")
+
+    def annotate(self, study_id: str, cards: list[dict]) -> dict:
+        if not 1 <= len(cards) <= 50:
+            raise ValueError("Supply between 1 and 50 effect cards per call")
+        definitions = [EffectCardInput(**card) for card in cards]
+        if len({d.effect_key for d in definitions}) != len(definitions):
+            raise ValueError("Each effect_key must be unique in the batch")
+        study, snapshot, nodes, previews = self._source(study_id)
+        self._validate_definitions(study, snapshot, nodes, previews, definitions)
         results, saved = [], []
         with Store(self.root).connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -580,15 +613,29 @@ class EffectLibrary:
         )
         definition = EffectCardInput(**definition).model_dump()
         if not apply:
-            all_records = self._rows(records[0]["study_id"])
-            current = _heads(
-                [r for r in all_records if r["effect_key"] == definition["effect_key"]]
-            )
-            self._validate_components(EffectCardInput(**definition), all_records, current)
-            return {"applied": False, "study_id": records[0]["study_id"], "card": definition}
+            study_id = records[0]["study_id"]
+            study, snapshot, nodes, previews = self._source(study_id)
+            parsed = EffectCardInput(**definition)
+            self._validate_definitions(study, snapshot, nodes, previews, [parsed])
+            all_records = self._rows(study_id)
+            current = _heads([r for r in all_records if r["effect_key"] == parsed.effect_key])
+            self._validate_components(parsed, all_records, current)
+            if current and set(parsed.supersedes) != {r["card_id"] for r in current}:
+                raise ValueError(
+                    "Provide all current card IDs in supersedes; stale or conflicting revision"
+                )
+            return {"applied": False, "study_id": study_id, "card": parsed.model_dump()}
         return self.annotate(records[0]["study_id"], [definition]) | {"applied": True}
 
-    def refine(self, card_id: str, updates: dict, sources: list[str], reason: str) -> dict:
+    def refine(
+        self,
+        card_id: str,
+        updates: dict,
+        sources: list[str],
+        reason: str,
+        *,
+        resolve_conflict: bool = False,
+    ) -> dict:
         """Fill newly understood details without discarding earlier card content."""
         record = self._record_card(card_id)
         protected = {
@@ -603,10 +650,18 @@ class EffectLibrary:
             raise ValueError("Refinement must update descriptive fields of the same effect variant")
         if not sources or not reason.strip():
             raise ValueError("Refinement requires evidence sources and a reason")
+        supersedes = [card_id]
+        if resolve_conflict:
+            all_records = self._rows(record["study_id"])
+            current = _heads(
+                [r for r in all_records if r["effect_key"] == record["effect_key"]]
+            )
+            if current and card_id in {r["card_id"] for r in current}:
+                supersedes = sorted({r["card_id"] for r in current})
         definition = {k: v for k, v in record.items() if k in EffectCardInput.model_fields}
         definition.update(updates)
         definition.update(
-            supersedes=[card_id], refinement_sources=sources, refinement_reason=reason
+            supersedes=supersedes, refinement_sources=sources, refinement_reason=reason
         )
         return self.annotate(record["study_id"], [definition])
 
@@ -633,19 +688,10 @@ class EffectLibrary:
             "component_modules": record.get("component_modules", []),
         }
 
-    def catalog(self, study_id: str) -> dict:
-        self.templates._record(study_id)
-        records = self._rows(study_id)
+    @staticmethod
+    def _catalog_from_rows(records: list[dict], reviews: list[dict]) -> dict:
         current = _heads(records)
         ids = {r["card_id"] for r in current}
-        with Store(self.root).connection() as db:
-            reviews = [
-                json.loads(r[0])
-                for r in db.execute(
-                    "SELECT payload FROM template_effect_reviews WHERE study_id=? ORDER BY rowid",
-                    (study_id,),
-                )
-            ]
         relevant_reviews = [
             r for r in reviews if set(r["card_ids"]) == ids and r.get("review_version") == 2
         ]
@@ -689,6 +735,19 @@ class EffectLibrary:
             "review_conflict": len(review_heads) > 1,
         }
 
+    def catalog(self, study_id: str) -> dict:
+        self.templates._record(study_id)
+        records = self._rows(study_id)
+        with Store(self.root).connection() as db:
+            reviews = [
+                json.loads(r[0])
+                for r in db.execute(
+                    "SELECT payload FROM template_effect_reviews WHERE study_id=? ORDER BY rowid",
+                    (study_id,),
+                )
+            ]
+        return self._catalog_from_rows(records, reviews)
+
     def review(
         self,
         study_id: str,
@@ -701,90 +760,113 @@ class EffectLibrary:
         media_reviews: list[dict] | None = None,
     ) -> dict:
         study, snapshot, nodes, _ = self._source(study_id)
+        if reviewed_node_paths is None:
+            current = _heads(self._rows(study_id))
+            mapped = {path for r in current for path in r["node_paths"]}
+            return self.catalog(study_id) | {
+                "study_id": study_id,
+                "node_count": len(nodes),
+                "unmapped_node_count": len(nodes - mapped),
+                "unmapped_node_paths": sorted(nodes - mapped)[:30],
+            }
         with Store(self.root).connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            current = _heads(self._rows(study_id, db))
+            all_records = self._rows(study_id, db)
+            current = _heads(all_records)
             ids = {r["card_id"] for r in current}
             mapped = {path for r in current for path in r["node_paths"]}
-            if reviewed_node_paths is not None:
-                if not ids or snapshot["parse_status"] != "parsed":
-                    raise ValueError("Annotate a parsed study before marking its effects reviewed")
-                if set(reviewed_node_paths) != nodes:
-                    raise ValueError("All snapshot nodes must be explicitly reviewed")
-                if any(identity_status(r) != "identified" for r in current):
-                    raise ValueError(
-                        "Effect identity, visual evidence and unresolved questions require second-pass learning before review"
-                    )
-                if set(expected_card_ids or []) != ids or any(
+            if not ids or snapshot["parse_status"] != "parsed":
+                raise ValueError("Annotate a parsed study before marking its effects reviewed")
+            if set(reviewed_node_paths) != nodes:
+                raise ValueError("All snapshot nodes must be explicitly reviewed")
+            if any(identity_status(r) != "identified" for r in current):
+                raise ValueError(
+                    "Effect identity, visual evidence and unresolved questions require second-pass learning before review"
+                )
+            if (
+                set(expected_card_ids or []) != ids
+                or bool(_merge_conflicts(all_records, current))
+                or any(
                     n > 1
                     for n in Counter(r["effect_key"] for r in _equivalent_heads(current)).values()
-                ):
-                    raise ValueError("Review requires all current non-conflicting cards")
-                excluded = [EffectExclusion(**x).model_dump() for x in exclusions or []]
-                excluded_paths = {x["node_path"] for x in excluded}
-                if excluded_paths != nodes - mapped:
-                    raise ValueError("Unmapped technical nodes need explicit exclusion reasons")
-                if len(note) > 3000:
-                    raise ValueError("Review note too long")
-                if not media_source:
-                    raise ValueError(
-                        "Explicit media_source is required to account for supplied videos and sequences"
-                    )
-                from fx_agent.effect_study import media_inventory, render_outputs
-                from fx_agent.templates import TemplatePolicy
+                )
+            ):
+                raise ValueError("Review requires all current non-conflicting cards")
+            excluded = [EffectExclusion(**x).model_dump() for x in exclusions or []]
+            excluded_paths: set[str] = set()
+            for entry in excluded:
+                pattern = entry["node_path"]
+                if pattern.endswith("/*"):
+                    prefix = pattern[:-1]
+                    matched = {n for n in (nodes - mapped) if n.startswith(prefix)}
+                    if not matched:
+                        raise ValueError("Unmapped technical nodes need explicit exclusion reasons")
+                    excluded_paths.update(matched)
+                else:
+                    excluded_paths.add(pattern)
+            if excluded_paths != nodes - mapped:
+                raise ValueError("Unmapped technical nodes need explicit exclusion reasons")
+            if len(note) > 3000:
+                raise ValueError("Review note too long")
+            if not media_source:
+                raise ValueError(
+                    "Explicit media_source is required to account for supplied videos and sequences"
+                )
+            from fx_agent.effect_study import media_inventory, render_outputs
+            from fx_agent.templates import TemplatePolicy
 
-                _, entries = self.templates._inventory(media_source, TemplatePolicy())
-                inventory = media_inventory(
-                    entries, render_outputs(snapshot), Path(study["source_path"])
+            _, entries = self.templates._inventory(media_source, TemplatePolicy())
+            inventory = media_inventory(
+                entries, render_outputs(snapshot), Path(study["source_path"])
+            )
+            media = [MediaReview(**x).model_dump() for x in media_reviews or []]
+            if len({x["path"] for x in media}) != len(media) or {x["path"] for x in media} != {
+                x["path"] for x in inventory
+            }:
+                raise ValueError(
+                    "Every supplied media item needs one explicit review; paginate the study plan first"
                 )
-                media = [MediaReview(**x).model_dump() for x in media_reviews or []]
-                if len({x["path"] for x in media}) != len(media) or {x["path"] for x in media} != {
-                    x["path"] for x in inventory
-                }:
-                    raise ValueError(
-                        "Every supplied media item needs one explicit review; paginate the study plan first"
-                    )
-                for item in media:
-                    if set(item["card_ids"]) - ids or (
-                        item["status"] == "viewed" and not item["card_ids"]
-                    ):
-                        raise ValueError("Viewed media must identify current effect cards")
-                media_issues = [x for x in media if x["status"] in {"unavailable", "unassigned"}]
-                prior_reviews = [
-                    json.loads(r[0])
-                    for r in db.execute(
-                        "SELECT payload FROM template_effect_reviews WHERE study_id=?", (study_id,)
-                    )
-                ]
-                prior_reviews = [r for r in prior_reviews if set(r["card_ids"]) == ids]
-                review_parents = {p for r in prior_reviews for p in r.get("parent_review_ids", [])}
-                review = {
-                    "review_id": uuid.uuid4().hex,
-                    "study_id": study_id,
-                    "case_id": study["case_id"],
-                    "project_id": study["project_id"],
-                    "card_ids": sorted(ids),
-                    "reviewed_node_paths": sorted(nodes),
-                    "exclusions": excluded,
-                    "note": note,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "coverage_basis": "host_review_not_automatic_effect_detection",
-                    "review_version": 2,
-                    "media_source": media_source,
-                    "media_inventory": inventory,
-                    "media_reviews": media,
-                    "media_issues": media_issues,
-                    "media_complete": not media_issues,
-                    "parent_review_ids": sorted(
-                        r["review_id"]
-                        for r in prior_reviews
-                        if r["review_id"] not in review_parents
-                    ),
-                }
-                db.execute(
-                    "INSERT INTO template_effect_reviews VALUES (?,?,?)",
-                    (review["review_id"], study_id, compact(review)),
+            for item in media:
+                if set(item["card_ids"]) - ids or (
+                    item["status"] == "viewed" and not item["card_ids"]
+                ):
+                    raise ValueError("Viewed media must identify current effect cards")
+            media_issues = [x for x in media if x["status"] in {"unavailable", "unassigned"}]
+            prior_reviews = [
+                json.loads(r[0])
+                for r in db.execute(
+                    "SELECT payload FROM template_effect_reviews WHERE study_id=?", (study_id,)
                 )
+            ]
+            prior_reviews = [r for r in prior_reviews if set(r["card_ids"]) == ids]
+            review_parents = {p for r in prior_reviews for p in r.get("parent_review_ids", [])}
+            review = {
+                "review_id": uuid.uuid4().hex,
+                "study_id": study_id,
+                "case_id": study["case_id"],
+                "project_id": study["project_id"],
+                "card_ids": sorted(ids),
+                "reviewed_node_paths": sorted(nodes),
+                "exclusions": excluded,
+                "note": note,
+                "created_at": datetime.now(UTC).isoformat(),
+                "coverage_basis": "host_review_not_automatic_effect_detection",
+                "review_version": 2,
+                "media_source": media_source,
+                "media_inventory": inventory,
+                "media_reviews": media,
+                "media_issues": media_issues,
+                "media_complete": not media_issues,
+                "parent_review_ids": sorted(
+                    r["review_id"]
+                    for r in prior_reviews
+                    if r["review_id"] not in review_parents
+                ),
+            }
+            db.execute(
+                "INSERT INTO template_effect_reviews VALUES (?,?,?)",
+                (review["review_id"], study_id, compact(review)),
+            )
         return self.catalog(study_id) | {
             "study_id": study_id,
             "node_count": len(nodes),
@@ -951,8 +1033,12 @@ class EffectLibrary:
             counts, fields = Counter(), []
             for field, weight in weighted.items():
                 value = r.get(field, "")
-                tokens = _tokens(" ".join(value) if isinstance(value, list) else value)
-                counts.update(tokens * weight)
+                tokens = _tokens(
+                    " ".join(value) if isinstance(value, list) else value,
+                    include_cjk_unigrams=True,
+                )
+                for tok in tokens:
+                    counts[tok] += weight
                 if wanted.intersection(tokens):
                     fields.append(field)
             docs.append((r, counts, fields, sum(counts.values())))
@@ -979,11 +1065,25 @@ class EffectLibrary:
                     r["subject"],
                     r["appearance"],
                     r["motion"],
+                    r.get("method", ""),
+                    r.get("scheme_name", ""),
+                    r.get("effect_kind", ""),
+                    *r.get("effect_family", []),
+                    *r.get("behaviors", []),
+                    *r.get("tags", []),
                     *r["aliases"],
                     *r.get("component_terms", []),
                 ]
             ).lower()
-            unverified = [term for term in extra_terms if term not in description]
+            unverified = []
+            for term in extra_terms:
+                if term in description:
+                    continue
+                if not term.isascii() and len(term) >= 4:
+                    bigrams = [term[i : i + 2] for i in range(len(term) - 1)]
+                    if sum(1 for bg in bigrams if bg in description) / len(bigrams) >= 0.75:
+                        continue
+                unverified.append(term)
             kind = (
                 "complete"
                 if wanted_concepts

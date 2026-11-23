@@ -1,5 +1,6 @@
 """Wait for native completion, never infer it from a paused file writer."""
 
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -14,7 +15,8 @@ def render_tool(monkeypatch, send):
     monkeypatch.setattr(server, 'register_shared_tools', lambda mcp: None)
     connection = SimpleNamespace(send=Mock(side_effect=send), failed=False)
     mcp = server.build_server(connection)
-    return mcp._tool_manager.get_tool('render_maya_frame').fn, connection
+    fn = mcp._tool_manager.get_tool('render_maya_frame').fn
+    return (lambda *args, **kwargs: asyncio.run(fn(*args, **kwargs))), connection
 
 
 def test_paused_partial_writer_is_not_mistaken_for_native_completion(monkeypatch, tmp_path):

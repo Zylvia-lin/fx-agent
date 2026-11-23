@@ -11,7 +11,7 @@ from pathlib import Path
 from fx_agent.archive import contained
 from fx_agent.effect_cards import EffectLibrary, _heads, identity_status
 from fx_agent.store import Store, compact
-from fx_agent.template_extract import extract_project
+from fx_agent.template_extract import EXTRACTOR_VERSION, extract_project
 from fx_agent.templates import IMAGES, MOVIES, TemplatePolicy
 
 
@@ -50,7 +50,10 @@ def render_outputs(snapshot: dict) -> list[dict]:
     # Saved object references are useful even when the render GEO has no wires.
     for path, node in nodes.items():
         for key, value in node["parameters"].items():
-            if not re.search(r"object|objpath|soppath|sop_path|targetpath", key, re.I):
+            if (
+                not re.search(r"object|objpath|soppath|sop_path|targetpath", key, re.I)
+                or re.search(r"exclude|matte|phantom|mask", key, re.I)
+            ):
                 continue
             for token in str(value).strip('"').split():
                 if re.search(r"[$`\[\]\n]", token) or token.startswith("^"):
@@ -59,17 +62,33 @@ def render_outputs(snapshot: dict) -> list[dict]:
                     pattern = token
                 elif token.startswith("."):
                     pattern = posixpath.normpath(posixpath.join(posixpath.dirname(path), token))
+                elif token == "*":
+                    pattern = "/obj/*"
                 else:
-                    continue
+                    pattern = posixpath.normpath(posixpath.join(posixpath.dirname(path), token))
                 upstream[path].update(p for p in nodes if fnmatch.fnmatchcase(p, pattern))
     outputs = []
     for path, node in nodes.items():
         parameters = node["parameters"]
         keys = [
-            k for k in ("vm_picture", "picture", "outputimage", "output_image") if k in parameters
+            k
+            for k in (
+                "vm_picture",
+                "picture",
+                "outputimage",
+                "output_image",
+                "RS_outputFileNamePrefix",
+                "ar_picture",
+                "octane_output_filename",
+            )
+            if k in parameters
         ]
-        if node["type"] in {"Write", "DeepWrite"} and "file" in parameters:
+        if node["type"] in {"Write", "DeepWrite", "WriteGeo", "WriteGeo2"} and "file" in parameters:
             keys.append("file")
+        if node["type"] in {"rop_geometry", "geometry", "rop_alembic", "alembic"}:
+            for k in ("sopoutput", "filename"):
+                if k in parameters and k not in keys:
+                    keys.append(k)
         for key in keys:
             visited, queue = set(), list(upstream[path])
             while queue:
@@ -128,7 +147,8 @@ def media_inventory(entries: list[dict], outputs: list[dict], project: Path) -> 
         if suffix in MOVIES:
             result.append({"kind": "movie", "path": str(path), "size_bytes": entry["size_bytes"]})
         elif suffix in IMAGES:
-            match = re.search(r"(\d+)(?=\.[^.]+$)", path.name)
+            # Match frame digits before extension(s) while ignoring version suffixes like _v01.png.
+            match = re.search(r"(?<![vV])(\d+)(?=(?:\.[A-Za-z0-9_-]+)*\.[^.]+$)", path.name)
             if match:
                 key = str(
                     path.with_name(
@@ -178,7 +198,9 @@ def media_inventory(entries: list[dict], outputs: list[dict], project: Path) -> 
                 if output["node_path"] not in item["render_node_paths"]:
                     continue
                 parms = output["frame_parameters"]
-                first, last, step = (str(parms.get(k, "")) for k in ("f1", "f2", "f3"))
+                first = str(parms.get("f1", parms.get("first", "")))
+                last = str(parms.get("f2", parms.get("last", "")))
+                step = str(parms.get("f3", ""))
                 if not first.isdigit() or not last.isdigit() or step not in {"", "1"}:
                     item["expected_frame_checks"].append(
                         {
@@ -231,11 +253,14 @@ class EffectStudy:
         ):
             raise ValueError("Invalid study plan section or pagination")
         study, snapshot, _, _ = self.effects._source(study_id)
-        # Re-extract the archived original, so old histories gain new metadata
-        # without changing their immutable snapshot, fingerprint or card IDs.
-        project_member = next(a for a in study["artifacts"] if a["role"] == "project")
-        original = contained(self.root / "cases" / study["case_id"], project_member["archive_path"])
-        snapshot = extract_project(original.read_bytes(), study["software"])
+        # Re-extract only when the stored snapshot came from an older extractor version;
+        # reusing current snapshots avoids re-parsing huge .hip/.nk files on every paginated call.
+        if snapshot.get("extractor_version") != EXTRACTOR_VERSION:
+            project_member = next(a for a in study["artifacts"] if a["role"] == "project")
+            original = contained(
+                self.root / "cases" / study["case_id"], project_member["archive_path"]
+            )
+            snapshot = extract_project(original.read_bytes(), study["software"])
         outputs = render_outputs(snapshot)
         if node_path and node_path not in {n["path"] for n in snapshot["nodes"]}:
             raise ValueError("Focus node is absent from source study")
@@ -295,19 +320,31 @@ class EffectStudy:
                 json.loads(r[0])
                 for r in db.execute("SELECT payload FROM template_studies ORDER BY rowid")
             ]
+            all_cards = [
+                json.loads(r[0])
+                for r in db.execute("SELECT payload FROM template_effects ORDER BY rowid DESC")
+            ]
+            all_reviews = [
+                json.loads(r[0])
+                for r in db.execute("SELECT payload FROM template_effect_reviews ORDER BY rowid")
+            ]
         parents = {p for study in studies for p in study["parent_ids"]}
-        rows = _heads(self.effects._rows())
-        by_study = defaultdict(list)
-        for card in rows:
-            by_study[card["study_id"]].append(card)
+        cards_by_study = defaultdict(list)
+        for card in all_cards:
+            cards_by_study[card["study_id"]].append(card)
+        reviews_by_study = defaultdict(list)
+        for rev in all_reviews:
+            reviews_by_study[rev["study_id"]].append(rev)
         items = []
         for study in studies:
             if study["study_id"] in parents:
                 continue
-            cards = by_study[study["study_id"]]
+            sid = study["study_id"]
+            study_cards = cards_by_study[sid]
+            cards = _heads(study_cards)
             states = [identity_status(c) for c in cards]
             pending = [c for c, state in zip(cards, states, strict=True) if state != "identified"]
-            catalog = self.effects.catalog(study["study_id"])
+            catalog = self.effects._catalog_from_rows(study_cards, reviews_by_study[sid])
             if catalog["learning_state"] == "reviewed":
                 continue
             items.append(

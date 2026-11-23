@@ -30,12 +30,21 @@ TABLES = (
     "memories",
     "learning_results",
     "knowledge_sources",
+    "memory_aliases",
+    "dream_runs",
     "render_issues",
     "template_studies",
     "template_effects",
     "template_effect_reviews",
 )
-SNAPSHOT_TABLES = (*TABLES, "memory_conflicts", "memory_aliases", "dream_runs", "import_runs")
+SNAPSHOT_TABLES = (*TABLES, "memory_conflicts", "import_runs")
+
+
+def _order_by_pk(db, table: str) -> str:
+    info = db.execute(f"PRAGMA table_info({table})").fetchall()
+    pks = [row["name"] for row in sorted(info, key=lambda r: r["pk"]) if row["pk"]]
+    cols = pks or [row["name"] for row in info]
+    return ", ".join(cols)
 
 
 def _connect(path):
@@ -77,6 +86,13 @@ def _blocked_effect_components(incoming, db, blocked, blocked_cases):
                     or source["study_id"] != payload["study_id"]
                 ):
                     newly_blocked.add(key)
+            for parent_id in payload.get("parent_ids", []):
+                if parent_id in invalid:
+                    newly_blocked.add(key)
+            for ref in payload.get("refinement_sources", []):
+                kind, _, ref_id = str(ref).partition(":")
+                if kind == "effect_card" and ref_id in invalid:
+                    newly_blocked.add(key)
         component_conflicts.update(newly_blocked)
         if newly_blocked <= invalid:
             return component_conflicts
@@ -87,7 +103,8 @@ def _fingerprint(db, root):
     digest = hashlib.sha256()
     for table in SNAPSHOT_TABLES:
         digest.update(table.encode())
-        for row in db.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
+        order_sql = _order_by_pk(db, table)
+        for row in db.execute(f"SELECT * FROM {table} ORDER BY {order_sql}"):
             digest.update((compact(dict(row)) + "\n").encode())
     for path in sorted(root.rglob("*")):
         if path.is_file() and path.name not in {
@@ -259,7 +276,8 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                         if table == "template_effects"
                         else set()
                     )
-                    for row in incoming.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
+                    order_sql = _order_by_pk(incoming, table)
+                    for row in incoming.execute(f"SELECT * FROM {table} ORDER BY {order_sql}"):
                         values = dict(row)
                         where = " AND ".join(f"{key}=?" for key in keys)
                         existing = db.execute(
@@ -269,6 +287,11 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                             counts["skipped"] += 1
                             continue
                         problem = "record_diverged" if existing is not None else ""
+                        if table == "memory_aliases" and (
+                            values["duplicate_id"] in blocked["memories"]
+                            or values["canonical_id"] in blocked["memories"]
+                        ):
+                            problem = "source_conflict"
                         if table == "template_effects" and values["card_id"] in component_conflicts:
                             problem = "component_card_conflict"
                         if (

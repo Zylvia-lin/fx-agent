@@ -106,6 +106,9 @@ def create_node(params):
     before = list(parent.nodes())
     selection = [(node, node.isSelected()) for node in before]
     try:
+        # Clear existing selection so nuke.createNode never silently wires into a selected node.
+        for prev_node in before:
+            prev_node.setSelected(False)
         node = nuke.createNode(params["node_class"], inpanel=False)
     except RuntimeError as error:
         # A callback may fail after creating nodes: never paste a second copy then.
@@ -116,8 +119,8 @@ def create_node(params):
         except Exception as rollback_error:
             raise RuntimeError(f"Creation failed: {error}; rollback failed: {rollback_error}") from error
         finally:
-            for node, selected in selection:
-                node.setSelected(selected)
+            for prev_node, selected in selection:
+                prev_node.setSelected(selected)
         if partial:
             raise
         message = str(error).lower()
@@ -129,11 +132,13 @@ def create_node(params):
         _configure(node, params)
         if xy is not None:
             node.setXYpos(*xy)
+        node.setSelected(False)
     except Exception:
         nuke.delete(node)
+        raise
+    finally:
         for previous, selected in selection:
             previous.setSelected(selected)
-        raise
     return {"status": "ok", "result": {**_describe(node), "creation_method": "class"}}
 
 

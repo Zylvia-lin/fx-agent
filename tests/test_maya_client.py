@@ -1,7 +1,6 @@
 """Real loopback sockets, simulated scene dispatch; these are not Maya render tests."""
 
 import json
-import os
 import socket
 import struct
 import threading
@@ -155,7 +154,7 @@ def test_protocol_unicode_partial_reads_limits_and_eof():
         receive(Peer(encode({})[:4] + b"[]"))
     root = Path(__file__).resolve().parents[1]
     assert (root / "src/fx_agent/maya/protocol.py").read_bytes() == (
-        root / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/fx_maya_bridge/protocol.py").read_bytes()
+        root / "integrations/maya/shared/fx_maya_bridge/protocol.py").read_bytes()
 
 
 @pytest.mark.parametrize("port", [18186, 8187, 0, 65536, True])

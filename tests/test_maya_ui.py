@@ -1,7 +1,6 @@
 """Native menu lifecycle and enabled states, with no OS window automation."""
 
 import importlib.util
-import os
 import sys
 import types
 from pathlib import Path
@@ -32,7 +31,7 @@ def test_native_menu_reflects_service_start_stop_and_cleans_up(monkeypatch):
                                      about=lambda **kw: False, confirmDialog=Mock())
     maya.mel = types.SimpleNamespace(eval=Mock(return_value="MayaWindow"))
     monkeypatch.setitem(sys.modules, "maya", maya)
-    path = Path(__file__).resolve().parents[1] / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/fx_maya_bridge/ui.py"
+    path = Path(__file__).resolve().parents[1] / "integrations/maya/shared/fx_maya_bridge/ui.py"
     spec = importlib.util.spec_from_file_location("maya_ui_test", path)
     ui = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ui)

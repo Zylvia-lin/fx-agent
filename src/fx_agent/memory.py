@@ -142,7 +142,7 @@ class MemoryStore(Store):
                 if old.get("software", "houdini") != request.software:
                     raise ValueError("Correction must keep the same software scope")
                 if old["modules"] == request.modules and all(
-                    old[key] == value for key, value in content.items() if key != "supersedes"
+                    old.get(key) == value for key, value in content.items() if key != "supersedes"
                 ):
                     raise ValueError("Correction must contain a new, distinct replacement")
             memory_id = uuid.uuid4().hex
@@ -156,7 +156,14 @@ class MemoryStore(Store):
             if _origin_feedback_id:
                 record["origin_feedback_id"] = _origin_feedback_id
             search_text = " ".join(
-                [request.title, request.method, request.reason, request.applies_when, request.kind]
+                [
+                    request.title,
+                    request.method,
+                    request.reason,
+                    request.applies_when,
+                    request.kind,
+                    *request.modules,
+                ]
             ).casefold()
             db.execute(
                 "INSERT INTO memories VALUES (?,?,?,?,?,?,?)",
@@ -192,15 +199,17 @@ class MemoryStore(Store):
             scope_id.validate_python(project_id)
         with self.connection() as db:
             row = db.execute(
-                "SELECT payload,status FROM memories WHERE memory_id=?",
+                "SELECT payload,status,project_id,shot_id FROM memories WHERE memory_id=?",
                 (memory_id,),
             ).fetchone()
-        if row is None:
-            raise ValueError("Memory does not belong to the requested project or does not exist")
-        result = json.loads(row["payload"]) | {"status": row["status"]}
-        result.setdefault("software", "houdini")
-        result.setdefault("modules", ["unclassified"])
-        with self.connection() as db:
+            if row is None:
+                raise ValueError("Memory does not belong to the requested project or does not exist")
+            result = json.loads(row["payload"]) | {"status": row["status"]}
+            result.setdefault("software", "houdini")
+            result.setdefault("modules", ["unclassified"])
+            reuse_scope = result.get("reuse_scope", "shot" if row["shot_id"] else "global")
+            if project_id and reuse_scope == "shot" and row["project_id"] != project_id:
+                raise ValueError("Memory does not belong to the requested project or does not exist")
             related = db.execute(
                 "SELECT duplicate_id FROM memory_aliases WHERE canonical_id=? ORDER BY duplicate_id",
                 (memory_id,),
@@ -239,8 +248,9 @@ class MemoryStore(Store):
         software: Literal["houdini", "nuke", "maya"] = "houdini",
         module: str = "",
         source_project: str = "",
+        offset: int = 0,
     ) -> dict:
-        """Literal multilingual substring matching, scoped before ranking and expansion."""
+        """Multilingual substring & relevance-ranked recall, scoped before ranking and expansion."""
         if project_id:
             scope_id.validate_python(project_id)
         if software not in ("houdini", "nuke", "maya"):
@@ -248,8 +258,8 @@ class MemoryStore(Store):
         selected_module = normalize_modules([module], software)[0] if module else ""
         if shot_id:
             shot_id = scope_id.validate_python(shot_id)
-        if not 1 <= limit <= 20 or not 512 <= max_chars <= 12000 or len(query) > 200:
-            raise ValueError("Invalid search limit, max_chars or query length")
+        if not 1 <= limit <= 20 or not 512 <= max_chars <= 12000 or len(query) > 200 or offset < 0:
+            raise ValueError("Invalid search limit, offset, max_chars or query length")
         tokens = query.casefold().split()
         result = {"items": [], "budget_unit": "json_characters", "truncated": False}
         if not tokens and not selected_module:
@@ -273,7 +283,8 @@ class MemoryStore(Store):
             + usable_sql("k")
             + (
                 " AND EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(k.payload,'$.modules'),'[\"unclassified\"]')) replacement_tags WHERE replacement_tags.value=?)"
-                if selected_module else ""
+                if selected_module
+                else ""
             )
             + ")"
         )
@@ -281,24 +292,84 @@ class MemoryStore(Store):
         clauses.append(
             "(COALESCE(json_extract(payload,'$.reuse_scope'),CASE WHEN shot_id='' THEN 'global' ELSE 'shot' END)='global' OR (project_id=? AND (?='' OR shot_id=?)))"
         )
-        params = [software, *((selected_module,) if selected_module else ()), project_id, shot_id, shot_id]
+        base_params = [
+            software,
+            *((selected_module,) if selected_module else ()),
+            project_id,
+            shot_id,
+            shot_id,
+        ]
         if source_project:
             clauses.append("project_id=?")
-            params.append(scope_id.validate_python(source_project))
+            base_params.append(scope_id.validate_python(source_project))
         if selected_module:
             clauses.append(MODULE_MATCH_SQL)
-            params.append(selected_module)
-        for token in tokens:
-            clauses.append("instr(search_text,?)>0")
-            params.append(token)
+            base_params.append(selected_module)
+        token_clauses = ["instr(search_text,?)>0" for _ in tokens]
+        conflict_expr = (
+            "EXISTS (SELECT 1 FROM knowledge_sources cf JOIN memories note ON note.memory_id=cf.memory_id "
+            "WHERE note.status='disputed' AND (cf.source_id=memories.memory_id "
+            "OR cf.source_id IN (SELECT source_id FROM knowledge_sources WHERE memory_id=memories.memory_id))) AS has_conflict"
+        )
         with self.connection() as db:
             rows = db.execute(
-                "SELECT payload,status FROM memories WHERE "
-                + " AND ".join(clauses)
-                + " ORDER BY rowid DESC LIMIT ?",
-                [*params, limit + 1],
+                f"SELECT rowid,payload,status,{conflict_expr} FROM memories WHERE "
+                + " AND ".join(clauses + token_clauses)
+                + " ORDER BY rowid DESC",
+                [*base_params, *tokens],
             ).fetchall()
-        for row in rows[:limit]:
+            # CJK bigram fallback when an unspaced Chinese phrase misses literal instr().
+            if not rows and tokens and any(
+                any("\u4e00" <= ch <= "\u9fff" for ch in tok) and len(tok) >= 3 for tok in tokens
+            ):
+                candidates = db.execute(
+                    f"SELECT rowid,payload,status,search_text,{conflict_expr} FROM memories WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY rowid DESC LIMIT 200",
+                    base_params,
+                ).fetchall()
+                matched = []
+                for row in candidates:
+                    text = row["search_text"]
+                    all_ok = True
+                    score = 0.0
+                    for tok in tokens:
+                        if tok in text:
+                            score += 2.0
+                            continue
+                        cjk = [ch for ch in tok if "\u4e00" <= ch <= "\u9fff"]
+                        if len(cjk) >= 3:
+                            bigrams = ["".join(cjk[i : i + 2]) for i in range(len(cjk) - 1)]
+                            hits = sum(1 for bg in bigrams if bg in text)
+                            if hits / len(bigrams) >= 0.75:
+                                score += hits / len(bigrams)
+                                continue
+                        all_ok = False
+                        break
+                    if all_ok:
+                        matched.append((score, row["rowid"], row))
+                matched.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                rows = [item[2] for item in matched]
+        # Relevance ranking: prioritize title/applies_when hits over body hits, then recency.
+        if tokens and len(rows) > 1:
+            def _rank(row):
+                rec = json.loads(row["payload"])
+                title = rec.get("title", "").casefold()
+                cond = rec.get("applies_when", "").casefold()
+                method = rec.get("method", "").casefold()
+                score = 0
+                for tok in tokens:
+                    if tok in title:
+                        score += 5
+                    if tok in cond:
+                        score += 2
+                    if tok in method:
+                        score += 1
+                return (score, row["rowid"])
+
+            rows = sorted(rows, key=_rank, reverse=True)
+        paged = rows[offset : offset + limit + 1]
+        for row in paged[:limit]:
             record = json.loads(row["payload"]) | {"status": row["status"]}
             record.setdefault("software", "houdini")
             record.setdefault("modules", ["unclassified"])
@@ -316,21 +387,19 @@ class MemoryStore(Store):
                     "project_id",
                 )
             } | {"summary": record["method"][:240]}
-            with self.connection() as db:
-                conflict = db.execute(
-                    "SELECT 1 FROM knowledge_sources cf JOIN memories note ON note.memory_id=cf.memory_id WHERE note.status='disputed' "
-                    "AND (cf.source_id=? OR cf.source_id IN (SELECT source_id FROM knowledge_sources WHERE memory_id=?)) LIMIT 1",
-                    (record["memory_id"], record["memory_id"]),
-                ).fetchone()
-            if conflict:
+            if row["has_conflict"]:
                 card["has_conflict"] = True
             result["items"].append(card)
             if len(compact(result)) > max_chars:
                 result["items"].pop()
                 result["truncated"] = True
                 break
-        result["truncated"] = result["truncated"] or len(rows) > limit
-        if not include_candidates and not result["items"] and not result["truncated"]:
+        result["truncated"] = result["truncated"] or len(paged) > limit
+        if offset > 0 or result["truncated"]:
+            next_off = offset + len(result["items"])
+            if len(compact(result | {"next_offset": next_off})) <= max_chars:
+                result["next_offset"] = next_off
+        if not include_candidates and not result["items"] and not result["truncated"] and offset == 0:
             references = self.search(
                 project_id, query, shot_id, True, 1, 12000, software, module, source_project
             )
@@ -340,7 +409,8 @@ class MemoryStore(Store):
                     "knowledge_status": "reference_not_verified_success",
                     "message": "无匹配正式经验，但存在候选参考；展开后判断适用性，不自动升级为成功经验。",
                     "next_call": {
-                        "tool": "fx_search_memory", "include_candidates": True,
+                        "tool": "fx_search_memory",
+                        "include_candidates": True,
                     },
                     "repeat_same_arguments": True,
                 }

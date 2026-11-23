@@ -14,7 +14,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from fx_agent.install_config import replace_servers
+from fx_agent.install_config import DEFAULT_NUKE_PORT, RESERVED_DCC_PORTS, replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "6cbed80a2f35b997263fc51c988c5bb1405657fd"
@@ -40,7 +40,10 @@ def port_available(port: int) -> bool:
     return True
 
 
-def nuke_config(original: str, root: Path, port: int, enabled: bool = True) -> str:
+def nuke_config(
+    original: str, root: Path, port: int, enabled: bool = True, data_root: Path | None = None
+) -> str:
+    data = data_root or (root / "data")
     block = f'''[mcp_servers.fx-nuke]
 command = {json.dumps(str(root / ".venv/Scripts/python.exe"))}
 args = ["-m", "fx_agent.nuke_server", "--port", "{port}"]
@@ -49,13 +52,19 @@ tool_timeout_sec = 3600
 enabled = {str(enabled).lower()}
 
 [mcp_servers.fx-nuke.env]
-FX_AGENT_DATA_ROOT = {json.dumps(str(root / "data"))}
+FX_AGENT_DATA_ROOT = {json.dumps(str(data))}
 PYTHONUTF8 = "1"
 '''
     return replace_servers(original, {"fx-nuke"}, block)
 
 
-def menu_content(original: str, root: Path, port: int) -> str:
+def menu_content(
+    original: str,
+    root: Path,
+    port: int,
+    data_root: Path | None = None,
+    local_root: Path | None = None,
+) -> str:
     markers = [
         (token.string, token.start[0], token.end[0])
         for token in tokenize.generate_tokens(io.StringIO(original).readline)
@@ -66,10 +75,20 @@ def menu_content(original: str, root: Path, port: int) -> str:
     if markers:
         lines = original.splitlines(keepends=True)
         original = "".join(lines[: markers[0][1] - 1] + lines[markers[1][2] :])
+    env_lines = [
+        f"    _fx_os.environ.setdefault('FX_AGENT_DATA_ROOT', {str(data_root or (root / 'data'))!r})",
+    ]
+    if local_root is not None:
+        env_lines.append(
+            f"    _fx_os.environ.setdefault('FX_AGENT_LOCAL_ROOT', {str(local_root)!r})"
+        )
+    env_block = "\n".join(env_lines)
     block = f"""{BEGIN}
 import nuke as _fx_host
 if (_fx_host.NUKE_VERSION_MAJOR, _fx_host.NUKE_VERSION_MINOR) >= (15, 2):
+    import os as _fx_os
     import sys as _fx_sys
+{env_block}
     _fx_path = {str(root / "integrations/nuke")!r}
     if _fx_path not in _fx_sys.path:
         _fx_sys.path.insert(0, _fx_path)
@@ -103,7 +122,8 @@ def prepare_vendor(destination: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8187)
+    parser.add_argument("--port", type=int, default=DEFAULT_NUKE_PORT)
+    parser.add_argument("--data-root", type=Path)
     parser.add_argument(
         "--require-shared-agent",
         action="store_true",
@@ -117,15 +137,36 @@ def main() -> None:
     args = parser.parse_args()
     if sum((args.prepare, args.apply, args.register_disabled)) > 1:
         parser.error("--prepare、--apply和--register-disabled只能选择一个。")
-    if not 1 <= args.port <= 65535 or args.port in (8100, 8186, 18186, 54321):
+    if not 1 <= args.port <= 65535 or args.port in RESERVED_DCC_PORTS:
         parser.error("Nuke端口必须独立，不能使用Houdini的18186、旧8186或原MCP默认8100、54321。")
-    if Path(sys.executable).resolve() != ROOT / ".venv/Scripts/python.exe":
+    if Path(sys.executable).resolve() != (ROOT / ".venv/Scripts/python.exe").resolve():
         parser.error("请使用当前工程的.venv/Scripts/python.exe运行。")
+    if args.prepare:
+        print(
+            json.dumps(
+                {
+                    "port": args.port,
+                    "root": str(ROOT),
+                    "apply": False,
+                    "prepare": True,
+                    "registered_disabled": False,
+                    "paths": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        if not importlib.util.find_spec("nukemcp"):
+            parser.error("请先运行 uv sync --frozen --group nuke")
+        prepare_vendor(ROOT / "integrations/nuke/vendor")
+        return
     config, menu = Path.home() / ".codex/config.toml", Path.home() / ".nuke/menu.py"
     original = config.read_text(encoding="utf-8") if config.exists() else ""
+    parsed_config = tomllib.loads(original) if original.strip() else {}
+    shared = parsed_config.get("mcp_servers", {}).get("fx-agent", {})
+    shared_env = shared.get("env", {})
     if args.require_shared_agent:
-        shared = tomllib.loads(original).get("mcp_servers", {}).get("fx-agent", {})
-        configured = shared.get("env", {}).get("FX_AGENT_DATA_ROOT", "")
+        configured = shared_env.get("FX_AGENT_DATA_ROOT", "")
         if (
             not configured
             or not Path(configured).is_absolute()
@@ -137,21 +178,29 @@ def main() -> None:
             or shared.get("args") != ["-m", "fx_agent"]
         ):
             parser.error("请先使用 Both 或 Houdini 安装当前工程的共享 Agent 入口。")
-    houdini_port = (
-        tomllib.loads(original)
-        .get("mcp_servers", {})
-        .get("fx-agent", {})
-        .get("env", {})
-        .get("HOUDINI_PORT", "18186")
-    )
+    houdini_port = shared_env.get("HOUDINI_PORT", "18186")
     if str(args.port) == str(houdini_port):
         parser.error("Nuke端口与当前Houdini配置冲突。")
     if not port_available(args.port):
         parser.error("端口已占用；请选择其他端口或先停止已有桥接，不会自动切换。")
-    writes = {config: nuke_config(original, ROOT, args.port, enabled=not args.register_disabled)}
+    configured_data = shared_env.get("FX_AGENT_DATA_ROOT", "")
+    data = args.data_root or (Path(configured_data) if configured_data else ROOT / "data")
+    if not data.is_absolute():
+        parser.error("数据目录必须为绝对路径。")
+    configured_local = shared_env.get("FX_AGENT_LOCAL_ROOT", "")
+    local_root = Path(configured_local) if configured_local else None
+    writes = {
+        config: nuke_config(
+            original, ROOT, args.port, enabled=not args.register_disabled, data_root=data
+        )
+    }
     if not args.register_disabled:
         writes[menu] = menu_content(
-            menu.read_text(encoding="utf-8") if menu.exists() else "", ROOT, args.port
+            menu.read_text(encoding="utf-8") if menu.exists() else "",
+            ROOT,
+            args.port,
+            data_root=data,
+            local_root=local_root,
         )
     print(
         json.dumps(
@@ -167,13 +216,11 @@ def main() -> None:
             indent=2,
         )
     )
-    if not args.apply and not args.prepare and not args.register_disabled:
+    if not args.apply and not args.register_disabled:
         return
     if not importlib.util.find_spec("nukemcp"):
         parser.error("请先运行 uv sync --frozen --group nuke")
     prepare_vendor(ROOT / "integrations/nuke/vendor")
-    if args.prepare:
-        return
     backup = (
         Path.home() / ".fx-agent-install-backups" / datetime.now().strftime("nuke-%Y%m%d-%H%M%S-%f")
     )

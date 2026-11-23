@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fx_agent.maya.protocol import encode, receive
@@ -74,12 +75,21 @@ def discover(root: Path, ports=DEFAULT_PORTS):
         except (OSError, ValueError, TypeError, KeyError):
             continue
     sessions, unavailable = [], []
-    for port in sorted(candidates):
+    ordered = sorted(candidates)
+
+    def _check(port):
         try:
             validate_port(port)
-            sessions.append(probe(port) | {"identity_verified": True})
+            return port, probe(port) | {"identity_verified": True}, None
         except (OSError, ValueError, RuntimeError, KeyError) as exc:
-            unavailable.append({"port": port, "error": str(exc)})
+            return port, None, str(exc)
+
+    with ThreadPoolExecutor(max_workers=min(20, max(1, len(ordered)))) as pool:
+        for port, info, error in pool.map(_check, ordered):
+            if info is not None:
+                sessions.append(info)
+            else:
+                unavailable.append({"port": port, "error": error})
     return {"sessions": sessions, "unavailable": unavailable}
 
 

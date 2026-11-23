@@ -5,28 +5,40 @@ description: 使用 fx-maya 在指定 Maya 会话中完成 Arnold/Redshift 灯�
 
 # Maya 灯光与渲染
 
-这是独立的 Maya 工作流入口，直接调用 `fx-maya` 的制作、知识和任务工具。全程使用中文沟通，按用户已提供的目标推进。
+这是独立的 Maya 工作流入口，直接调用 `fx-maya` 的制作、知识和任务工具。全程使用中文沟通，与 Houdini/Nuke 共用 `FX_AGENT_DATA_ROOT`，但不使用 Houdini/Nuke 端口发送 Maya 命令。
 
-可以显式使用 `$maya-workflow`，例如：“使用 $maya-workflow，在指定的 Maya 2020 工程中完成 Redshift 三点布光，先做低分辨率单帧检查。”多窗口时先列出会话，依据用户已明确的目标选择；无法唯一确定时询问目标窗口。
+## 架构与启动说明
 
-使用 `fx-maya`，不使用 Houdini/Nuke 端口发送 Maya 命令。Maya 端统一安装到共享 `Documents/maya/modules/fx_maya.mod`，不向各版本首选项安装。参照用户 L_Tools.mod，以 MAYAVERSION/PLATFORM 分段路由：2017–2020 到 py2，2022–2027 到 py3；每个运行时有独立 scripts/userSetup.py、插件和桥接实现。启动脚本延迟加载插件、启动服务和菜单，已有用户脚本不改写。路由配置不等于全部版本兼容性已验证；未来 Maya 版本需扩展路由并测试，Python 3.14+ 不承诺未经实测的兼容性。
+- **统一模块与桥接**：Maya 端通过共享 `Documents/maya/modules/fx_maya.mod` 加载 `integrations/maya/shared` 下的统一 Python 2/3 兼容桥接与插件（覆盖 Maya 2017–2027 路由，延迟加载不改写已有用户脚本；未实测版本或 Python 3.14+ 不承诺兼容性）。
+- **GUI 菜单**：Maya 内可通过 **FX Maya MCP** 菜单查看状态、启停当前窗口桥接；重启桥接可能更换端口，须重新发现并显式选择。
+- **按需启动新会话**：无可用会话且需要新开 Maya 时，调用 `start_maya(executable="已核实的 maya.exe 绝对路径")`（不附加 `-command`/`-script` 等启动参数，由共享模块 `userSetup.py` 自动加载）。返回 PID 仅表示进程已创建，等待就绪后重新 `list_maya_sessions` 并用完整身份字段 `connect_maya`，不能凭 PID 猜选或反复新开。
 
-没有可连接会话且需要新开 Maya 时，使用 `start_maya(executable="已核实的 maya.exe 绝对路径")`。当前小屋制作选用 Maya 2020；启动不附加 -command、-script、批处理等参数，不注入插件加载代码，也不操作电脑界面。插件由共享模块自带的启动脚本加载，不依赖某版本/语言的 pluginPrefs.mel。用户反馈额外参数启动时出现 Autodesk Error Report，但尚未证明参数是原因。
+## 任务门禁与执行步骤
 
-启动返回 PID 仅证明已创建进程，不代表桥接就绪。等待启动后重新 `list_maya_sessions`，再复制真实身份字段 `connect_maya`；不能凭 PID 自动选择。连接失败先查启动错误，不反复新开 Maya。用户仅要求修改启动功能时，只修改与测试代码，不实际启动或操作软件。
+> 参数名区分：任务管理工具使用 `task_id`；受门禁的读取、修改、校验、保存、渲染与 Python 工具使用 `fx_task_id`。
 
-GUI 中可通过 **FX Maya MCP** 菜单查看状态、启动或停止当前窗口的桥接。停止后重新启动可能更换端口，重新发现并显式选择。连接工具不可用时报告缺少 `fx-maya` 服务；不以其他软件的执行工具代替。
+1. **列出会话与核对场景（只读）**
+   - 调用 `list_maya_sessions` 展示版本、PID、`session_id`、端口、场景与插件状态；依据用户目标匹配会话，无法唯一确定时向用户确认。
+   - 用列表里的全部身份字段调用 `connect_maya`，再读取 `get_maya_scene_info` 与 `get_maya_renderer_status`。渲染器插件未加载时明确报告并请用户启用，不自动安装或静默加载。
+2. **登记任务与收集证据**
+   - 明确目标、参考与素材、项目/镜头、验收要求和预算后，调用 `fx_begin_task` 登记 `software="maya"`、真实 `endpoint`、`scene_path`、`modules`（从 `lighting` / `rendering` / `materials` / `io` / `troubleshooting` / `general` 选择）与 `input_paths`。
+   - 携带同一 `fx_task_id` 读取 `fx_get_production_rules(project_id=..., software="maya", offset=0)`（翻页并展开 `detail_required`）、`fx_get_module_knowledge(..., software="maya")`、`fx_search_effects(software="maya", ...)`、`fx_search_memory(software="maya", ...)`，并完整展开所选来源。
+   - 调用 `fx_set_task_plan` 保存 `method`、`applies_when`、`changes`、`selected_sources` 及逐来源 `source_adaptations`（无适用记录写清 `no_match_reason`）。
+3. **场景加载、灯光与渲染操作（全部携带 `fx_task_id`）**
+   - **打开工程**：优先使用专用 `load_scene` 工具切换工程，不靠任意 Python 打开文件；切换工程后须先 `fx_update_task` 更新 `scene_path` 并刷新方案。
+   - **灯光检查与编辑**：`list_maya_lights` / `inspect_maya_light` 获取真实节点类型与可读属性（使用完整 DAG 路径消除重名）；`create_maya_light` 支持 `area`/`point`/`spot`/`directional`/`environment`；`update_maya_light` 调整位移/旋转/缩放与原生属性，保留各渲染器原生参数单位。
+   - **HDRI 绑定**：`set_maya_hdri` 仅接受已存在的绝对路径。Arnold SkyDome 连接 `file.outColor` 到 `color`（已有连接先调查，不强制覆盖）；Redshift Dome 使用运行时确认存在的 `tex0`/`exposure0`/`multiplier`，并核对色彩空间。
+   - **照明连接**：`set_maya_light_link` 修改或解除照明连接后，核对返回的实际连接并渲染确认。
+   - **单帧渲染**：`render_maya_frame` 在新目录输出单帧，仅认可返回的非空图像文件并实际查看构图、光比与噪点；原生完成回执到达前桥接会阻止新的场景写入。
+   - **断连与超时**：超时或断连后操作可能已执行，禁止自动重试；先在 Maya 检查，刷新 `list_maya_sessions` 重新连接，渲染用 `get_maya_render_status` 按 `job_id` 查询。
+   - **Python 兜底**：`execute_maya_python` 仅作最后手段，不可用来绕过门禁或替代专用工具的 Redshift/Arnold 检查。
+4. **保存、校验、归档与学习**
+   - `save_scene` 保存当前命名工程（未命名工程可首次保存到任务指定且尚不存在的路径）。
+   - `verify_network` 仅检查 unknown 节点，不替代渲染与视觉检查。
+   - 阶段进度用 `fx_save_checkpoint(..., software="maya")`；续作先读 `fx_get_context`/`fx_get_checkpoint` 并核对真实场景，条件变化时先 `fx_update_task`。
+   - 完成后用 `fx_archive_case` 归档 `.ma`/`.mb` 与渲染预览，调用 `fx_finish_task` 提交当前 `revision`、`case_id` 与真实 `verification_note`。获得用户真实认可后再按 `fx-learning` 提交 `accepted` 反馈与 `fx_finalize_learning`。
 
-1. 调用 `list_maya_sessions`，展示版本、PID、session_id、端口、场景和插件状态。由用户目标或已明确的工程匹配会话；不随意选第一个。使用列表里的全部身份字段调用 `connect_maya`，再读 `get_maya_scene_info`。
-2. 共用 `FX_AGENT_DATA_ROOT`。任务、进度、经验、纠错均指定 `software="maya"`，模块选 `lighting` / `rendering` / `materials` / `io` / `troubleshooting` / `general`。不重标已有软件记录。
-3. 修改前明确目标、参考与素材、项目/镜头、验收要求和计算预算，再用 `fx_begin_task` 登记 `software="maya"`、实际 endpoint、scene_path、modules 和 input_paths。携带同一 `fx_task_id` 调用 `fx_get_production_rules`、`fx_get_module_knowledge`、`fx_search_effects`、`fx_search_memory`；软件筛选显式传 `software="maya"`。生产规则带 project_id，从 offset=0 按 next_offset 连续读取，detail_required 条目用 `fx_get_user_rule` 展开。读取匹配经验/效果全文后，用 `fx_set_task_plan` 登记方法、适用条件、改动和实际读取的 selected_sources；无适用记录时保存真实 no_match_reason。后续修改、Python、保存和渲染也传入该 `fx_task_id`。
-4. 读 `get_maya_renderer_status`。插件未加载时明确报告，让用户在现有安装中启用；不自动安装、替换或静默加载渲染器。任意 Python 只作最后手段，不能代替专用工具的 RS 验证。
-5. `list_maya_lights` / `inspect_maya_light` 获取真实节点类型及可读属性。用完整 DAG 路径消除重名。`create_maya_light` 支持 area/point/spot/directional/environment。`update_maya_light` 支持位置、旋转、缩放和原生属性；尺寸以实际插件属性或缩放表达。参数单位随渲染器保留，不假设同名属性等效。
-6. HDRI 使用已存在的绝对路径。Arnold SkyDome 使用 file.outColor 到 color；已连接则先调查，不强制覆盖。RS Dome 使用运行时确认存在的 tex0、exposure0、multiplier，PhysicalLight 使用实际 intensity/exposure。明确核对色彩空间。
-7. `set_maya_light_link` 修改/解除照明连接，读取返回的实际连接并渲染检查。`render_maya_frame` 在新目录渲染一帧，只认可返回的实际非空图像文件；查看图像确认构图、光比、噪点。文件存在不代表视觉验收。
-8. 超时或断连后操作可能已经完成，不自动重试。先在 Maya 中检查，刷新会话并显式重新选择；渲染可用 `get_maya_render_status` 列出已有作业并按 job_id 检查。原生完成回执到达之前，所有客户端的场景写入被桥接阻止。切换场景也须重新选择和更新任务。
-9. `save_scene` 保存当前命名工程；未命名工程可首次保存到任务指定且尚不存在的路径。`verify_network` 仅检查 unknown 节点，不代替渲染和视觉检查。用共享 `fx_archive_case` 归档 .ma/.mb 与预览，`fx_finish_task` 完成验证；获得真实用户接受后再反馈和提炼成功经验。
+## 当前能力边界
 
-续作时用 `fx_get_context` / `fx_get_checkpoint` 读取 `software="maya"` 的进度，再核对真实场景。目标、输入或验收变化时用 `fx_update_task` 更新完整 spec 和当前 revision，重新取得相关证据与计划。阶段进度用 `fx_save_checkpoint` 保存。纠错使用 `fx_record_feedback`，保留用户原话、实际改动和结果；用户接受且制作任务已验证后，才使用 `fx_finalize_learning` 提炼成功经验。
-
-当前范围是灯光与渲染。Render View 窗口控制和静态 Maya 工程模板解析尚未实现；不能将 .ma/.mb 送入 Nuke 解析器。未验证的插件/版本、许可证错误、缺失属性必须如实报告。测试场景、模拟网络测试和真实渲染证据分开记录。
+- 当前覆盖灯光与单帧渲染；Render View 窗口控制与静态 `.ma`/`.mb` 工程模板解析尚未实现（不可把 `.ma`/`.mb` 送入 Nuke 解析器）。
+- 未验证的插件/版本、许可证错误与缺失属性必须如实报告；测试场景、模拟测试与真实渲染证据分开记录。

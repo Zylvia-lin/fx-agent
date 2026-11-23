@@ -80,12 +80,26 @@ def get_viewer_state(params):
 
 def set_viewer_state(params):
     nuke, viewer = _viewer(params["viewer_name"])
+    window = _window(nuke, viewer)
+    inputs = [(params.get(key), secondary) for key, secondary in (("a_input", False), ("b_input", True))]
+    for index, _secondary in inputs:
+        if index is not None:
+            if window is None:
+                raise ValueError("A/B activation requires this Viewer to be the active Viewer; no focus was changed")
+            if index < 0 or viewer.input(index) is None:
+                raise ValueError(f"Viewer input is not connected: {index}")
     changes = {}
     channels = params.get("channels")
     if channels is not None:
         channels = {"red": "rgba.red", "green": "rgba.green", "blue": "rgba.blue",
                     "alpha": "rgba.alpha"}.get(channels, channels)
-        available = get_viewer_state(params)["result"]["available_channels"]
+        # Validate channels against the requested target a_input when switching inputs simultaneously.
+        target_a = params.get("a_input")
+        if target_a is not None:
+            target_source = viewer.input(target_a)
+            available = list(target_source.channels()) if target_source else []
+        else:
+            available = get_viewer_state(params)["result"]["available_channels"]
         layers = {channel.split(".")[0] for channel in available}
         if channels not in layers | set(available):
             raise ValueError(f"Channel or layer is unavailable: {channels}")
@@ -106,26 +120,18 @@ def set_viewer_state(params):
         if key not in viewer.knobs() or params["viewer_process"] not in viewer[key].values():
             raise ValueError("Viewer process is unavailable")
         changes[key] = params["viewer_process"]
-    window = _window(nuke, viewer)
     wipe_action = None
     if params.get("wipe") is not None:
         wipe_action = _wipe_action(nuke)
         if window is None or wipe_action is None:
             raise ValueError("Native wipe control is unavailable for this active Viewer")
-    inputs = [(params.get(key), secondary) for key, secondary in (("a_input", False), ("b_input", True))]
-    for index, _secondary in inputs:
-        if index is not None:
-            if window is None:
-                raise ValueError("A/B activation requires this Viewer to be the active Viewer; no focus was changed")
-            if index < 0 or viewer.input(index) is None:
-                raise ValueError(f"Viewer input is not connected: {index}")
     if any(key not in viewer.knobs() for key in changes):
         raise ValueError("Requested Viewer control is unavailable")
-    for key, value in changes.items():
-        viewer[key].setValue(value)
     for index, secondary in inputs:
         if index is not None:
             window.activateInput(index, secondary=secondary)
+    for key, value in changes.items():
+        viewer[key].setValue(value)
     if wipe_action is not None and wipe_action.action().isChecked() != params["wipe"]:
         wipe_action.invoke()
     return get_viewer_state(params)
@@ -135,7 +141,12 @@ def connect_viewer(params):
     nuke, viewer = _viewer(params["viewer_name"])
     source = nuke.toNode(params["source_node"]) if params["source_node"] is not None else None
     index = params.get("input_index", 0)
-    if (params["source_node"] is not None and source is None) or source is viewer or not 0 <= index <= 9:
+    if (
+        type(index) is not int
+        or (params["source_node"] is not None and source is None)
+        or (source is not None and source.fullName() == viewer.fullName())
+        or not 0 <= index <= 9
+    ):
         raise ValueError("Specify an existing source and a Viewer input from 0 to 9")
     viewer.setInput(index, source)
     return get_viewer_state(params)
@@ -156,7 +167,7 @@ def fit_viewer(params):
 
 
 def _capture_directory():
-    root = os.getenv("FX_AGENT_DATA_ROOT")
+    root = os.getenv("FX_AGENT_LOCAL_ROOT") or os.getenv("FX_AGENT_DATA_ROOT")
     return (Path(root) if root else Path(__file__).resolve().parents[2] / "data") / "screenshots" / "nuke"
 
 

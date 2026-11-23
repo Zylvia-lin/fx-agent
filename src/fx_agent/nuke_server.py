@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import threading
+from contextlib import suppress
 from types import SimpleNamespace
 
 from mcp.server.fastmcp import FastMCP
@@ -36,6 +37,12 @@ class SerializedConnection:
 
     def disconnect(self) -> None:
         with self._lock:
+            sock = getattr(self._connection, "_sock", None)
+            if sock is not None:
+                with suppress(OSError):
+                    sock.shutdown(2)
+                with suppress(OSError):
+                    sock.close()
             self._connection.disconnect()
             self.handshake = None
 
@@ -94,6 +101,7 @@ class SerializedConnection:
 
 def build_server(connection: SerializedConnection, handshake: dict | None = None) -> FastMCP:
     """Register tested compositing modules without upstream memory or plugin loading."""
+    from nukemcp.connection import NukeConnectionError
     from nukemcp.tools import batch, comp, graph, render, script
     from nukemcp.version import parse_version
 
@@ -126,9 +134,26 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
     @mcp.tool()
     def get_nuke_connection_status() -> dict:
         """Verify the selected Nuke bridge and read its actual current script."""
-        if connection.handshake is None or connection.failed:
-            return {"connected": False, "sessions": list_nuke_sessions()["sessions"]}
-        info = connection.send_command("get_script_info")
+        if connection.handshake is None:
+            sessions = list_nuke_sessions()["sessions"]
+            if connection.failed:
+                return {"connected": False, "sessions": sessions, "reselect_required": True}
+            if len(sessions) != 1:
+                return {"connected": False, "sessions": sessions}
+            try:
+                info = _select_advertised_session(connection, sessions[0])["script"]
+            except (NukeConnectionError, OSError, RuntimeError, ValueError) as error:
+                return {"connected": False, "sessions": sessions, "connection_error": str(error)}
+        else:
+            try:
+                info = connection.send_command("get_script_info")
+            except NukeConnectionError as error:
+                return {
+                    "connected": False,
+                    "sessions": list_nuke_sessions()["sessions"],
+                    "connection_error": str(error),
+                    "reselect_required": True,
+                }
         return {
             "connected": True,
             "host": "127.0.0.1",
@@ -153,6 +178,8 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
         return connection.select(port, pid, session_id, expected_script)
 
     async def live_target(_context):
+        if connection.handshake is None:
+            raise RuntimeError("No Nuke session selected; call list_nuke_sessions and connect_nuke first")
         info = connection.send_command("get_script_info")
         if info.get("status") == "ok" and isinstance(info.get("result"), dict):
             info = info["result"]
@@ -177,6 +204,10 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
     return mcp
 
 
+def _select_advertised_session(connection: SerializedConnection, target: dict) -> dict:
+    return connection.select(target["port"], target["pid"], target["session_id"], target["script"])
+
+
 def main() -> None:
     from nukemcp.connection import NukeConnectionError
 
@@ -188,11 +219,10 @@ def main() -> None:
     try:
         sessions = list_sessions(session_root())
         if len(sessions) == 1:
-            target = sessions[0]
             try:
-                connection.select(target["port"], target["pid"], target["session_id"], target["script"])
+                _select_advertised_session(connection, sessions[0])
             except (NukeConnectionError, OSError, RuntimeError, ValueError) as error:
-                logging.warning("Nuke startup target unavailable; use list_nuke_sessions: %s", error)
+                logging.warning("Nuke startup target unavailable; a status check can reconnect: %s", error)
         server = build_server(connection)
         server.run(transport="stdio")
     finally:

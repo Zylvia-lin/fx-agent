@@ -1,8 +1,12 @@
-"""Minimal, verified TOML server registration shared by local installers."""
+"""Minimal, verified TOML/JSON server registration shared by local installers."""
 
 import json
 import re
 import tomllib
+from pathlib import Path
+
+DEFAULT_NUKE_PORT = 8187
+RESERVED_DCC_PORTS = frozenset({8100, 8186, 18186, 54321})
 
 DATA_ENVIRONMENT = (
     "FX_AGENT_DATA_MODE", "FX_AGENT_SERVER_IP", "FX_AGENT_SERVER_PORT", "FX_AGENT_API_KEY",
@@ -74,3 +78,48 @@ def replace_servers(original: str, names: set[str], block: str) -> str:
     result = (retained + "\n\n" if retained else "") + forward_data_environment(block, before.get("mcp_servers", {}))
     tomllib.loads(result)
     return result
+
+
+def mcp_servers_json(
+    root: Path,
+    data: Path,
+    *,
+    houdini_port: int = 18186,
+    nuke_port: int | None = None,
+    maya_ports: list[int] | None = None,
+) -> dict:
+    """Build standard MCP JSON config (`mcpServers`) for multi-host stdio clients."""
+    python = str(root / ".venv/Scripts/python.exe")
+    servers: dict[str, dict] = {
+        "fx-agent": {
+            "command": python,
+            "args": ["-m", "fx_agent"],
+            "env": {
+                "HOUDINI_HOST": "127.0.0.1",
+                "HOUDINI_PORT": str(houdini_port),
+                "FX_AGENT_DATA_ROOT": str(data),
+                "FXHOUDINIMCP_AUTO_LAYOUT": "0",
+                "NO_PROXY": "localhost,127.0.0.1,::1",
+                "PYTHONUTF8": "1",
+            },
+        }
+    }
+    if nuke_port is not None:
+        servers["fx-nuke"] = {
+            "command": python,
+            "args": ["-m", "fx_agent.nuke_server", "--port", str(nuke_port)],
+            "env": {
+                "FX_AGENT_DATA_ROOT": str(data),
+                "PYTHONUTF8": "1",
+            },
+        }
+    if maya_ports:
+        servers["fx-maya"] = {
+            "command": python,
+            "args": ["-m", "fx_agent.maya.server", "--ports", *map(str, maya_ports)],
+            "env": {
+                "FX_AGENT_DATA_ROOT": str(data),
+                "PYTHONUTF8": "1",
+            },
+        }
+    return {"mcpServers": servers}

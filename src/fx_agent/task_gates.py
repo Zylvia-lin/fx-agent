@@ -54,6 +54,55 @@ def same_path(a, b):
     return ntpath.normcase(ntpath.normpath(a)) == ntpath.normcase(ntpath.normpath(b))
 
 
+def is_untitled_scene(path: str) -> bool:
+    if not path or not str(path).strip():
+        return True
+    name = ntpath.basename(str(path).strip()).lower()
+    return name in {
+        "untitled",
+        "untitled.hip",
+        "untitled.hipnc",
+        "untitled.hiplc",
+        "untitled.nk",
+        "untitled.ma",
+        "untitled.mb",
+    }
+
+
+EVIDENCE_TOOLS = frozenset(
+    {
+        "fx_get_production_rules",
+        "fx_get_user_rule",
+        "fx_get_module_knowledge",
+        "get_workflow_guide",
+        "fx_search_effects",
+        "fx_search_memory",
+        "fx_search_templates",
+        "fx_get_effect",
+        "fx_get_memory",
+        "fx_get_template",
+        "fx_learn_templates",
+        "fx_review_template_effects",
+        "fx_annotate_template_effects",
+        "fx_merge_effect_cards",
+        "fx_refine_effect",
+        "save_scene",
+        "save_script",
+        "verify_network",
+        "find_broken_reads",
+    }
+)
+
+
+def _normalize_search_module(raw: str, software: str) -> str:
+    if not raw or not str(raw).strip():
+        return ""
+    try:
+        return normalize_modules([raw], software)[0]
+    except ValueError:
+        return str(raw).strip()
+
+
 def successful(value):
     if isinstance(value, list):
         return all(successful(v) for v in value)
@@ -189,10 +238,39 @@ class TaskGates:
             self._write(db, task)
         return self._summary(task)
 
-    def get(self, task_id, detail=False):
+    def get(self, task_id, detail=False, max_chars: int = 0):
         with self.store.connection() as db:
             task = self._read(db, task_id)
-        return task if detail else self._summary(task)
+        if not detail:
+            return self._summary(task)
+        if max_chars and max_chars > 0 and len(compact(task)) > max_chars:
+            trimmed = dict(task)
+            receipts = dict(trimmed.get("receipts") or {})
+            keys = list(receipts.keys())
+            dropped = 0
+            while keys and len(compact(trimmed | {"receipts": receipts, "omitted_receipts": dropped})) > max_chars:
+                receipts.pop(keys.pop(0), None)
+                dropped += 1
+            trimmed["receipts"] = receipts
+            if dropped:
+                trimmed["omitted_receipts"] = dropped
+                trimmed["truncated"] = True
+            return trimmed
+        return task
+
+    @staticmethod
+    def _available_sources(task) -> set[str]:
+        receipts = list(task["receipts"].values())
+        available = {s for r in receipts for s in r.get("sources", [])}
+        sections_by_study: dict[str, set[str]] = {}
+        for r in receipts:
+            if r.get("tool") == "fx_get_template" and r.get("template_section"):
+                for study_id in r.get("study_ids", []):
+                    sections_by_study.setdefault(study_id, set()).add(r["template_section"])
+        for study_id, sections in sections_by_study.items():
+            if "snapshot" in sections or {"nodes", "connections"} <= sections:
+                available.add("template_study:" + study_id)
+        return available
 
     def _missing(self, task):
         receipts = list(task["receipts"].values())
@@ -203,13 +281,29 @@ class TaskGates:
             for r in receipts
             if r["tool"] == "fx_get_production_rules" and r.get("rules_hash") == current_rules_hash
         ]
-        for r in sorted(rules, key=lambda x: x.get("offset", 0)):
-            if r.get("offset", 0) != expected:
+        # Deduplicate repeated reads at the same offset, preferring complete / furthest-advancing reads.
+        best_by_offset: dict[int, dict] = {}
+        for r in rules:
+            off = r.get("offset", 0)
+            prev = best_by_offset.get(off)
+            if prev is None or (
+                (r.get("omitted", 1) == 0, r.get("next_offset", 0))
+                > (prev.get("omitted", 1) == 0, prev.get("next_offset", 0))
+            ):
+                best_by_offset[off] = r
+        for off in sorted(best_by_offset):
+            r = best_by_offset[off]
+            if off != expected:
                 continue
             expected = r["next_offset"]
             detail_keys.update(r["detail_keys"])
             complete = r["omitted"] == 0
-        expanded = {r["rule_key"] for r in receipts if r["tool"] == "fx_get_user_rule"}
+        expanded = {
+            r["rule_key"]
+            for r in receipts
+            if r["tool"] == "fx_get_user_rule"
+            and r.get("project_id", "") in {"", task["project_id"]}
+        }
         missing = [] if complete and detail_keys <= expanded else ["rules"]
         for module in task["modules"]:
             selected = set((task.get("plan") or {}).get("selected_sources", []))
@@ -218,18 +312,42 @@ class TaskGates:
                 and module in r.get("source_modules", [])
                 for r in receipts
             )
-            scoped_empty = bool((task.get("plan") or {}).get("no_match_reason")) and any(
+            scoped_searched = bool((task.get("plan") or {}).get("no_match_reason")) and any(
                 r["tool"] == "fx_search_memory"
-                and r.get("module") == module
-                and r.get("match_count") == 0
+                and _normalize_search_module(r.get("module", ""), task["software"]) == module
+                and r.get("match_count") is not None
                 for r in receipts
             )
-            if not any(
-                r["tool"] == "fx_get_module_knowledge"
-                and r.get("module") == module
-                and (not r.get("truncated") or expanded_module or scoped_empty)
+            mod_receipts = [
+                r
                 for r in receipts
-            ):
+                if r["tool"] == "fx_get_module_knowledge"
+                and _normalize_search_module(r.get("module", ""), task["software"]) == module
+            ]
+            # Check if paginated module reads cover the full guide from offset 0.
+            mod_complete = any(not r.get("truncated") and r.get("offset", 0) == 0 for r in mod_receipts)
+            if not mod_complete and mod_receipts:
+                mod_by_off: dict[int, dict] = {}
+                for r in mod_receipts:
+                    off = r.get("offset", 0)
+                    prev = mod_by_off.get(off)
+                    if prev is None or (not r.get("truncated"), r.get("next_offset", 0)) > (
+                        not prev.get("truncated"),
+                        prev.get("next_offset", 0),
+                    ):
+                        mod_by_off[off] = r
+                mod_expected = 0
+                for off in sorted(mod_by_off):
+                    r = mod_by_off[off]
+                    if off != mod_expected:
+                        continue
+                    if not r.get("truncated"):
+                        mod_complete = True
+                        break
+                    nxt = r.get("next_offset", 0)
+                    if nxt > mod_expected:
+                        mod_expected = nxt
+            if not (mod_complete or (mod_receipts and (expanded_module or scoped_searched))):
                 missing.append("module:" + module)
         if task["software"] == "houdini":
             topics = {"discipline"} | {HOUDINI[m][1] for m in task["modules"] if HOUDINI[m][1]}
@@ -238,20 +356,26 @@ class TaskGates:
         for name in ("fx_search_effects", "fx_search_memory"):
             if not any(
                 r["tool"] == name
-                and (r.get("query", "").strip() or r.get("module") in task["modules"])
+                and (
+                    r.get("query", "").strip()
+                    or _normalize_search_module(r.get("module", ""), task["software"]) in task["modules"]
+                )
                 for r in receipts
             ):
                 missing.append(name)
         for receipt in receipts:
-            if receipt.get("reference_matches") and not any(
-                r["tool"] == "fx_search_memory"
-                and r.get("include_candidates")
-                and r.get("module") == receipt.get("module")
-                and r.get("query") == receipt.get("query")
-                and r.get("search_scope", {}) == receipt.get("search_scope", {})
-                for r in receipts
-            ):
-                missing.append("candidate_search:" + receipt.get("module", ""))
+            if receipt.get("reference_matches"):
+                rec_mod = _normalize_search_module(receipt.get("module", ""), task["software"])
+                rec_query = receipt.get("query", "").strip()
+                if not any(
+                    r["tool"] == "fx_search_memory"
+                    and r.get("include_candidates")
+                    and _normalize_search_module(r.get("module", ""), task["software"]) == rec_mod
+                    and r.get("query", "").strip() == rec_query
+                    and r.get("search_scope", {}) == receipt.get("search_scope", {})
+                    for r in receipts
+                ):
+                    missing.append("candidate_search:" + rec_mod)
         return missing
 
     def _summary(self, task):
@@ -286,12 +410,53 @@ class TaskGates:
             task = self._read(db, task_id)
             self._revision(task, expected_revision)
             previous_scene_path = task["scene_path"]
-            task.update(spec.model_dump())
+            new_spec = spec.model_dump()
+            spec_keys = (
+                "project_id",
+                "shot_id",
+                "software",
+                "kind",
+                "scene_path",
+                "endpoint",
+                "goal",
+                "acceptance",
+                "budget",
+                "modules",
+                "input_paths",
+            )
+            old_spec = {k: task.get(k) for k in spec_keys}
+            same_spec = old_spec == new_spec
+            scope_changed = (
+                task["project_id"] != new_spec["project_id"]
+                or task["software"] != new_spec["software"]
+                or task["kind"] != new_spec["kind"]
+            )
+            current_rules_hash = self._rules_hash(new_spec["project_id"])
+            rules_changed = task.get("rules_hash") and task.get("rules_hash") != current_rules_hash
+            # Explicit re-check (identical spec) or scope change clears all receipts;
+            # targeted updates preserve unaffected knowledge receipts.
+            if same_spec or scope_changed:
+                kept_receipts = {}
+            else:
+                new_modules = set(new_spec["modules"])
+                kept_receipts = {}
+                for key, receipt in task.get("receipts", {}).items():
+                    tool = receipt.get("tool", "")
+                    if tool in {"save_scene", "save_script", "verify_network", "find_broken_reads"}:
+                        continue
+                    if rules_changed and tool in {"fx_get_production_rules", "fx_get_user_rule"}:
+                        continue
+                    if tool == "fx_get_module_knowledge":
+                        mod = _normalize_search_module(receipt.get("module", ""), new_spec["software"])
+                        if mod not in new_modules:
+                            continue
+                    kept_receipts[key] = receipt
+            task.update(new_spec)
             task.update(
                 revision=task["revision"] + 1,
                 generation=task["generation"] + 1,
                 state="needs_knowledge",
-                receipts={},
+                receipts=kept_receipts,
                 plan=None,
                 saved_seq=-1,
                 verified_seq=-1,
@@ -325,7 +490,7 @@ class TaskGates:
             }
             if self._missing(task):
                 raise ValueError("Missing actual knowledge reads: " + ",".join(self._missing(task)))
-            available = {s for r in task["receipts"].values() for s in r.get("sources", [])}
+            available = self._available_sources(task)
             if set(selected_sources) - available:
                 raise ValueError("Selected knowledge must have been read in full for this task")
             if not selected_sources and not no_match_reason.strip():
@@ -490,7 +655,10 @@ class TaskGates:
                 raise ValueError("Task scene settings changed; update task and recheck knowledge")
             if "scene_context" not in task:
                 with self.store.connection() as db:
+                    db.execute("BEGIN IMMEDIATE")
                     latest = self._read(db, task_id)
+                    if "scene_context" in latest and latest["scene_context"] != scene_context:
+                        raise ValueError("Task scene settings changed; update task and recheck knowledge")
                     latest["scene_context"] = scene_context
                     self._write(db, latest)
         return task
@@ -501,16 +669,18 @@ class TaskGates:
             task = self._read(db, task_id)
             task.update(edit_seq=task["edit_seq"] + 1, state="ready", verified_seq=-1, case_id="")
             self._write(db, task)
+            device_id = task.get("device_id", "")
             for row in db.execute(
-                "SELECT payload FROM task_gates WHERE task_id<>?", (task_id,)
+                "SELECT payload FROM task_gates WHERE task_id<>? "
+                "AND json_extract(payload,'$.endpoint')=? "
+                "AND COALESCE(json_extract(payload,'$.device_id'),'')=?",
+                (task_id, task["endpoint"], device_id),
             ).fetchall():
                 other = json.loads(row[0])
-                if (other.get("device_id", "") == task.get("device_id", "")
-                        and other["endpoint"] == task["endpoint"]):
-                    other.update(saved_seq=-1, verified_seq=-1, case_id="")
-                    if other["state"] == "verified":
-                        other["state"] = "ready" if other["plan"] else "needs_knowledge"
-                    self._write(db, other)
+                other.update(saved_seq=-1, verified_seq=-1, case_id="")
+                if other["state"] == "verified":
+                    other["state"] = "ready" if other["plan"] else "needs_knowledge"
+                self._write(db, other)
 
     def invalidate(self, task_id, *, saved=False, verified=False):
         with self.store.connection() as db:
@@ -526,6 +696,8 @@ class TaskGates:
             self._write(db, task)
 
     def observe(self, task_id, tool, arguments, result):
+        if tool == "fx_search_published_templates":
+            return
         # The Houdini/shared adapter compact-serializes dicts before the SDK returns.
         if isinstance(result, str):
             with suppress(ValueError):
@@ -541,13 +713,22 @@ class TaskGates:
         value = result if isinstance(result, dict) else {}
         if value.get("action") and value.get("message"):
             return
+        if tool not in EVIDENCE_TOOLS:
+            return
         with self.store.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             task = self._read(db, task_id)
-            requested_software = arguments.get(
-                "software",
-                "houdini" if tool in {"fx_get_module_knowledge", "fx_search_memory"} else "",
-            )
+            if tool == "fx_get_production_rules":
+                requested_software = (
+                    arguments.get("software")
+                    or (value.get("fixed_rules") or {}).get("software")
+                    or value.get("software", "")
+                )
+            else:
+                requested_software = arguments.get(
+                    "software",
+                    "houdini" if tool in {"fx_get_module_knowledge", "fx_search_memory"} else "",
+                )
             if requested_software and requested_software != task["software"]:
                 return
             receipt = {"tool": tool, "seq": task["edit_seq"], "sources": []}
@@ -566,21 +747,34 @@ class TaskGates:
                     rules_hash=self._rules_hash(task["project_id"]),
                 )
             if tool == "fx_get_user_rule":
+                rule_scope = value.get("scope", "global")
+                rule_project = value.get("project_id", arguments.get("project_id", ""))
+                if rule_scope == "project" and rule_project and rule_project != task["project_id"]:
+                    return
                 receipt["rule_key"] = compact(
-                    [value.get("scope", "global"), value.get("rule_key"), value.get("revision", 0)]
+                    [rule_scope, value.get("rule_key"), value.get("revision", 0)]
                 )
+                receipt["project_id"] = rule_project if rule_scope == "project" else ""
             if tool == "fx_get_module_knowledge":
-                receipt["module"] = arguments.get("module")
+                receipt["module"] = _normalize_search_module(
+                    arguments.get("module", ""), task["software"]
+                )
                 receipt["truncated"] = bool(value.get("truncated"))
+                receipt["offset"] = arguments.get("offset", 0)
+                if "next_offset" in value:
+                    receipt["next_offset"] = value["next_offset"]
             if tool == "get_workflow_guide":
                 receipt["topic"] = arguments.get("topic")
             if tool.startswith("fx_search_"):
                 receipt["query"] = arguments.get("query", "")
-                receipt["module"] = arguments.get("module", "")
+                receipt["module"] = _normalize_search_module(
+                    arguments.get("module", ""), task["software"]
+                )
                 receipt["include_candidates"] = bool(arguments.get("include_candidates"))
                 receipt["reference_matches"] = bool(value.get("reference_hint", {}).get("has_matches"))
-                receipt["search_scope"] = {key: arguments.get(key, "") for key in
-                                           ("project_id", "shot_id", "source_project")}
+                receipt["search_scope"] = {
+                    key: arguments.get(key, "") for key in ("project_id", "shot_id", "source_project")
+                }
                 receipt["match_count"] = (
                     None
                     if value.get("truncated")
@@ -640,7 +834,11 @@ class TaskGates:
                     value.get("content") or section == "connections" and not value.get("truncated")
                 ):
                     receipt["template_section"] = section
-                elif section == "snapshot" and not value.get("truncated") and isinstance(value.get("content"), dict):
+                elif (
+                    section == "snapshot"
+                    and not value.get("truncated")
+                    and isinstance(value.get("content"), dict)
+                ):
                     receipt["template_section"] = "snapshot"
                 content = value.get("content")
                 nodes = content.get("nodes", []) if isinstance(content, dict) else content
@@ -648,26 +846,42 @@ class TaskGates:
                 if section in {"nodes", "snapshot"} and isinstance(nodes, list):
                     receipt["template_nodes"] = [n["path"] for n in nodes if n.get("path")]
                 if section in {"connections", "snapshot"} and isinstance(edges, list):
-                    receipt["template_edge_nodes"] = sorted({
-                        e[key] for e in edges for key in ("src_path", "dst_path") if e.get(key)
-                    })
+                    receipt["template_edge_nodes"] = sorted(
+                        {e[key] for e in edges for key in ("src_path", "dst_path") if e.get(key)}
+                    )
                     receipt["template_connections_complete"] = (
                         arguments.get("offset", 0) == 0 and not value.get("truncated")
                     )
             questions = list(value.get("card", {}).get("questions", []))
             current_heads = set(value.get("current_card_ids", []))
             equivalent = set(value.get("equivalent_card_ids", []))
-            if (
+            # Module-wide guides may contain unrelated historical disputes; only surface
+            # blocking questions when reading an individual memory or effect card.
+            if tool != "fx_get_module_knowledge" and (
                 value.get("has_conflict")
                 or value.get("conflict_memory_ids")
                 or value.get("status") in {"disputed", "needs_review"}
                 or len(current_heads) > 1
                 and not current_heads <= equivalent
             ):
-                questions.append(
-                    "知识来源存在未解决争议，请核对来源并确认适用方案："
-                    + ",".join(value.get("conflict_memory_ids", value.get("current_card_ids", [])))
+                conflict_ids = (
+                    value.get("conflict_memory_ids")
+                    or value.get("current_card_ids")
+                    or ([value["memory_id"]] if value.get("memory_id") else [])
+                    or ([arguments["memory_id"]] if arguments.get("memory_id") else [])
+                    or ([arguments["card_id"]] if arguments.get("card_id") else [])
                 )
+                questions.append(
+                    "知识来源存在未解决争议，请核对来源并确认适用方案：" + ",".join(conflict_ids)
+                )
+            if tool == "fx_get_memory":
+                source_ref = "memory:" + str(value.get("memory_id") or arguments.get("memory_id", ""))
+            elif tool == "fx_get_effect":
+                source_ref = "effect_card:" + str(
+                    value.get("card", {}).get("card_id") or arguments.get("card_id", "")
+                )
+            else:
+                source_ref = tool
             for question in questions:
                 if not any(q["question"] == question for q in task["questions"]):
                     task["questions"].append(
@@ -675,7 +889,7 @@ class TaskGates:
                             "question_id": uuid.uuid4().hex,
                             "question": question,
                             "answer": "",
-                            "source_ref": "effect_card:" + arguments.get("card_id", ""),
+                            "source_ref": source_ref,
                         }
                     )
             if tool in {
@@ -716,7 +930,17 @@ class TaskGates:
                 task.update(state="ready", case_id="", verified_seq=-1)
             self._write(db, task)
 
-    def finish(self, task_id, expected_revision, case_id, verification_note):
+    def finish(
+        self,
+        task_id,
+        expected_revision,
+        case_id,
+        verification_note,
+        *,
+        live_endpoint=None,
+        live_scene_path=None,
+        live_scene_context=None,
+    ):
         old = self.get(task_id, True)
         with endpoint_lock(self.root, old["endpoint"]):
             task = self.get(task_id, True)
@@ -728,7 +952,13 @@ class TaskGates:
             if not task["plan"] or self._missing(task):
                 raise ValueError("Task needs a plan backed by current knowledge before completion")
             if task["kind"] == "production":
-                self.authorize(task_id, task["software"], task["endpoint"], task["scene_path"])
+                self.authorize(
+                    task_id,
+                    task["software"],
+                    live_endpoint if live_endpoint is not None else task["endpoint"],
+                    live_scene_path if live_scene_path is not None else task["scene_path"],
+                    live_scene_context,
+                )
                 if task["saved_seq"] != task["edit_seq"]:
                     raise ValueError("Current scene must be saved after the last edit")
                 if task["verified_seq"] != task["edit_seq"]:
@@ -772,6 +1002,70 @@ class TaskGates:
                 )
                 self._write(db, current)
         return self._summary(current)
+
+
+def check_knowledge_gate(
+    gates: TaskGates,
+    task_id: str,
+    *,
+    tool_name: str,
+    arguments: dict,
+    feedback_loader=None,
+) -> None:
+    """Shared admission check for knowledge writes, accepted feedback, and finalization."""
+    from fx_agent.data_contracts import KNOWLEDGE_WRITES
+
+    acceptance = (
+        tool_name == "fx_record_feedback"
+        and isinstance(arguments.get("feedback"), dict)
+        and arguments["feedback"].get("outcome") == "accepted"
+    )
+    knowledge_write = (
+        tool_name in KNOWLEDGE_WRITES
+        or tool_name == "fx_review_template_effects"
+        and arguments.get("reviewed_node_paths") is not None
+    )
+    if not (knowledge_write or tool_name == "fx_finalize_learning" or acceptance):
+        return
+    if not task_id:
+        raise ValueError(
+            "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
+        )
+    task = gates.get(task_id, True)
+    if knowledge_write:
+        if not task["plan"] or gates.get(task_id)["missing"]:
+            raise ValueError(
+                "Learning task needs current knowledge and a plan before writing studies"
+            )
+        if task["kind"] == "learning":
+            gates.invalidate(task_id, verified=True)
+    if tool_name == "fx_finalize_learning" or acceptance:
+        task = gates.get(task_id, True)
+        if task["state"] != "verified" or task["kind"] != "production":
+            raise ValueError(
+                "Successful learning requires a verified production task and user acceptance"
+            )
+        if any(not q.get("answer") for q in task["questions"]):
+            raise ValueError("Unresolved task questions; ask the user before finalizing")
+        if task.get("case_id"):
+            archive = CaseArchive(gates.root)
+            if not archive.verify(task["case_id"], task["project_id"])["valid"]:
+                raise ValueError("Verified task archive failed checksum validation")
+        if acceptance:
+            feedback = arguments["feedback"]
+        elif feedback_loader is not None:
+            feedback = feedback_loader(arguments["feedback_id"], arguments["project_id"])
+        else:
+            from fx_agent.learning import LearningStore
+
+            feedback = LearningStore(gates.root).get_feedback(
+                arguments["feedback_id"], arguments["project_id"]
+            )
+        if any(
+            feedback.get(k, "houdini" if k == "software" else "") != task[k]
+            for k in ("project_id", "shot_id", "software", "case_id")
+        ):
+            raise ValueError("Accepted feedback/archive must belong to the verified task")
 
 
 def install_task_gates(*args, **kwargs):

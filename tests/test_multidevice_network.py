@@ -7,9 +7,9 @@ import time
 
 import pytest
 import uvicorn
+from fx_data_service.app import DeviceConfig, ServiceConfig, create_app
 from mcp.server.fastmcp import FastMCP
 
-from fx_data_service.app import DeviceConfig, ServiceConfig, create_app
 from fx_agent.multidevice import RemoteClient
 from fx_agent.task_gates import TaskGates
 from fx_agent.task_tools import install_task_gates

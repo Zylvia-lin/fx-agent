@@ -2,9 +2,18 @@
 
 import asyncio
 import copy
+from contextlib import nullcontext
 
 from fx_agent.data_contracts import KNOWLEDGE_WRITES as KNOWLEDGE_WRITES
-from fx_agent.task_gates import SourceAdaptation, TaskGates, TaskSpec, endpoint_lock, same_path
+from fx_agent.task_gates import (
+    SourceAdaptation,
+    TaskGates,
+    TaskSpec,
+    check_knowledge_gate,
+    endpoint_lock,
+    is_untitled_scene,
+    same_path,
+)
 
 GATE_TOOLS = {
     "fx_begin_task",
@@ -15,6 +24,21 @@ GATE_TOOLS = {
     "fx_finish_task",
 }
 SAVES = {"save_scene", "save_script"}
+RENDER_VIEW_WRITES = {
+    "fx_render_view_start",
+    "fx_render_view_save",
+    "fx_render_view_stop",
+}
+# Preview renders read the current scene and write preview artifacts without mutating nodes.
+PREVIEW_JOBS = {
+    "render_viewport",
+    "render_quad_view",
+    "render_sheet",
+    "render_node_network",
+    "fx_render_view_start",
+    "fx_render_view_save",
+    "fx_render_view_stop",
+}
 JOBS = {
     "write_cache",
     "cook_frame_range",
@@ -22,11 +46,7 @@ JOBS = {
     "start_render",
     "render_maya_frame",
     "render_frames",
-    "render_viewport",
-    "render_quad_view",
-    "render_sheet",
-    "render_node_network",
-}
+} | PREVIEW_JOBS
 # These alter inspection/session state, not production nodes. Cancellation must stay available.
 INSPECTION = {
     "set_frame",
@@ -72,6 +92,8 @@ READ_PREFIXES = (
 
 
 def is_scene_write(name):
+    if name in RENDER_VIEW_WRITES:
+        return True
     return (
         not name.startswith("fx_") and name not in INSPECTION and not name.startswith(READ_PREFIXES)
     )
@@ -89,17 +111,21 @@ def install_task_gates(mcp, software, root_provider, live_target):
     @mcp.tool()
     async def fx_begin_task(spec: TaskSpec) -> dict:
         """Record requirements, target, acceptance and budget before production/learning."""
-        return TaskGates(root_provider()).begin(spec)
+        return await asyncio.to_thread(TaskGates(root_provider()).begin, spec)
 
     @mcp.tool()
-    async def fx_get_task(task_id: str, detail: bool = False) -> dict:
-        """Get compact gate state/missing steps; detail includes questions and evidence."""
-        return TaskGates(root_provider()).get(task_id, detail)
+    async def fx_get_task(task_id: str, detail: bool = False, max_chars: int = 24000) -> dict:
+        """Get compact gate state/missing steps; detail includes bounded questions and evidence."""
+        return await asyncio.to_thread(
+            TaskGates(root_provider()).get, task_id, detail, max_chars if detail else 0
+        )
 
     @mcp.tool()
     async def fx_update_task(task_id: str, expected_revision: int, spec: TaskSpec) -> dict:
-        """Revise changed requirements/inputs/target; invalidate plan and previous evidence."""
-        return TaskGates(root_provider()).update(task_id, expected_revision, spec)
+        """Revise changed requirements/inputs/target; invalidate affected plan and evidence."""
+        return await asyncio.to_thread(
+            TaskGates(root_provider()).update, task_id, expected_revision, spec
+        )
 
     @mcp.tool()
     async def fx_set_task_plan(
@@ -120,7 +146,8 @@ def install_task_gates(mcp, software, root_provider, live_target):
         verification in source_adaptations. Read merged components and relevant
         template nodes/connections. These records do not prove visual correctness.
         """
-        return TaskGates(root_provider()).plan(
+        return await asyncio.to_thread(
+            TaskGates(root_provider()).plan,
             task_id,
             expected_revision,
             method,
@@ -148,8 +175,15 @@ def install_task_gates(mcp, software, root_provider, live_target):
         question only with the actual answer, exact user quote and source; the
         service stores the attribution but cannot authenticate dialogue text.
         """
-        return TaskGates(root_provider()).question(
-            task_id, expected_revision, question, question_id, answer, user_quote, source_ref
+        return await asyncio.to_thread(
+            TaskGates(root_provider()).question,
+            task_id,
+            expected_revision,
+            question,
+            question_id,
+            answer,
+            user_quote,
+            source_ref,
         )
 
     @mcp.tool()
@@ -162,12 +196,19 @@ def install_task_gates(mcp, software, root_provider, live_target):
         cannot prove aesthetics; user acceptance remains a separate requirement.
         """
         gates = TaskGates(root_provider())
-        task = gates.get(task_id, True)
+        task = await asyncio.to_thread(gates.get, task_id, True)
+        live_kwargs = {}
         if task["kind"] == "production":
             target = await live_target(mcp.get_context())
-            gates.authorize(task_id, software, *target)
+            await asyncio.to_thread(gates.authorize, task_id, software, *target)
+            if isinstance(gates, TaskGates):
+                live_kwargs = {
+                    "live_endpoint": target[0],
+                    "live_scene_path": target[1],
+                    "live_scene_context": target[2] if len(target) > 2 else None,
+                }
         return await asyncio.to_thread(
-            gates.finish, task_id, expected_revision, case_id, verification_note
+            gates.finish, task_id, expected_revision, case_id, verification_note, **live_kwargs
         )
 
     original = manager.call_tool
@@ -193,16 +234,16 @@ def install_task_gates(mcp, software, root_provider, live_target):
         task_id = arguments.pop("fx_task_id", "")
         acceptance = (
             name == "fx_record_feedback"
-            and arguments.get("feedback", {}).get("outcome") == "accepted"
+            and isinstance(arguments.get("feedback"), dict)
+            and arguments["feedback"].get("outcome") == "accepted"
         )
         knowledge_write = (
             name in KNOWLEDGE_WRITES
             or name == "fx_review_template_effects"
             and arguments.get("reviewed_node_paths") is not None
         )
-        required = (
-            is_scene_write(name) or knowledge_write or name == "fx_finalize_learning" or acceptance
-        )
+        scene_write = is_scene_write(name)
+        required = scene_write or knowledge_write or name == "fx_finalize_learning" or acceptance
         if required and not task_id:
             raise ValueError(
                 "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
@@ -210,11 +251,15 @@ def install_task_gates(mcp, software, root_provider, live_target):
         if not task_id:
             return await original(name, arguments, context=context, convert_result=convert_result)
         gates = TaskGates(root_provider())
-        task = gates.get(task_id, True)
-        with endpoint_lock(gates.root, task["endpoint"]):
-            if gates.get(task_id, True)["endpoint"] != task["endpoint"]:
+        task = await asyncio.to_thread(gates.get, task_id, True)
+        # Only serialize exclusive endpoint mutations (scene writes, verifications, knowledge/finalization writes);
+        # read-only evidence lookups do not block behind a running render/cook.
+        needs_lock = required or name in {"verify_network", "find_broken_reads"}
+        lock_ctx = endpoint_lock(gates.root, task["endpoint"]) if needs_lock else nullcontext()
+        with lock_ctx:
+            if needs_lock and (await asyncio.to_thread(gates.get, task_id, True))["endpoint"] != task["endpoint"]:
                 raise ValueError("Task target changed; retry with current task state")
-            if is_scene_write(name):
+            if scene_write:
                 target = await live_target(context)
                 endpoint, scene_path = target[:2]
                 scene_context = target[2] if len(target) > 2 else None
@@ -233,17 +278,27 @@ def install_task_gates(mcp, software, root_provider, live_target):
                             raise ValueError(
                                 "Save destination differs from task target; update the task first"
                             )
-                        if same_path(scene_path, task.get("previous_scene_path", "")):
+                        if (
+                            same_path(scene_path, task.get("previous_scene_path", ""))
+                            or is_untitled_scene(scene_path)
+                        ):
                             scene_path = destination
-                gates.authorize(task_id, software, endpoint, scene_path, scene_context)
+                await asyncio.to_thread(
+                    gates.authorize, task_id, software, endpoint, scene_path, scene_context
+                )
                 if name not in SAVES | JOBS:
-                    gates.edit(
-                        task_id
+                    await asyncio.to_thread(
+                        gates.edit, task_id
                     )  # Invalidate before dispatch: partial failure is still a possible edit.
-                else:
-                    gates.invalidate(task_id, saved=name in SAVES, verified=name in JOBS)
+                elif name in SAVES or (name in JOBS and name not in PREVIEW_JOBS):
+                    await asyncio.to_thread(
+                        gates.invalidate,
+                        task_id,
+                        saved=name in SAVES,
+                        verified=name in JOBS and name not in PREVIEW_JOBS,
+                    )
             elif name in {"verify_network", "find_broken_reads"}:
-                gates.invalidate(task_id, verified=True)
+                await asyncio.to_thread(gates.invalidate, task_id, verified=True)
                 target = await live_target(context)
                 if (
                     task["software"] != software
@@ -253,48 +308,65 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     raise ValueError(
                         "Verification target differs from task; omit fx_task_id for unrelated read-only investigation"
                     )
-            elif knowledge_write:
-                if not task["plan"] or gates.get(task_id)["missing"]:
-                    raise ValueError(
-                        "Learning task needs current knowledge and a plan before writing studies"
-                    )
-                if task["kind"] == "learning":
-                    gates.invalidate(task_id, verified=True)
-            if name == "fx_finalize_learning" or acceptance:
-                task = gates.get(task_id, True)
-                if task["state"] != "verified" or task["kind"] != "production":
-                    raise ValueError(
-                        "Successful learning requires a verified production task and user acceptance"
-                    )
-                gates.authorize(task_id, task["software"], task["endpoint"], task["scene_path"])
-                if acceptance:
-                    feedback = arguments["feedback"]
-                else:
-                    from fx_agent.learning import LearningStore
-                    from fx_agent.multidevice import RemoteClient, remote_enabled
+            elif knowledge_write or name == "fx_finalize_learning" or acceptance:
+                from fx_agent.multidevice import RemoteClient, remote_enabled
 
+                def _load_feedback(feedback_id: str, project_id: str) -> dict:
                     if remote_enabled():
-                        feedback = await asyncio.to_thread(
-                            RemoteClient().call, "tool.fx_get_feedback",
-                            {"feedback_id": arguments["feedback_id"], "project_id": arguments["project_id"]},
+                        return RemoteClient().call(
+                            "tool.fx_get_feedback",
+                            {"feedback_id": feedback_id, "project_id": project_id},
                         )
-                    else:
-                        feedback = LearningStore(gates.root).get_feedback(
-                            arguments["feedback_id"], arguments["project_id"]
+                    from fx_agent.learning import LearningStore
+
+                    return LearningStore(gates.root).get_feedback(feedback_id, project_id)
+
+                if remote_enabled() and not isinstance(gates, TaskGates):
+                    # RemoteTaskGates performs its own authorize/state checks via RPC.
+                    if knowledge_write:
+                        if not task["plan"] or (await asyncio.to_thread(gates.get, task_id))["missing"]:
+                            raise ValueError(
+                                "Learning task needs current knowledge and a plan before writing studies"
+                            )
+                        if task["kind"] == "learning":
+                            await asyncio.to_thread(gates.invalidate, task_id, verified=True)
+                    if name == "fx_finalize_learning" or acceptance:
+                        task = await asyncio.to_thread(gates.get, task_id, True)
+                        if task["state"] != "verified" or task["kind"] != "production":
+                            raise ValueError(
+                                "Successful learning requires a verified production task and user acceptance"
+                            )
+                        feedback = (
+                            arguments["feedback"]
+                            if acceptance
+                            else await asyncio.to_thread(
+                                _load_feedback, arguments["feedback_id"], arguments["project_id"]
+                            )
                         )
-                if any(
-                    feedback.get(k, "houdini" if k == "software" else "") != task[k]
-                    for k in ("project_id", "shot_id", "software", "case_id")
-                ):
-                    raise ValueError("Accepted feedback/archive must belong to the verified task")
+                        if any(
+                            feedback.get(k, "houdini" if k == "software" else "") != task[k]
+                            for k in ("project_id", "shot_id", "software", "case_id")
+                        ):
+                            raise ValueError("Accepted feedback/archive must belong to the verified task")
+                else:
+                    await asyncio.to_thread(
+                        check_knowledge_gate,
+                        gates,
+                        task_id,
+                        tool_name=name,
+                        arguments=arguments,
+                        feedback_loader=_load_feedback,
+                    )
             from fx_agent.multidevice import task_scope
 
             with task_scope(task_id):
                 result = await original(name, arguments, context=context, convert_result=False)
-            gates.observe(task_id, name, arguments, result)
+            await asyncio.to_thread(gates.observe, task_id, name, arguments, result)
             if isinstance(result, dict):
                 open_questions = [
-                    q for q in gates.get(task_id, True)["questions"] if not q.get("answer")
+                    q
+                    for q in (await asyncio.to_thread(gates.get, task_id, True))["questions"]
+                    if not q.get("answer")
                 ]
                 if open_questions:
                     result = result | {

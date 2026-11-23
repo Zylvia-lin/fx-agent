@@ -160,20 +160,28 @@ def create_light(renderer, light_type, name, parameters=None):
         transform = cmds.listRelatives(made, parent=True, fullPath=True)[0]
     transform = cmds.rename(transform, name)
     shape = cmds.listRelatives(transform, shapes=True, fullPath=True)[0]
-    if renderer == "redshift" and light_type != "environment":
-        # Verified against local RS templates; still require the runtime enum.
-        labels = cmds.attributeQuery("lightType", node=shape, listEnum=True) or []
-        mapping, value = {}, 0
-        for item in labels[0].split(":") if labels else []:
-            parts = item.split("=", 1)
-            if len(parts) == 2:
-                value = int(parts[1])
-            mapping[parts[0].strip().lower()] = value
-            value += 1
-        if light_type not in mapping:
-            raise ValueError("Unsupported Redshift lightType enum: " + repr(labels))
-        set_value(shape, "lightType", mapping[light_type])
-    return update_light(renderer, shape, parameters or {})
+    try:
+        if renderer == "redshift" and light_type != "environment":
+            # Verified against local RS templates; still require the runtime enum.
+            labels = cmds.attributeQuery("lightType", node=shape, listEnum=True) or []
+            mapping, value = {}, 0
+            for item in labels[0].split(":") if labels else []:
+                parts = item.split("=", 1)
+                if len(parts) == 2:
+                    value = int(parts[1])
+                mapping[parts[0].strip().lower()] = value
+                value += 1
+            if light_type not in mapping:
+                raise ValueError("Unsupported Redshift lightType enum: " + repr(labels))
+            set_value(shape, "lightType", mapping[light_type])
+        return update_light(renderer, shape, parameters or {})
+    except Exception:
+        try:
+            if cmds.objExists(transform):
+                cmds.delete(transform)
+        except Exception:
+            pass
+        raise
 
 
 def set_hdri(renderer, node, path, color_space=""):
@@ -292,7 +300,6 @@ def render_frame(renderer, camera, frame, output_dir, width=640, height=480):
         raise ValueError("Single-frame render requires an integer frame")
     job_id = uuid.uuid4().hex
     folder = os.path.join(output_dir, "fx_maya_" + job_id)
-    os.makedirs(folder)
     prefix = os.path.join(folder, "beauty").replace("\\", "/")
     settings = {"defaultRenderGlobals.currentRenderer": renderer,
                 "defaultRenderGlobals.imageFilePrefix": prefix,
@@ -301,6 +308,10 @@ def render_frame(renderer, camera, frame, output_dir, width=640, height=480):
                 "defaultRenderGlobals.endFrame": frame,
                 "defaultResolution.width": width, "defaultResolution.height": height}
     if renderer == "redshift":
+        if not cmds.objExists("redshiftOptions"):
+            raise RuntimeError(
+                "redshiftOptions node does not exist; open Render Settings or select Redshift renderer first"
+            )
         # Older RS keeps a legacy prefix alongside Maya's globals (the installed
         # redshiftCreateCommonTab updates both). Preserve both after this job.
         if cmds.attributeQuery("imageFilePrefix", node="redshiftOptions", exists=True):
@@ -310,7 +321,15 @@ def render_frame(renderer, camera, frame, output_dir, width=640, height=480):
         callback = require_attr("redshiftOptions", "postRenderMel")
         original_callback = cmds.getAttr(callback) or ""
         code = "import fx_maya_bridge.lighting as fx; fx.complete_render('%s')" % job_id
-        settings[callback] = original_callback + "\n;python(" + json.dumps(code) + ");"
+        # Wrap any pre-existing postRenderMel inside catch() so an error/early return
+        # in the user's callback can never prevent complete_render() from firing.
+        if original_callback.strip():
+            settings[callback] = (
+                "catch(eval(" + json.dumps(original_callback) + "));"
+                "python(" + json.dumps(code) + ");"
+            )
+        else:
+            settings[callback] = "python(" + json.dumps(code) + ");"
     old = dict((plug, cmds.getAttr(plug)) for plug in settings)
     # Maya returns None for an unset string; setAttr(type='string') requires "".
     for plug in old:
@@ -318,6 +337,7 @@ def render_frame(renderer, camera, frame, output_dir, width=640, height=480):
             old[plug] = ""
         if not cmds.getAttr(plug, settable=True):
             raise ValueError("Render setting is locked or connected: " + plug)
+    os.makedirs(folder)
     old_frame = cmds.currentTime(query=True)
     job = {"old": old, "old_frame": old_frame, "folder": folder,
            "renderer": renderer, "frame": frame, "finished": False, "error": "",
@@ -382,6 +402,19 @@ def execute_python(code):
     return response
 
 
+def load_scene(path, discard_unsaved=False):
+    if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in (".ma", ".mb") or not os.path.isfile(path):
+        raise ValueError("Existing absolute .ma/.mb path required")
+    if cmds.file(query=True, modified=True) and not discard_unsaved:
+        raise RuntimeError("Unsaved scene changes; save first or explicitly discard")
+    cmds.file(path.replace("\\", "/"), open=True, force=bool(discard_unsaved), prompt=False)
+    return {"path": cmds.file(query=True, sceneName=True) or ""}
+
+
+def _same_scene_path(a, b):
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
 def dispatch(command, params):
     if any(not job["finished"] for job in _render_jobs.values()) and command not in {
         "scene_info", "renderer_status", "list_lights", "inspect_light", "render_status"
@@ -391,7 +424,7 @@ def dispatch(command, params):
                 "inspect_light": inspect_light, "create_light": create_light,
                 "update_light": update_light, "set_hdri": set_hdri,
                 "light_link": light_link, "render_frame": render_frame,
-                "render_status": render_status,
+                "render_status": render_status, "load_scene": load_scene,
                 "execute_python": execute_python}
     if command == "scene_info":
         return {"scene_path": cmds.file(query=True, sceneName=True) or "",
@@ -401,7 +434,7 @@ def dispatch(command, params):
         if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in (".ma", ".mb"):
             raise ValueError("Absolute .ma/.mb path required")
         current = cmds.file(query=True, sceneName=True)
-        if current and current != path:
+        if current and not _same_scene_path(current, path):
             raise ValueError("Save requires current scene path; rename explicitly under the task gate")
         if not current:
             if os.path.exists(path):

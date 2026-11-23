@@ -12,8 +12,7 @@ import sys
 import time
 import traceback
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "py2" if sys.version_info[0] == 2 else "py3"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"))
 report_dir, port = os.path.abspath(sys.argv[1]), int(sys.argv[2])
 if not os.path.isdir(report_dir):
     os.makedirs(report_dir)

@@ -1,6 +1,7 @@
 """Authenticated data routing; DCC dispatch always stays on the workstation."""
 
 import asyncio
+import atexit
 import hashlib
 import inspect
 import json
@@ -9,8 +10,10 @@ import os
 import re
 import ssl
 import tempfile
+import threading
+import time
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
@@ -29,6 +32,21 @@ from fx_agent.data_contracts import TASK_METHODS as TASK_METHODS
 
 _task = ContextVar("fx_remote_task", default="")
 MAX_TRANSFER_BYTES = 512 * 1024 * 1024
+_REAL_HTTPX_CLIENT = httpx.Client
+_CLIENT_POOL: dict[tuple[str, str, int], httpx.Client] = {}
+_CLIENT_POOL_LOCK = threading.Lock()
+
+
+def _close_client_pool():
+    with _CLIENT_POOL_LOCK:
+        clients = list(_CLIENT_POOL.values())
+        _CLIENT_POOL.clear()
+    for client in clients:
+        with suppress(Exception):
+            client.close()
+
+
+atexit.register(_close_client_pool)
 
 
 @contextmanager
@@ -78,7 +96,8 @@ class RemoteClient:
         if host:
             if not 1 <= int(port) <= 65535 or any(c in host for c in "/?#@"):
                 raise ValueError("Invalid server IP or port")
-            config.setdefault("url", f"https://{host}:{port}")
+            host_part = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            config.setdefault("url", f"https://{host_part}:{port}")
         if explicit:
             config.setdefault("token", config.get("api_key", ""))
         self.url = (
@@ -111,7 +130,8 @@ class RemoteClient:
             "upload_files", os.getenv("FX_AGENT_UPLOAD_FILES", "1") != "0"
         )
         ca_file = config.get("ca_file") or os.getenv("FX_AGENT_CA_FILE")
-        self.verify = ssl.create_default_context(cafile=str(ca_file)) if ca_file else True
+        self._ca_file = str(ca_file) if ca_file else ""
+        self.verify = ssl.create_default_context(cafile=self._ca_file) if self._ca_file else True
         parsed = urlsplit(self.url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -132,6 +152,24 @@ class RemoteClient:
         if len(self.token) < 32:
             raise ValueError("FX data service token is missing or too short")
 
+    @contextmanager
+    def _http_client(self, *, timeout: int = 120):
+        if httpx.Client is not _REAL_HTTPX_CLIENT:
+            with httpx.Client(
+                timeout=timeout, trust_env=False, follow_redirects=False, verify=self.verify
+            ) as client:
+                yield client
+            return
+        key = (self.url, self._ca_file, timeout)
+        with _CLIENT_POOL_LOCK:
+            client = _CLIENT_POOL.get(key)
+            if client is None or client.is_closed:
+                client = httpx.Client(
+                    timeout=timeout, trust_env=False, follow_redirects=False, verify=self.verify
+                )
+                _CLIENT_POOL[key] = client
+        yield client
+
     def call(self, operation: str, arguments: dict | None = None, *, request_id: str = ""):
         import uuid
 
@@ -150,11 +188,10 @@ class RemoteClient:
             "operation": operation,
             "arguments": json_value(arguments or {}),
         }
-        # A transport failure retries the exact request ID. The service persists
-        # pending IDs before dispatch and never executes an uncertain write twice.
-        with httpx.Client(
-            timeout=120, trust_env=False, follow_redirects=False, verify=self.verify
-        ) as client:
+        # A transport or transient gateway failure retries the exact request ID.
+        # The service persists pending IDs before dispatch and never executes an
+        # uncertain write twice.
+        with self._http_client(timeout=120) as client:
             for attempt in range(2):
                 try:
                     response = client.post(
@@ -168,6 +205,9 @@ class RemoteClient:
                             "X-FX-File-Protocol": "1",
                         },
                     )
+                    if response.status_code in {502, 503, 504} and not attempt:
+                        time.sleep(0.15)
+                        continue
                     break
                 except httpx.TransportError:
                     if attempt:
@@ -175,6 +215,7 @@ class RemoteClient:
                             "FX data service unavailable; no local data was written. "
                             "A write may have completed remotely; inspect state before retrying."
                         ) from None
+                    time.sleep(0.15)
         try:
             value = response.json()
         except ValueError:
@@ -245,7 +286,7 @@ class RemoteClient:
             )
         headers = self.headers()
         try:
-            with httpx.Client(timeout=120, verify=self.verify, trust_env=False) as client:
+            with self._http_client(timeout=120) as client:
                 if not path.exists():
                     if not allow_missing:
                         raise ValueError(
@@ -312,7 +353,7 @@ class RemoteClient:
         temporary = target.with_name(".fx-download-" + uuid.uuid4().hex)
         digest, size = hashlib.sha256(), 0
         try:
-            with (httpx.Client(timeout=120, verify=self.verify, trust_env=False) as client,
+            with (self._http_client(timeout=120) as client,
                   client.stream("GET", self.url + "/v1/files/" + quote(relative, safe="/"),
                                 headers=self.headers()) as response,
                   temporary.open("xb") as output):
@@ -358,6 +399,7 @@ class RemoteClient:
                 if len(members) > 10000 or sum(m.file_size for m in members) > MAX_TRANSFER_BYTES:
                     raise ValueError("Export archive exceeds transfer limits")
                 seen = set()
+                extracted_bytes = 0
                 for member in members:
                     name = member.filename
                     if ("\\" in name or ":" in name or ntpath.isabs(name)
@@ -373,8 +415,14 @@ class RemoteClient:
                     else:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         with archive.open(member) as source, path.open("xb") as output:
-                            import shutil
-                            shutil.copyfileobj(source, output, 1024 * 1024)
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                extracted_bytes += len(chunk)
+                                if extracted_bytes > MAX_TRANSFER_BYTES:
+                                    raise ValueError("Export archive exceeds transfer limits")
+                                output.write(chunk)
             manifest_member = result.get("manifest_member", "template-manifest.json")
             if not isinstance(manifest_member, str) or "\\" in manifest_member or ":" in manifest_member:
                 raise ValueError("Invalid export archive manifest")
@@ -388,9 +436,7 @@ class RemoteClient:
 
     def status(self):
         try:
-            with httpx.Client(
-                timeout=10, trust_env=False, follow_redirects=False, verify=self.verify
-            ) as client:
+            with self._http_client(timeout=10) as client:
                 response = client.get(
                     self.url + "/v1/status",
                     headers=self.headers(),

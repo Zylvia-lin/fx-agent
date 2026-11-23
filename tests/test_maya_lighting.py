@@ -1,7 +1,6 @@
 """Renderer adapter regressions found in real Maya 2020; no simulated render claims."""
 
 import importlib.util
-import os
 import sys
 import types
 from pathlib import Path
@@ -14,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def lighting(monkeypatch):
-    folder = ROOT / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/fx_maya_bridge"
+    folder = ROOT / "integrations/maya/shared/fx_maya_bridge"
     package = types.ModuleType("lighting_test")
     package.__path__ = [str(folder)]
     monkeypatch.setitem(sys.modules, "lighting_test", package)

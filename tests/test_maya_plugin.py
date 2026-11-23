@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import os
 import sys
 import threading
 import time
@@ -29,7 +28,7 @@ def test_plugin_without_file_uses_mod_root_and_manages_bridge(monkeypatch):
     monkeypatch.setitem(sys.modules, "maya", maya)
     monkeypatch.setitem(sys.modules, "fx_maya_bridge", bridge)
     namespace = {"__name__": "test_plugin_without_file"}
-    path = ROOT / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/plug-ins/fx_maya_plugin.py"
+    path = ROOT / "integrations/maya/shared/plug-ins/fx_maya_plugin.py"
     original = list(sys.path)
     try:
         exec(compile(path.read_bytes(), str(path), "exec"), namespace)
@@ -73,7 +72,7 @@ def test_installer_mod_config_preserves_dccs_and_rejects_conflicts(tmp_path):
 
 @pytest.fixture
 def bridge_module(monkeypatch):
-    path = ROOT / f"integrations/maya/{os.environ.get('FX_MAYA_TEST_RUNTIME', 'py2')}/fx_maya_bridge/__init__.py"
+    path = ROOT / "integrations/maya/shared/fx_maya_bridge/__init__.py"
     spec = importlib.util.spec_from_file_location("maya_bridge_test", path, submodule_search_locations=[str(path.parent)])
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "maya_bridge_test", module)

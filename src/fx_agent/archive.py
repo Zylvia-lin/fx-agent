@@ -36,8 +36,11 @@ def check_cancelled(cancellation: threading.Event | None) -> None:
 def contained(base: Path, relative: str) -> Path:
     """Resolve an archive member and reject traversal or escaping symlinks."""
     member = Path(relative)
-    resolved = (base / member).resolve()
-    if member.is_absolute() or ".." in member.parts or not resolved.is_relative_to(base.resolve()):
+    if member.is_absolute() or member.drive or ".." in member.parts:
+        raise ValueError(f"Invalid archive path: {relative}")
+    raw = base / member
+    resolved = raw.resolve()
+    if not resolved.is_relative_to(base.resolve()):
         raise ValueError(f"Invalid archive path: {relative}")
     return resolved
 
@@ -192,9 +195,13 @@ class CaseArchive:
             path = Path(item.path).expanduser()
             if not path.is_absolute():
                 raise ValueError("Source path must be absolute")
+            if path.is_symlink() or path.is_junction():
+                raise ValueError(f"Source link is not allowed: {path}")
             source = path.resolve(strict=True)
             if not source.is_file():
                 raise ValueError(f"Source is not a file: {source}")
+            if source.is_relative_to(self.cases) or source == self.root / "memory.sqlite3":
+                raise ValueError("Refusing to re-archive files inside existing archive/database")
             if item.role == "project" and source.suffix.lower() not in (
                 ".hip",
                 ".hiplc",
@@ -300,8 +307,11 @@ class CaseArchive:
         folder = Path(manifest["case_path"])
         issues = []
         for item in manifest["files"]:
+            raw = folder / Path(item["archive_path"])
             path = contained(folder, item["archive_path"])
-            if not path.is_file():
+            if raw.is_symlink() or raw.is_junction():
+                issues.append({"path": item["archive_path"], "issue": "link_not_allowed"})
+            elif not path.is_file():
                 issues.append({"path": item["archive_path"], "issue": "missing"})
             elif path.stat().st_size != item["size_bytes"] or file_hash(path) != item["sha256"]:
                 issues.append({"path": item["archive_path"], "issue": "checksum_mismatch"})
@@ -312,3 +322,22 @@ class CaseArchive:
             "reproduction_status": "not_tested",
             "issues": issues,
         }
+
+    def verify_member(self, case_id: str, project_id: str, archive_path: str) -> dict:
+        """Verify one archived member against its manifest size and SHA-256 without hashing the whole case."""
+        manifest = self.get(case_id, project_id)
+        folder = Path(manifest["case_path"])
+        item = next((f for f in manifest["files"] if f["archive_path"] == archive_path), None)
+        if item is None:
+            raise ValueError(f"Archive member not found in manifest: {archive_path}")
+        raw = folder / Path(archive_path)
+        path = contained(folder, archive_path)
+        if (
+            raw.is_symlink()
+            or raw.is_junction()
+            or not path.is_file()
+            or path.stat().st_size != item["size_bytes"]
+            or file_hash(path) != item["sha256"]
+        ):
+            raise ValueError("Archive member checksum validation failed")
+        return item | {"resolved_path": str(path)}

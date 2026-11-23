@@ -79,7 +79,7 @@ async def guard_command(
     if command == "workflow.build_sop_chain":
         graph = {
             "nodes": [
-                {"type": step.get("type", ""), "parms": step.get("params", {})}
+                {"type": step.get("type", ""), "parms": step.get("params") or {}}
                 for step in prepared.get("steps", [])
             ]
         }
@@ -117,9 +117,15 @@ async def guard_command(
     elif command in CHECKED_COMMANDS:
         changes = prepared.get("params", {}) if command.endswith("set_parameters") else {}
         if command.endswith("set_parameter"):
-            changes = {prepared["parm_name"]: prepared.get("value")}
+            parm_name = prepared.get("parm_name")
+            if not parm_name:
+                raise ValueError("set_parameter requires parm_name")
+            changes = {parm_name: prepared.get("value")}
         elif command.endswith("set_expression"):
-            changes = {prepared["parm_name"]: {"expr": prepared.get("expression")}}
+            parm_name = prepared.get("parm_name")
+            if not parm_name:
+                raise ValueError("set_expression requires parm_name")
+            changes = {parm_name: {"expr": prepared.get("expression")}}
         _file_values(changes)
         key = prepared.get("parm_name", prepared.get("dest_parm"))
         if command.endswith(("revert_parameter", "link_parameters")) and key in FILE_PARMS | {
@@ -161,8 +167,11 @@ async def guard_command(
                     frame = scene["current_frame"]
                     if int(frame) != frame:
                         raise ValueError("写缓存前请停在整数帧，以验证实际 sopoutput")
+                    hip_path = Path(scene.get("hip_file", ""))
+                    if not hip_path.is_absolute():
+                        raise ValueError("写缓存前请先保存工程到绝对路径，以确定 $HIP 目录")
                     expected = (
-                        Path(scene["hip_file"]).parent
+                        hip_path.parent
                         / "geo"
                         / name
                         / f"{name}.{int(frame):04d}.bgeo.sc"
@@ -186,6 +195,7 @@ class ProductionBridge(HoudiniBridge):
             "workflow.setup_pyro_sim",
             "workflow.setup_rbd_sim",
             "workflow.setup_flip_sim",
+            "workflow.setup_vellum_sim",
         }:
             cache_path = result.get("cache_path") if isinstance(result, dict) else None
             if cache_path:

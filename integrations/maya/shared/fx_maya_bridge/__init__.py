@@ -37,7 +37,9 @@ def identity(port):
 class Bridge(object):
     def __init__(self, port, root):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Deliberately no SO_REUSEADDR: a second Maya must never take an occupied port.
+        # Prevent port hijacking on Windows and reject shared binds everywhere.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             self.socket.bind(("127.0.0.1", port))
             self.socket.listen(8)
@@ -49,6 +51,7 @@ class Bridge(object):
         self.main_thread = threading.current_thread().ident
         self.running = True
         self.lock = threading.Lock()
+        self.worker_slots = threading.BoundedSemaphore(16)
         self.seen = set()
         self.record = os.path.join(root, "maya_sessions", SESSION_ID + ".json")
         self.thread = threading.Thread(target=self.serve, name="fx-maya-listener")
@@ -98,11 +101,25 @@ class Bridge(object):
                         "error": u"%s: %s" % (type(exc).__name__, text_value(exc)),
                         "traceback": traceback.format_exc()}
         try:
-            peer.sendall(encode(response))
+            try:
+                frame = encode(response)
+            except (ValueError, TypeError) as exc:
+                fallback = {
+                    "id": request.get("id"),
+                    "status": "error",
+                    "error": u"Response serialization error (%s): %s" % (type(exc).__name__, text_value(exc)),
+                    "traceback": "",
+                }
+                frame = encode(fallback)
+            peer.sendall(frame)
         except (IOError, ValueError):
             pass  # Client may have timed out; never execute its request again.
         finally:
             peer.close()
+            try:
+                self.worker_slots.release()
+            except ValueError:
+                pass
 
     def run_request(self, request):
         # Catch inside the scheduled callable: Maya 2020's C++ scheduler discards
@@ -122,6 +139,18 @@ class Bridge(object):
                 continue
             except socket.error:
                 break
+            if not self.worker_slots.acquire(False):
+                try:
+                    peer.sendall(encode({
+                        "id": None,
+                        "status": "error",
+                        "error": "Maya bridge busy; too many concurrent connections",
+                        "traceback": "",
+                    }))
+                except (IOError, ValueError):
+                    pass
+                peer.close()
+                continue
             worker = threading.Thread(target=self.handle, args=(peer,))
             worker.daemon = True
             worker.start()

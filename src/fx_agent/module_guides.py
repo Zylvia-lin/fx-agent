@@ -112,9 +112,8 @@ class ModuleGuides(Store):
         selected = (software, module) if module else None
         base = self._base(project_id)
         updated, counts, view_conflicts = [], {}, {}
-        # Serialize cooperative writers so an older DB snapshot cannot overwrite a newer view.
+        # Phase 1: Read DB snapshot without holding a write lock across file I/O.
         with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
             from fx_agent.memory import usable_sql
 
             token = db.execute("SELECT token FROM knowledge_state WHERE id=1").fetchone()[0]
@@ -148,41 +147,50 @@ class ModuleGuides(Store):
                 record["conflict_memory_ids"] = conflicts_by_memory[row["memory_id"]]
                 if row["module"] in modules and row["module"] != "unclassified":
                     groups.setdefault((record_software, row["module"]), []).append(record)
-            known = set(groups)
-            if base.exists():
-                for path in base.glob("*/*.md"):
-                    software, module = path.parent.name, path.stem
-                    catalog = (
-                        CATALOGS.get(software, {})
+        known = set(groups)
+        if base.exists():
+            for path in base.glob("*/*.md"):
+                sw, mod = path.parent.name, path.stem
+                catalog = CATALOGS.get(sw, {})
+                if mod in catalog and mod != "unclassified":
+                    known.add((sw, mod))
+        if selected:
+            known &= {selected}
+        # Phase 2: Render and atomically write Markdown files outside the SQLite write lock.
+        state_updates = []
+        for sw, mod in sorted(known):
+            label, topic = CATALOGS[sw][mod]
+            section, count = self._section(groups.get((sw, mod), []))
+            header = (
+                f"# {label}：全局工作流补充\n\n上游准则：get_workflow_guide({topic!r})\n\n"
+                if topic
+                else f"# {label}：全局工作流补充\n\n基础工作流：{sw}-workflow\n\n"
+            )
+            header += "跨项目共享，按条目中的条件复用。归档在提炼时校验，复用前重新核验案例；不代表因果解释全部证实。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
+            path = self._path(project_id, sw, mod)
+            if self._write(path, section, header):
+                updated.append(str(path.relative_to(self.root)))
+            counts[f"{sw}/{mod}"] = count
+            conflicts = sorted(
+                {cid for record in groups.get((sw, mod), []) for cid in record["conflict_memory_ids"]}
+            )
+            view_conflicts[f"{sw}/{mod}"] = conflicts
+            state_updates.append((sw, mod, token, file_hash(path), count, compact(conflicts)))
+        # Phase 3: Commit state rows only if knowledge_state.token still matches our snapshot.
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_token = db.execute("SELECT token FROM knowledge_state WHERE id=1").fetchone()[0]
+            if current_token == token:
+                for row_data in state_updates:
+                    db.execute(
+                        "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
+                        row_data,
                     )
-                    if module in catalog and module != "unclassified":
-                        known.add((software, module))
-            if selected:
-                known &= {selected}
-            for software, module in sorted(known):
-                label, topic = CATALOGS[software][module]
-                section, count = self._section(groups.get((software, module), []))
-                header = (
-                    f"# {label}：全局工作流补充\n\n上游准则：get_workflow_guide({topic!r})\n\n"
-                    if topic
-                    else f"# {label}：全局工作流补充\n\n基础工作流：{software}-workflow\n\n"
-                )
-                header += "跨项目共享，按条目中的条件复用。归档在提炼时校验，复用前重新核验案例；不代表因果解释全部证实。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
-                path = self._path(project_id, software, module)
-                if self._write(path, section, header):
-                    updated.append(str(path.relative_to(self.root)))
-                counts[f"{software}/{module}"] = count
-                conflicts = sorted({cid for record in groups.get((software, module), []) for cid in record["conflict_memory_ids"]})
-                view_conflicts[f"{software}/{module}"] = conflicts
-                db.execute(
-                    "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
-                    (software, module, token, file_hash(path), count, compact(conflicts)),
-                )
-            if selected and selected not in known:
-                db.execute(
-                    "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
-                    (*selected, token, "", 0, "[]"),
-                )
+                if selected and selected not in known:
+                    db.execute(
+                        "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
+                        (*selected, token, "", 0, "[]"),
+                    )
         return {
             "state": "updated" if updated else "current",
             "updated_paths": updated[:8],
@@ -215,18 +223,21 @@ class ModuleGuides(Store):
         module: str = "",
         software: str = "houdini",
         max_chars: int = 4000,
+        offset: int = 0,
     ) -> dict:
         if project_id:
             scope_id.validate_python(project_id)
         module = normalize_modules([module or "general"], software)[0]
-        if not 1024 <= max_chars <= 12000:
-            raise ValueError("max_chars must be 1024..12000")
+        if not 1024 <= max_chars <= 12000 or offset < 0:
+            raise ValueError("max_chars must be 1024..12000 and offset >= 0")
         refreshed = self._cached(project_id, software, module)
         if refreshed is None:
             refreshed = self.refresh(project_id, module=module, software=software)
         path = self._path(project_id, software, module)
         topic = CATALOGS[software][module][1]
         conflicts = refreshed["conflicts"].get(f"{software}/{module}", [])
+        full_text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        page_text = full_text[offset:]
         result = {
             "scope": "global",
             "software": software,
@@ -240,11 +251,27 @@ class ModuleGuides(Store):
             "omitted_conflicts": max(0, len(conflicts) - 3),
             "budget_unit": "json_characters",
             "truncated": False,
-            "content": path.read_text(encoding="utf-8") if path.is_file() else "",
+            "content": page_text,
         }
-        while len(compact(result)) > max_chars and result["content"]:
-            result["content"] = result["content"][: len(result["content"]) // 2]
+        if offset > 0:
+            result["offset"] = offset
+        if len(compact(result)) > max_chars:
             result["truncated"] = True
+            # Binary search exact maximum prefix that fits within max_chars.
+            lo, hi = 0, len(page_text)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                result["content"] = page_text[:mid]
+                next_off = offset + mid
+                candidate = result | {"next_offset": next_off}
+                if len(compact(candidate)) <= max_chars:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            result["content"] = page_text[:lo]
+            result["next_offset"] = offset + lo
+        elif offset > 0:
+            result["next_offset"] = offset + len(page_text)
         if len(compact(result)) > max_chars:
             raise ValueError("max_chars too small for the required scope and path")
         return result

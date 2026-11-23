@@ -38,6 +38,17 @@ from fx_data_service.diagnostics import (
 LOG = logging.getLogger(__name__)
 MAX_BODY = 2 * 1024 * 1024
 BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
+REQUEST_RETENTION_SECONDS = 7 * 24 * 60 * 60
+TRANSFER_RETENTION_SECONDS = 24 * 60 * 60
+MAX_RETAINED_BACKUPS = 14
+_BLOCKED_DOWNLOAD_SUFFIXES = frozenset(
+    {".sqlite3", ".sqlite3-wal", ".sqlite3-shm", ".sqlite3-journal", ".db", ".pem", ".key", ".env"}
+)
+_SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 class DeviceConfig(BaseModel):
@@ -72,6 +83,8 @@ class ServiceConfig(BaseModel):
         tokens = [d.token for d in self.devices.values()]
         if not tokens and len(self.api_key) < 32:
             raise ValueError("An API key of at least 32 characters is required")
+        if self.admin_password and len(self.admin_password) < 12:
+            raise ValueError("Admin password must be at least 12 characters")
         if len(set(tokens)) != len(tokens):
             raise ValueError("Each device must have a unique token")
         for device_id, device in self.devices.items():
@@ -209,14 +222,25 @@ def check_file_access(operation, arguments, settings, forbidden_roots=()):
     ):
         paths.append(arguments["media_source"])
     if name in {"fx_archive_case", "fx_learn_templates"}:
-        paths.extend(item.get("path", "") for item in arguments.get("files", []))
+        files = arguments.get("files", [])
+        if files is not None:
+            if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+                raise ValueError("files must be a list of objects")
+            paths.extend(item.get("path", "") for item in files)
     if operation in {"task.begin", "task.update"}:
         spec = arguments.get("spec", {})
-        paths.extend([spec.get("scene_path", ""), *spec.get("input_paths", [])])
+        if not isinstance(spec, dict):
+            raise ValueError("spec must be an object")
+        input_paths = spec.get("input_paths", [])
+        if not isinstance(input_paths, list):
+            raise ValueError("spec.input_paths must be a list")
+        paths.extend([spec.get("scene_path", ""), *input_paths])
     if operation == "task.authorize":
         paths.append(arguments.get("scene_path", ""))
     roots = [settings.data_root.resolve(), *(p.resolve() for p in settings.allowed_roots)]
     for value in paths:
+        if not isinstance(value, str):
+            raise ValueError("File path must be a string")
         path = Path(value)
         if (
             not path.is_absolute()
@@ -237,41 +261,11 @@ class Operation(BaseModel):
 
 
 def check_knowledge_gate(name, arguments, task_id, root):
-    """The HTTP API enforces the same admission rules as workstation MCPs."""
-    from fx_agent.data_contracts import KNOWLEDGE_WRITES
+    """Delegate HTTP knowledge admission to the single shared TaskGates policy."""
     from fx_agent.task_gates import TaskGates
+    from fx_agent.task_gates import check_knowledge_gate as shared_check
 
-    acceptance = (
-        name == "fx_record_feedback" and arguments.get("feedback", {}).get("outcome") == "accepted"
-    )
-    knowledge_write = name in KNOWLEDGE_WRITES or (
-        name == "fx_review_template_effects" and arguments.get("reviewed_node_paths") is not None
-    )
-    if not (acceptance or knowledge_write or name == "fx_finalize_learning"):
-        return
-    if not task_id:
-        raise ValueError("Knowledge admission requires an owned task")
-    gates = TaskGates(root)
-    task = gates.get(task_id, True)
-    if knowledge_write and (not task["plan"] or gates.get(task_id)["missing"]):
-        raise ValueError("Learning write requires current knowledge and a plan")
-    if acceptance or name == "fx_finalize_learning":
-        if task["state"] != "verified" or task["kind"] != "production":
-            raise ValueError("Accepted learning requires a verified production task")
-        gates.authorize(task_id, task["software"], task["endpoint"], task["scene_path"])
-        if acceptance:
-            feedback = arguments["feedback"]
-        else:
-            from fx_agent.learning import LearningStore
-
-            feedback = LearningStore(root).get_feedback(
-                arguments["feedback_id"], arguments["project_id"]
-            )
-        if any(
-            feedback.get(key, "houdini" if key == "software" else "") != task[key]
-            for key in ("project_id", "shot_id", "software", "case_id")
-        ):
-            raise ValueError("Accepted feedback must belong to this verified task")
+    shared_check(TaskGates(root), task_id, tool_name=name, arguments=arguments)
 
 
 def create_app(settings: ServiceConfig, backend=None):
@@ -308,10 +302,14 @@ def create_app(settings: ServiceConfig, backend=None):
         tools = {
             fn.__name__: validate_call(fn) for fn in shared_functions() if fn.__name__ in DATA_TOOLS
         }
-    lock = asyncio.Lock()
+    project_locks: dict[str, asyncio.Lock] = {}
+
+    def project_lock(project_name: str) -> asyncio.Lock:
+        return project_locks.setdefault(project_name, asyncio.Lock())
+
     rate = {}
     backup_state = {"last_backup": None, "backup_error": None}
-    from fx_data_service.admin import AdminConsole, initialize_keys, key_projects, matches_key
+    from fx_data_service.admin import AdminConsole, authenticate_key, initialize_keys, matches_key
 
     initialize_keys(control_connection, settings.api_key)
 
@@ -319,6 +317,28 @@ def create_app(settings: ServiceConfig, backend=None):
 
     projects = DataProjects(settings, backend)
     admin = AdminConsole(control_connection, settings.admin_password)
+
+    def _prune_maintenance():
+        """Enforce bounded retention on old backups, transfers, and cached request bodies."""
+        now = time.time()
+        with suppress(Exception), control_connection() as db:
+            db.execute("DELETE FROM requests WHERE created < ?", (now - REQUEST_RETENTION_SECONDS,))
+        destination = settings.backup_root or settings.data_root / "backups"
+        if destination.is_dir():
+            backups = sorted(
+                (p for p in destination.iterdir() if p.is_file() and not p.name.startswith("before-start-")),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old_backup in backups[MAX_RETAINED_BACKUPS * 3 :]:
+                with suppress(OSError):
+                    old_backup.unlink()
+        transfers_dir = settings.data_root / "transfers"
+        if transfers_dir.is_dir():
+            for entry in transfers_dir.iterdir():
+                if entry.is_file() and (now - entry.stat().st_mtime) > TRANSFER_RETENTION_SECONDS:
+                    with suppress(OSError):
+                        entry.unlink()
 
     def backup():
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
@@ -337,6 +357,7 @@ def create_app(settings: ServiceConfig, backend=None):
                 project_backend.backup(
                     destination / (stamp + "-" + project_backend.prefix + "mysql.json.gz")
                 )
+            _prune_maintenance()
             backup_state.update(last_backup=stamp, backup_error=None)
             return
         snapshot_database(
@@ -353,14 +374,16 @@ def create_app(settings: ServiceConfig, backend=None):
                 project_settings.database_root / "memory.sqlite3",
                 destination / (stamp + "-" + project_settings.database_root.name + ".sqlite3"),
             )
+        _prune_maintenance()
         backup_state.update(last_backup=stamp, backup_error=None)
 
     async def periodic_backup():
         while True:
             await asyncio.sleep(BACKUP_INTERVAL_SECONDS)
             try:
-                async with lock:
-                    await asyncio.to_thread(backup)
+                # Online SQLite .backup() and MySQL REPEATABLE READ dumps do not need
+                # to stall live operations across all projects.
+                await asyncio.to_thread(backup)
             except Exception:
                 backup_state["backup_error"] = "Automatic backup failed; inspect server logs"
                 LOG.exception("Automatic data backup failed")
@@ -379,14 +402,17 @@ def create_app(settings: ServiceConfig, backend=None):
                 with suppress(asyncio.CancelledError):
                     await worker
 
-    def authenticate(request):
+    def _authenticate_sync(request):
         request.state.auth_status = 401
         header = request.headers.get("authorization", "")
         if not header.startswith("Bearer "):
             return None
         supplied = header.removeprefix("Bearer ")
-        if matches_key(control_connection, supplied):
-            request.state.project_ids = key_projects(control_connection, supplied)
+        auth_info = authenticate_key(control_connection, supplied)
+        if auth_info is not None:
+            key_id, project_ids = auth_info
+            request.state.auth_key_id = key_id
+            request.state.project_ids = project_ids
             device_id = request.headers.get("x-fx-device-id", "shared")
             if (
                 not device_id
@@ -405,6 +431,7 @@ def create_app(settings: ServiceConfig, backend=None):
             )
             if device_id is None:
                 return None
+            request.state.auth_key_id = "device:" + device_id
             request.state.project_ids = ["default"]
         allowed = request.state.project_ids
         selected = unquote(request.headers.get("x-fx-data-project", "")) or getattr(
@@ -424,6 +451,27 @@ def create_app(settings: ServiceConfig, backend=None):
         request.state.device_key = projects.device_key(selected, device_id)
         return device_id
 
+    async def authenticate(request):
+        return await asyncio.to_thread(_authenticate_sync, request)
+
+    def check_rate_limit(request, device_id: str, limit: int = 600) -> bool:
+        now = time.monotonic()
+        if len(rate) > 2000:
+            expired = [k for k, (ts, _) in rate.items() if now - ts >= 60]
+            for k in expired:
+                rate.pop(k, None)
+        key_id = getattr(request.state, "auth_key_id", device_id)
+        # Bound both per-(key, device) and per-key aggregate rate so rotating X-FX-Device-ID
+        # cannot bypass throttling or leak unbounded memory.
+        for bucket, bucket_limit in (((key_id, device_id), limit), (("key", key_id), limit * 4)):
+            start, count = rate.get(bucket, (now, 0))
+            if now - start >= 60:
+                start, count = now, 0
+            rate[bucket] = (start, count + 1)
+            if count >= bucket_limit:
+                return False
+        return True
+
     def failure(message, status, request=None):
         payload = {"error": message}
         if request is not None:
@@ -431,9 +479,7 @@ def create_app(settings: ServiceConfig, backend=None):
             LOG.warning("request_rejected request_id=%s project=%s device=%s reason=%s",
                         request.state.request_id, getattr(request.state, "data_project", "-"),
                         getattr(request.state, "log_device", "-"), message)
-        return JSONResponse(
-            payload, status_code=status, headers={"Cache-Control": "no-store"}
-        )
+        return JSONResponse(payload, status_code=status, headers=_SECURITY_HEADERS)
 
     def auth_failure(request):
         code = getattr(request.state, "auth_status", 401)
@@ -442,6 +488,7 @@ def create_app(settings: ServiceConfig, backend=None):
             if code != 401
             else "Invalid API key",
             code,
+            request,
         )
 
     def file_target(request, device_id, original):
@@ -482,30 +529,36 @@ def create_app(settings: ServiceConfig, backend=None):
             )
 
     async def register_file(request):
-        device_id = authenticate(request)
+        device_id = await authenticate(request)
         if not device_id:
             return auth_failure(request)
+        if not check_rate_limit(request, device_id, limit=300):
+            return failure("File request limit exceeded; retry later", 429, request)
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
             if len(body) > 8192:
-                return failure("Path request too large", 413)
+                return failure("Path request too large", 413, request)
         try:
             original = json.loads(body)["path"]
             target = file_target(request, device_id, original)
         except (ValueError, KeyError, TypeError):
             return failure("Invalid client path", 422, request)
-        async with lock:
-            if not authenticate(request):
+        async with project_lock(request.state.data_project):
+            if not await authenticate(request):
                 return auth_failure(request)
-            target.unlink(missing_ok=True)
-            remember_file(request.state.device_key, original, target)
-        return JSONResponse({"path": str(target)})
+            def _commit_register():
+                target.unlink(missing_ok=True)
+                remember_file(request.state.device_key, original, target)
+            await asyncio.to_thread(_commit_register)
+        return JSONResponse({"path": str(target)}, headers=_SECURITY_HEADERS)
 
     async def upload_file(request):
-        device_id = authenticate(request)
+        device_id = await authenticate(request)
         if not device_id:
             return auth_failure(request)
+        if not check_rate_limit(request, device_id, limit=300):
+            return failure("File upload limit exceeded; retry later", 429, request)
         try:
             original = unquote(request.headers.get("x-fx-client-path", ""))
             target = file_target(request, device_id, original)
@@ -515,60 +568,90 @@ def create_app(settings: ServiceConfig, backend=None):
                 raise ValueError("Invalid file metadata")
         except ValueError:
             return failure("Invalid file metadata", 422, request)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staging = target.with_name(".upload-" + uuid.uuid4().hex)
+        staging = target.parent / (".upload-" + uuid.uuid4().hex)
         digest, size = hashlib.sha256(), 0
+        created_dir = False
         try:
-            with staging.open("xb") as stream:
+            if not target.parent.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                created_dir = True
+            stream = await asyncio.to_thread(staging.open, "xb")
+            try:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > 512 * 1024 * 1024:
                         return failure("File exceeds 512 MiB", 413, request)
-                    stream.write(chunk)
+                    await asyncio.to_thread(stream.write, chunk)
                     digest.update(chunk)
+            finally:
+                await asyncio.to_thread(stream.close)
             if digest.hexdigest() != expected:
                 return failure("File checksum mismatch", 422, request)
-            async with lock:
-                if not authenticate(request):
+            async with project_lock(request.state.data_project):
+                if not await authenticate(request):
                     return auth_failure(request)
-                os.replace(staging, target)
-                os.utime(target, ns=(mtime, mtime))
-                remember_file(request.state.device_key, original, target)
+                def _publish_upload():
+                    os.replace(staging, target)
+                    os.utime(target, ns=(mtime, mtime))
+                    remember_file(request.state.device_key, original, target)
+                await asyncio.to_thread(_publish_upload)
+            created_dir = False
             LOG.info("file_uploaded request_id=%s project=%s device=%s size=%s sha256=%s file_id=%s",
                      request.state.request_id, request.state.data_project, device_id,
                      size, expected, target.parent.name)
-            return JSONResponse({"path": str(target), "sha256": expected, "size": size,
-                                 "download_path": target.relative_to(request.state.project_settings.data_root).as_posix()})
+            return JSONResponse(
+                {
+                    "path": str(target),
+                    "sha256": expected,
+                    "size": size,
+                    "download_path": target.relative_to(request.state.project_settings.data_root).as_posix(),
+                },
+                headers=_SECURITY_HEADERS,
+            )
         finally:
             staging.unlink(missing_ok=True)
+            if created_dir:
+                with suppress(OSError):
+                    target.parent.rmdir()
 
     async def download_file(request):
-        if not authenticate(request):
+        device_id = await authenticate(request)
+        if not device_id:
             return auth_failure(request)
+        if not check_rate_limit(request, device_id, limit=600):
+            return failure("File download limit exceeded; retry later", 429, request)
         from fx_agent.archive import contained
 
         try:
             path = contained(request.state.project_settings.data_root, request.path_params["path"])
         except ValueError:
-            return failure("Invalid shared file path", 403)
+            return failure("Invalid shared file path", 403, request)
+        rel_parts = path.relative_to(request.state.project_settings.data_root).parts
+        lower_name = path.name.lower()
         if (
             not path.is_file()
-            or path.suffix in {".sqlite3", ".pem", ".key"}
+            or path.suffix.lower() in _BLOCKED_DOWNLOAD_SUFFIXES
+            or any(lower_name.endswith(ext) for ext in _BLOCKED_DOWNLOAD_SUFFIXES)
+            or any(part.startswith(".") and part not in {".fx-template"} for part in rel_parts if not part.startswith(".fx-template-"))
             or any(
                 part in {"backups", ".stversions", "task-locks", ".projects"}
-                for part in path.relative_to(request.state.project_settings.data_root).parts
+                for part in rel_parts
             )
         ):
-            return failure("File is not available", 404)
+            return failure("File is not available", 404, request)
         relative = path.relative_to(request.state.project_settings.data_root)
         if relative.parts[0] == "workspaces" and (
             len(relative.parts) < 3 or relative.parts[1] != request.state.log_device
         ):
-            return failure("File is not available", 404)
-        return FileResponse(path, headers={"Cache-Control": "no-store"})
+            return failure("File is not available", 404, request)
+        return FileResponse(
+            path,
+            filename=path.name,
+            headers={**_SECURITY_HEADERS, "Content-Disposition": f'attachment; filename="{path.name}"'},
+        )
 
     async def status(request):
-        device_id = authenticate(request)
+        device_id = await authenticate(request)
         if not device_id:
             return auth_failure(request)
         return JSONResponse(
@@ -588,25 +671,43 @@ def create_app(settings: ServiceConfig, backend=None):
                 "data_project": request.state.data_project,
                 **backup_state,
             },
-            headers={"Cache-Control": "no-store"},
+            headers=_SECURITY_HEADERS,
         )
 
     async def health(request):
-        supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
+        header = request.headers.get("authorization", "")
+        if not header.startswith("Bearer "):
+            return failure("Invalid health key", 401, request)
+        supplied = header.removeprefix("Bearer ")
         if not settings.api_key or not hmac.compare_digest(
             supplied.encode(), settings.api_key.encode()
         ):
-            return failure("Invalid health key", 401)
-        return JSONResponse({"ready": True})
+            return failure("Invalid health key", 401, request)
+        def _check_db():
+            if not matches_key(control_connection, supplied):
+                return "disabled"
+            with control_connection() as db:
+                db.execute("SELECT 1").fetchone()
+            return "ok"
+        try:
+            db_state = await asyncio.to_thread(_check_db)
+        except Exception as exc:
+            LOG.error("healthcheck_db_failed error=%s", type(exc).__name__)
+            return failure("Database health check failed", 503, request)
+        if db_state != "ok":
+            return failure("Invalid health key", 401, request)
+        return JSONResponse({"ready": True}, headers=_SECURITY_HEADERS)
 
     async def devices(request):
-        if not authenticate(request):
+        if not await authenticate(request):
             return auth_failure(request)
-        with control_connection() as db:
-            seen = {
-                row[0]: row[1:]
-                for row in db.execute("SELECT device_id,last_seen,version FROM devices")
-            }
+        def _read_devices():
+            with control_connection() as db:
+                return {
+                    row[0]: row[1:]
+                    for row in db.execute("SELECT device_id,last_seen,version FROM devices")
+                }
+        seen = await asyncio.to_thread(_read_devices)
         now = time.time()
         return JSONResponse(
             {
@@ -620,85 +721,86 @@ def create_app(settings: ServiceConfig, backend=None):
                     }
                     for key, device in settings.devices.items()
                 ]
-            }
+            },
+            headers=_SECURITY_HEADERS,
         )
 
     async def operation(request: Request):
-        device_id = authenticate(request)
+        device_id = await authenticate(request)
         if not device_id:
             return auth_failure(request)
         if request.headers.get("x-fx-protocol", "1") != "1":
-            return failure("Unsupported data protocol; update the workstation plugin", 409)
-        now = time.monotonic()
-        start, count = rate.get(device_id, (now, 0))
-        if now - start >= 60:
-            start, count = now, 0
-        rate[device_id] = (start, count + 1)
-        if count >= 600:
-            return failure("Device request limit exceeded; retry later", 429)
+            return failure("Unsupported data protocol; update the workstation plugin", 409, request)
+        if not check_rate_limit(request, device_id, limit=600):
+            return failure("Device request limit exceeded; retry later", 429, request)
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
             if len(body) > MAX_BODY:
-                return failure("Request exceeds 2 MiB", 413)
+                return failure("Request exceeds 2 MiB", 413, request)
         try:
             item = Operation.model_validate_json(bytes(body))
         except ValueError as exc:
             log_rejection(request, exc, "invalid_request")
             return JSONResponse({"error": "Invalid operation request", "error_code": "invalid_request",
                                  "request_id": request.state.request_id, "details": error_details(exc)},
-                                status_code=422)
+                                status_code=422, headers=_SECURITY_HEADERS)
         request.state.request_id = item.request_id
         request.state.operation = item.operation
         kind, _, name = item.operation.partition(".")
         if not (kind == "tool" and name in tools or kind == "task" and name in TASK_METHODS):
-            return failure("Operation is not allowed", 403)
+            return failure("Operation is not allowed", 403, request)
         payload_hash = hashlib.sha256(
             json.dumps([item.operation, item.arguments, item.task_id], sort_keys=True).encode()
         ).hexdigest()
-        async with lock:
+        async with project_lock(request.state.data_project):
             # Recheck after waiting, before returning any previously cached result.
-            if not authenticate(request):
+            if not await authenticate(request):
                 return auth_failure(request)
             scoped = request.state.project_settings
             scoped_backend = request.state.project_backend
             control_device = request.state.device_key
-            with control_connection() as db:
-                row = db.execute(
-                    "SELECT payload_hash,response,status FROM requests WHERE device_id=? AND request_id=?",
-                    (control_device, item.request_id),
-                ).fetchone()
-                if row:
-                    if row[0] != payload_hash:
-                        return failure("Request ID conflict: arguments changed", 409)
-                    if row[1] is None:
-                        return failure(
-                            "Previous operation outcome unknown; inspect data before retrying", 409
-                        )
-                    return JSONResponse(json.loads(row[1]), status_code=row[2])
-                db.execute(
-                    "INSERT INTO requests VALUES (?,?,?,?,NULL,NULL,?)",
-                    (control_device, item.request_id, item.operation, payload_hash, time.time()),
-                )
-                db.execute(
-                    "INSERT INTO devices VALUES (?,?,?) ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen,version=excluded.version",
-                    (
-                        control_device,
-                        time.time(),
-                        request.headers.get("x-fx-version", "unknown")[:64],
-                    ),
-                )
-            device = settings.devices.get(device_id)
-            mappings = dict(device.path_maps if device else settings.path_maps)
-            with control_connection() as db:
-                mappings.update(
-                    {
-                        row[0]: row[1]
-                        for row in db.execute(
+
+            def _begin_request():
+                with control_connection() as db:
+                    row = db.execute(
+                        "SELECT payload_hash,response,status FROM requests WHERE device_id=? AND request_id=?",
+                        (control_device, item.request_id),
+                    ).fetchone()
+                    if row:
+                        return ("cached", (row[0], row[1], row[2]), None)
+                    db.execute(
+                        "INSERT INTO requests VALUES (?,?,?,?,NULL,NULL,?)",
+                        (control_device, item.request_id, item.operation, payload_hash, time.time()),
+                    )
+                    db.execute(
+                        "INSERT INTO devices VALUES (?,?,?) ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen,version=excluded.version",
+                        (
+                            control_device,
+                            time.time(),
+                            request.headers.get("x-fx-version", "unknown")[:64],
+                        ),
+                    )
+                    file_maps = {
+                        r[0]: r[1]
+                        for r in db.execute(
                             "SELECT original,stored FROM files WHERE device_id=?", (control_device,)
                         )
                     }
-                )
+                    return ("new", None, file_maps)
+
+            req_state, cached_row, file_maps = await asyncio.to_thread(_begin_request)
+            if req_state == "cached":
+                if cached_row[0] != payload_hash:
+                    return failure("Request ID conflict: arguments changed", 409, request)
+                if cached_row[1] is None:
+                    return failure(
+                        "Previous operation outcome unknown; inspect data before retrying", 409, request
+                    )
+                return JSONResponse(json.loads(cached_row[1]), status_code=cached_row[2], headers=_SECURITY_HEADERS)
+            device = settings.devices.get(device_id)
+            mappings = dict(device.path_maps if device else settings.path_maps)
+            mappings.update(file_maps)
             arguments = map_value(item.arguments, mappings)
             status = 200
             try:
@@ -715,7 +817,9 @@ def create_app(settings: ServiceConfig, backend=None):
                     scoped.data_root, scoped.database_root, device_id, scoped_backend
                 ):
                     if kind == "tool":
-                        check_knowledge_gate(name, arguments, item.task_id, scoped.data_root)
+                        await asyncio.to_thread(
+                            check_knowledge_gate, name, arguments, item.task_id, scoped.data_root
+                        )
                         if name == "fx_export_template":
                             from fx_data_service.transfers import export_bundle
                             if request.headers.get("x-fx-file-protocol") != "1":
@@ -797,17 +901,21 @@ def create_app(settings: ServiceConfig, backend=None):
                     {"error": "Data service operation failed; inspect server logs"},
                 )
             response["request_id"] = item.request_id
-            with control_connection() as db:
-                db.execute(
-                    "UPDATE requests SET response=?,status=? WHERE device_id=? AND request_id=?",
-                    (
-                        json.dumps(response, ensure_ascii=False),
-                        status,
-                        control_device,
-                        item.request_id,
-                    ),
-                )
-            return JSONResponse(response, status_code=status, headers={"Cache-Control": "no-store"})
+
+            def _finish_request():
+                with control_connection() as db:
+                    db.execute(
+                        "UPDATE requests SET response=?,status=? WHERE device_id=? AND request_id=?",
+                        (
+                            json.dumps(response, ensure_ascii=False),
+                            status,
+                            control_device,
+                            item.request_id,
+                        ),
+                    )
+
+            await asyncio.to_thread(_finish_request)
+            return JSONResponse(response, status_code=status, headers=_SECURITY_HEADERS)
 
     return Starlette(
         middleware=[Middleware(RequestLoggingMiddleware)],
@@ -827,9 +935,12 @@ def create_app(settings: ServiceConfig, backend=None):
 
 def save_private_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    path.chmod(0o600)
+    with suppress(OSError):
+        path.chmod(0o600)
 
 
 def main():

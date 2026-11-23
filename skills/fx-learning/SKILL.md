@@ -1,77 +1,69 @@
 ---
 name: fx-learning
-description: 当用户在 FX 制作对话中提出长期规范、纠正结果、要求修改、确认最终效果，或希望复用同类效果时，提炼规范、记录调整轨迹、归档成功方案并整理记忆。由 当前宿主助手（如 Codex） 判断和调用 FX Agent 工具。
+description: 当用户在 FX 制作对话中提出长期规范、纠正结果、要求修改、确认最终效果，或希望复用同类效果时，提炼规范、记录调整轨迹、归档成功方案并整理记忆。由当前宿主助手判断和调用 FX Agent 工具。
 ---
 
 # 从对话与制作反馈持续学习
 
-用户不需要额外说“记住”。当前宿主助手（如 Codex） 在看到有价值的明确要求、纠错和最终确认时，执行下面的对应流程。服务不自行读取所有 当前宿主助手（如 Codex） 聊天，不另起一个模型代理。
+用户不需要额外说“记住”。当前宿主助手在看到明确的长期要求、纠错或最终确认时，直接按对应流程调用工具。服务不自动读取聊天记录，也不另起独立模型代理。
 
-制作/学习使用fx_begin_task登记的同一任务ID。相关读取携带fx_task_id以留下真实证据，accepted反馈及fx_finalize_learning只有对应制作任务通过fx_finish_task、归档匹配且用户确实认可后才提交；普通pending/improved/failed反馈及用户规则记录不要求先完成。
+## 任务门禁与提问约束
 
-学习或制作中有查证后仍不理解的地方，fx_task_question登记具体问题，再在对话中向用户集中发问。工具的ask_user只是行动要求，不代表已发问；不得静默跳过、伪造答案或宣布完成。真实回复保存answer、user_quote和source_ref，必要时修订效果卡/需求。未解问题阻止相关任务完成与成功入库，只读调查和其他独立任务可继续。
+- 制作与学习共用 `fx_begin_task` 登记的同一任务 ID（任务管理工具传 `task_id`，受门禁工具传 `fx_task_id`）。
+- 仅当对应制作任务已通过 `fx_finish_task`、归档匹配且用户明确认可后，才提交 `accepted` 反馈与 `fx_finalize_learning`；普通 `pending`/`improved`/`failed` 反馈与用户规则记录不要求任务先完成。
+- 查证后仍有疑问时，用 `fx_task_question` 登记具体问题并在对话中集中提问（工具返回 `ask_user` 只是提醒，不代表已发问）。收到真实回复后再保存 `answer`、`user_quote` 与 `source_ref`；未解问题阻止任务完成与成功入库。
 
-## 用户提出长期要求
+## 1. 用户提出长期要求
 
-1. 区分长期规范、仅当前镜头的调整和假设；只有明确要求进入规范库。
-2. 读取 `fx_get_production_rules`；有 `omitted_rules` 时通过 `next_offset` 翻页，`detail_required` 的规则用 `fx_get_user_rule` 展开后再行动。
-3. 调用 `fx_record_user_rule`，保存精炼规则、真实用户原话、来源、适用范围与当前修订号。通用要求明确选择 global；仅项目适用时选择 project 并填写项目 ID。
-4. 规则更新使用当前修订号，冲突先重读，不覆盖更晚要求。不可把模型建议伪装成用户原话。
-5. 用户文本规范立即持久化并纳入下一轮制作。若要求改变机器检查行为，当前宿主助手（如 Codex） 还需同步修改对应校验、完成回归后提交；保存一段文字本身不会改变程序。
+1. 区分长期规范、仅当前镜头调整与假设；只有明确要求才入规范库。
+2. 先读 `fx_get_production_rules`（有 `omitted_rules` 按 `next_offset` 翻页，`detail_required` 用 `fx_get_user_rule` 展开）。
+3. 调用 `fx_record_user_rule` 保存精炼规则、真实用户原话、来源、作用域（通用选 `global`，项目专属选 `project` + `project_id`）及当前修订号。
+4. 更新冲突先重读，不覆盖更晚要求，不把模型建议伪装成用户原话。若要求改变机器校验行为，须同步修改代码并通过回归测试。
 
-## 用户提出纠错或修改
+## 2. 用户提出纠错或修改
 
-1. 保存用户指出的问题表现，查询真实工程与参数，不猜测已执行了什么。
-2. 用 `fx_record_feedback` 记录 effect_type、唯一 attempt_id、问题、实际调整、原因、结果、用户原话与来源。
-   同时明确 modules（最多4个），如 sop、particles、pyro、flip、rbd；不确定时读 `fx_get_module_catalog`，不能用 unclassified 代替新记录的认真分类。旧记录未归类则保持未分类，除非有事实支持更正。
-3. 未执行或未验证的结果标 pending；有所改善但未最终确认标 improved；失败标 failed。用户没有反对不等于 accepted。
-4. 同一尝试更新用 expected_revision。新的观察不覆盖历史，修改旧反馈会停用由其旧版本派生的方案，避免下次重复旧错。
-5. 阅读纠错轨迹用 `fx_get_learning_history`，游标按 `next_cursor` 翻页；需要精确参数、原话或完整结果时用 `fx_get_feedback`，不能用截短卡片代替原文提炼。
+1. 记录用户指出的现象，先查真实工程与参数，不猜测已做改动。
+2. 调用 `fx_record_feedback` 记录 `effect_type`、唯一 `attempt_id`、`software`、`modules`（最多 4 个，按 `fx_get_module_catalog` 选择，新记录不用 `unclassified`）、问题、实际调整、原因、结果、用户原话与来源。
+3. 结果状态如实标注：未执行/未验证标 `pending`，有改善未最终确认标 `improved`，失败标 `failed`；用户未反对不等于 `accepted`。
+4. 同一尝试更新传 `expected_revision`；修改旧反馈会停用由旧版本派生的方案，避免重复旧错。
+5. 查看轨迹用 `fx_get_learning_history`（按 `next_cursor` 翻页），需精确原文与参数时用 `fx_get_feedback` 展开。
 
-## 用户确认最终效果
+## 3. 用户确认最终效果
 
-1. 明确用户确实认可当前版本，保存原话；不能用“渲染成功”替代认可。
-2. 归档最终 HIP、必要依赖、相关图片及结果预览，用实际 case_id 关联。只有工程文件或只有参考图不够，尚未复制的内容不能声称已归档。
-3. 将本次最终反馈更新为 accepted；从完整轨迹中区分失败尝试与实际采用的有效方案。
-4. 调用 `fx_finalize_learning`，提炼可复用步骤、关键参数、原因、适用条件与失败注意项；由服务检查当前反馈、范围与归档，并关联来源。
-   反馈中的 modules 会继承到最终经验。全局可复用的已接受方案会自动更新 data/modules 下对应模块 MD 的自动区块；上游指南不修改。它写入提炼方法、条件与证据 ID，不复制整段聊天。未分类、镜头限定、未最终提炼的记录不推广成项目模块准则。
-   检查返回 module_guides.state：pending_rebuild 表示经验已经保存、MD 未同步，需要说明原因并调用 `fx_refresh_module_guides(project_id)` 修复；不能当作整次事务回滚重写历史。撤销或纠正已提炼方案也会更新文档。
-5. 默认 reuse_scope=global，跨项目检索；project_id 记录来源。仅工程特例选择 shot。旧 reuse_scope=project 兼容为 global。提炼时保留版本、尺度、输入等适用条件，不机械推广具体参数。
-6. 用户接受画面不代表每条因果解释都已证明；标明哪些是观察、哪些是待验证解释。归档文件校验也不等于完整可复现。
+1. 确认用户明确认可当前版本并保留原话，不把“渲染成功”当成用户认可。
+2. 用 `fx_archive_case` 归档最终工程、必要依赖、相关图片与结果预览，获取真实 `case_id`。
+3. 将本次最终反馈更新为 `accepted`，区分失败尝试与实际生效方法。
+4. 调用 `fx_finalize_learning` 提炼可复用步骤、关键参数、原因、适用条件与失败注意项：
+   - 全局可复用的已接受方案会自动更新 `data/modules` 下对应模块 MD 的自动区块（上游指南不动）。
+   - 检查返回的 `module_guides.state`：为 `pending_rebuild` 时说明经验已落库但 MD 未同步，须报告并调用 `fx_refresh_module_guides` 修复。
+   - 默认 `reuse_scope="global"`（`project_id` 记来源），仅镜头特例选 `shot`；标明哪些是观察、哪些是待验证解释。
 
-## 再次制作同类效果
+## 4. 再次制作同类效果
 
-正式模块经验为空不等于历史学习为空。默认经验召回排除 candidate；收到 reference_hint 时按相同作用域显式检索候选，作为未验证资料比较，不自动转正。效果卡和模板按近义词/构成词检索并查看后续页；选中总卡须展开组成卡及相关模板节点、连接、参数和动画。制作方案逐来源填写 source_adaptations（source/source_method/application/verification），记录真正保留、替代和验证的机制；读取凭据不证明实际应用或视觉成功。用户否定的草稿不能加入成功经验。
+- **正式与候选**：正式经验为空不代表无资料；收到 `reference_hint.has_matches=true` 时按同作用域以 `include_candidates=true` 查候选，保持未验证状态。
+- **效果卡与模板**：按近义词/构成词调用 `fx_search_effects` 与 `fx_search_templates`（分页查看）；选中总卡须展开组成卡及相关模板节点、连接、参数与动画。模板来源候选用 `fx_learn_template_experience` 保存（默认 `inferred`，不自动转正）。
+- **逐来源记录应用**：制作方案中每条 `selected_sources` 必须填写 `source_adaptations`（`source`/`source_method`/`application`/`verification`）；复用与反馈保留 `effect_card_id` 与 `template_study` 来源引用。
+- **预算阅读**：先读规范、模块原指南与 `fx_get_module_knowledge`；已在 MD 看到的完整条目不重复读全文，按需 `fx_get_memory` 核对适用条件与案例。
 
-有工程模板资料时并行检索 fx_search_templates，按 study_id 展开节点与原始参数。模板来源候选用 fx_learn_template_experience 保存；其默认是推断，不能因有工程归档就改为已验证观察。实际使用后的纠错和最终方案继续走本技能现有反馈与提炼流程，source_ref 保留 template_study 与节点证据。
+## 5. 阶段结束时整理记忆（Dream）
 
-用户以自然语言描述目标效果时先 fx_search_effects，展开效果指示卡并比较同方案的不同变体。复用与反馈保留 effect_card_id。有独立外观、动态或用途的效果变体分别保留；同一效果仅因对象编号或组成渲染层拆出的卡片，可以核对完整来源后合并，不能仅按名称相似或节点相同强行合并。
+有新有效经验、完成外部导入或用户要求整理时执行（若需修订/合并效果卡且无已放行任务，先按 `fx-project-learn` 建立学习任务并携带 `fx_task_id`，不借 Dream 绕过门禁）：
 
-先读当前规范、对应模块的上游指南与 `fx_get_module_knowledge` 返回的全局模块补充。按需以效果类型和关键词调用 `fx_search_memory(module=...)`；已在 MD 看到的完整条目不重复全文读取。选中后需要更多细节才 `fx_get_memory`，再核对归档案例。比较尺度、时长、渲染器和输入条件，不机械套用旧数值。所有读取保持预算；truncated 或 detail_required 时按条目展开，不读整本历史。
+1. **预览候选**：`fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选（`fx_get_dream_runs` 查历史进度）。
+2. **展开核对**：用 `fx_get_memory` 展开完整来源与适用条件；遇到 `has_conflict` 时展开 `conflict_memory_ids`，未解决前不作为无争议方案套用。
+3. **提交动作**：支持 `merge`、`refine`、`split`、`conflict`、`supersede`，每条填齐 `source_ids`、完整 `title`/`method`/`reason`/`applies_when`、`rationale`（最多 20 条/轮）。候选不能借整理升级为已验证，原始文本不删除。
+4. **应用与游标**：`apply` 携带当前 `snapshot`；精确去重省略 `actions` 并沿用同页参数；`deferred_actions > 0` 时先继续处理同一页再推进游标。检查 `module_guides.state`，`pending_rebuild` 时调用 `fx_refresh_module_guides`。可用 `fx_undo_dream(run_id)` 撤销未受后续影响的整理。
+5. **同步复核效果卡**：检查 `effect_learning` 及关联 `effect_card_ids`（可用 `fx_get_effect_learning_queue` 处理存量）：
+   - 有新证据使效果更明确时，用 `fx_refine_effect(card_id, updates, sources, reason)` 补充名称、类别、外观、运动、别名与证据（不抹历史，不同表现建独立 `effect_key`）。
+   - 检查同工程内因对象编号/渲染层拆得过细的卡片：分页 `fx_search_effects` 并逐张 `fx_get_effect` 核对，确认属同一效果后再用 `fx_merge_effect_cards(card_ids, card, reason)` 先预览后 `apply=true`（保留各层差异、节点、输入、预览、证据及 `component_modules`，不合并独立变体、不跨工程混合、不提升验证等级）。合并后重新核对复核状态。
 
-## 阶段结束时整理记忆
+## 6. 导入另一设备的数据
 
-有新有效经验、完成外部数据导入或用户要求整理时，由当前宿主助手执行 Dream，不额外启动模型服务。
+1. 先用 `fx_import_data(source=...)` 预览，确认源归档停止写入后再 `apply=true`（相同记录幂等跳过，分叉修订保留）。
+2. 用 `fx_get_import_records` 展开冲突双方全文；冲突经验暂停默认召回，结合当前 Dream `snapshot` 调用 `fx_resolve_import_memory` 选择 `keep_local` / `keep_incoming` / `keep_both`。
+3. 用户规范分歧通过 `fx_record_user_rule` 版本化保存决定；检查点须核对本机路径后重新保存。
+4. 导入与解冲突完成后执行全局 Dream；原始导入材料保留在 `data/imports` 下。
 
-需要写入效果卡修订/合并而没有现成已放行任务时，先按fx-project-learn建立学习任务、读取规范与相关知识并保存方案，再携带fx_task_id写入；不借Dream绕过门禁。
+---
 
-每次 Dream 同时检查返回的 effect_learning 与候选的 effect_card_ids；经 knowledge_sources 继承的卡引用也要追溯。若本轮制作、反馈或新视频/序列使效果更明确，读取当前卡，以 `fx_refine_effect(card_id, updates, sources, reason)` 补充效果名、类别、外观、运动、别名和证据。sources 引用本轮真实 dream/memory/feedback/effect_card ID；服务保留来源资料与旧卡，新修订不得抹掉历史。不得仅因运行Dream就自动命名，只有理解有依据时才更新；不确定先追查渲染序列，再将问题集中问用户。新表现建立独立effect_key，不覆盖旧变体。无关联卡或无新理解时不制造无意义修订；`fx_get_effect_learning_queue` 可另行分页处理存量待学习记录。
-
-同时检查效果卡是否被对象副本或渲染层拆得过细。对同一工程内的候选，用 `fx_search_effects` 分页检索并逐张 `fx_get_effect` 读取完整卡，不只依赖待学习队列或经验候选（已识别卡也可能需要合并）。核对外观、运动、用途和来源，例如一/二/三号龙的同类眼部亮点可合为“龙眼橙黄能量亮点”。使用 `fx_merge_effect_cards(card_ids, card, reason)` 先预览，再 `apply=true`：新 effect_key 和总描述由当前助手提炼，保留各层标题/别名、节点、输入、参数动画与输出差异、预览及 visual_evidence。component_card_ids 保留原卡绑定；默认检索只显示总卡，旧卡仍可按ID或include_history读取。不把独立效果变体合并，不跨工程混合证据，不提升验证等级。合并后重新核对效果/素材复核状态；Dream的经验撤销不撤销效果卡合并。
-
-用户以少数卡片举例要求整理整个效果库时，先分页盘点全部当前卡片，再按study核对组成关系，不能只处理举例。每张卡都应有处理决定：合并到哪张总卡、保留独立用途，或因具体证据不足待核实；交付全库清单、合并映射及保留理由。制作、材质和渲染知识可以汇入同一完整效果流程，总卡主模块最多4个，其余来源模块由component_modules完整继承并参与筛选，不因合并失去检索入口。
-
-1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页读取全局候选。project_id 不限制经验范围；next_cursor 翻页，最后一页的游标可作为下次增量起点。用 fx_get_dream_runs 查询已提交进度。
-2. 用 fx_get_memory 展开相关完整来源、适用条件与案例；摘要不够时不要合并。判断同义、互补、不同方法、工程特例和矛盾。has_conflict 时展开 conflict_memory_ids，未解决前不能当作无争议方案套用。
-3. 提交 actions：merge 合并同义、refine 补充方法、split 用多个动作从同一来源分别提炼、conflict 记录争议、supersede 提炼替代结论。每个动作填写 source_ids、完整 title/method/reason/applies_when、rationale，可明确修正 modules。候选不能借整理升级为已验证；原始来源和文本不删除。
-4. apply 携带当前 snapshot。使用精确去重时省略 actions 并重复预览的 cursor/limit/software/module；语义整理则显式提交 actions。快照变化重读，不强行覆盖。每轮最多20个动作，可分批继续。精确建议 deferred_actions>0 时先用同一页参数继续预览和应用，处理完再推进游标。
-5. 检查 module_guides；pending_rebuild 时用 fx_refresh_module_guides 修复。fx_undo_dream(run_id) 可撤销未被后续相关修改影响的整理；reset 仅重置精确索引，不撤销语义总结。
-
-## 导入另一设备的数据
-
-1. 使用 fx_import_data(source=...) 预览，停止源归档写入后 apply=true。相同记录幂等跳过，独立同名尝试或分叉修订不自动接续。
-2. fx_get_import_records 展开冲突完整双方内容。冲突经验暂停默认召回；用当前 Dream snapshot 和判断理由调用 fx_resolve_import_memory，选择 keep_local/keep_incoming/keep_both。选 incoming/both 会保存独立来源分支，保留旧文本。案例或反馈来源有冲突时先处理证据，工具不会强行通过。
-3. 用户规范分歧通过原有版本化规则接口保存决定及原话；工程检查点须核对本机路径再保存，不能用 Dream 混合进度。不能解决的矛盾保留并明确报告。
-4. 对新增和已解决的经验执行全局 Dream；原始快照与手写材料保存在 data/imports 下，不直接拼进模块准则。
-
-Houdini 检查点、经验和纠错使用 software=houdini（兼容默认值）；Nuke 使用 software=nuke。发现上游渲染问题时保存版本化问题单，Houdini 核查后由 Nuke 复查关闭，不自动重渲染。
+软件作用域：Houdini 使用 `software="houdini"`（默认），Nuke 使用 `software="nuke"`，Maya 使用 `software="maya"`。发现上游渲染问题时保存版本化问题单，Houdini 核查后由 Nuke 复查关闭，不自动重渲染。

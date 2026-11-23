@@ -75,7 +75,7 @@ def _cpio_sections(data: bytes) -> dict[str, bytes]:
             raise ValueError("Truncated cpio section")
         name_bytes = data[start : start + name_size]
         # SideFX ODC variants also count the terminating NUL in the body size.
-        name = name_bytes.rstrip(b"\0").decode("utf-8", errors="replace")
+        name = _hip_text(name_bytes.rstrip(b"\0"))
         offset = start + name_size
         body = data[offset : offset + size]
         offset += size
@@ -136,6 +136,17 @@ def _commands(text: str) -> list[str]:
 def _unquote(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] == '"':
+        # Only strip outer quotes when they enclose a single string literal,
+        # not multi-token sequences such as '"a" "b"'.
+        escaped = False
+        for idx in range(1, len(value) - 1):
+            ch = value[idx]
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                return value
         return value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
     return value
 
@@ -166,7 +177,11 @@ def _hip_parameters(text: str) -> dict:
                         offset = end + 1
                         break
         else:
-            break  # The raw parm section remains available for an unsupported encoding.
+            # Skip only the malformed parameter line rather than dropping all remaining entries.
+            next_nl = text.find("\n", start)
+            if next_nl == -1:
+                break
+            offset = next_nl + 1
     return result
 
 
@@ -197,7 +212,7 @@ def extract_hip(data: bytes) -> dict:
         comment = re.search(r"(?m)^\s*comment\s+(.+)$", definition)
         if comment:
             node["comment"] = _unquote(comment[1])
-        position = re.search(r"(?m)^position\s+([-\d.eE]+)\s+([-\d.eE]+)", definition)
+        position = re.search(r"(?m)^position\s+([-+\d.eE]+)\s+([-+\d.eE]+)", definition)
         node["position"] = [float(position[1]), float(position[2])] if position else None
     for box in result["netboxes"]:
         path = (box["context"].rstrip("/") + "/" + box["name"]).lstrip("/")
@@ -205,7 +220,7 @@ def extract_hip(data: bytes) -> dict:
         box["raw_definition"] = raw
         bounds = {}
         for key in ("x_position", "y_position", "width", "height"):
-            match = re.search(r"\b" + key + r"\s*:=\s*([-\d.eE]+)", raw)
+            match = re.search(r"\b" + key + r"\s*:=\s*([-+\d.eE]+)", raw)
             if match:
                 bounds[key] = float(match[1])
         box["bounds"] = bounds
@@ -228,7 +243,7 @@ def extract_hip(data: bytes) -> dict:
     # Connections can use relative or absolute source paths.
     result["connections"] = []
     for node in result["nodes"]:
-        definition = sections.get(node["path"].lstrip("/") + ".def")
+        definition = normalized.get(node["path"].lstrip("/") + ".def")
         if definition is None:
             continue
         for connection in upstream._parse_inputs(definition):
@@ -272,6 +287,48 @@ def extract_nuke(data: bytes) -> dict:
     text = data.decode("utf-8-sig", errors="replace")
     nodes, connections, limitations, global_commands = [], [], [], []
     stack, variables, groups, context = [], {}, [], ""
+    seen_paths: set[str] = set()
+    zero_input_types = {
+        "Read",
+        "DeepRead",
+        "Constant",
+        "Input",
+        "ReadGeo2",
+        "Camera2",
+        "Light2",
+        "BackdropNode",
+        "StickyNote",
+        "CheckerBoard2",
+        "ColorBars",
+        "ColorWheel",
+        "Noise",
+    }
+    two_input_types = {
+        "Merge",
+        "Merge2",
+        "Copy",
+        "ChannelMerge",
+        "Keymix",
+        "Switch",
+        "Dissolve",
+        "Blend",
+        "ContactSheet",
+        "AppendClip",
+        "DeepMerge",
+        "Scene",
+        "ScanlineRender",
+        "STMap",
+        "IDistort",
+        "VectorDistort",
+        "CopyBBox",
+    }
+    non_node_commands = {
+        "define_window_layout_xml",
+        "add_layer",
+        "addFormat",
+        "add_format",
+        "KnobScripter",
+    }
     for command in _commands(text):
         if command.startswith(("#", "version ")):
             continue
@@ -294,28 +351,52 @@ def extract_nuke(data: bytes) -> dict:
                 stack.append(None)
                 limitations.append("未解析 push 引用：" + value[:200])
             continue
-        match = re.fullmatch(r"([A-Za-z_][\w:.]*)\s*\{(.*)\}", command, re.S)
-        if not match:
-            limitations.append("保留但未执行命令：" + command[:200])
-            continue
-        node_type, body = match.groups()
+        clone_match = re.fullmatch(r"clone\s+(\$\S+)\s*\{(.*)\}", command, re.S)
+        if clone_match:
+            clone_ref, body = clone_match.groups()
+            node_type = "Clone"
+        else:
+            match = re.fullmatch(r"([A-Za-z_][\w:.]*)\s*\{(.*)\}", command, re.S)
+            if not match:
+                limitations.append("保留但未执行命令：" + command[:200])
+                continue
+            node_type, body = match.groups()
+            clone_ref = ""
         parameters = {}
         for knob in _commands(body):
             split = knob.split(None, 1)
             key, value = split[0], split[1] if len(split) > 1 else ""
             value = value.strip()
-            parameters[key] = (
+            parsed_val = (
                 value[1:-1] if value.startswith("{") and value.endswith("}") else _unquote(value)
             )
-        if node_type != "Root" and "name" not in parameters:
+            if key in parameters:
+                existing = parameters[key]
+                parameters[key] = [*existing, parsed_val] if isinstance(existing, list) else [existing, parsed_val]
+            else:
+                parameters[key] = parsed_val
+        if clone_ref:
+            parameters["clone_source"] = clone_ref
+        if node_type in non_node_commands:
             global_commands.append(command)
-            if node_type not in {"define_window_layout_xml", "add_layer", "addFormat"}:
-                limitations.append("未识别为节点的命令已保留：" + node_type)
             continue
-        name = parameters.get("name", f"{node_type}_{len(nodes)}")
+        if (
+            node_type != "Root"
+            and "name" not in parameters
+            and not clone_ref
+            and not node_type[0].isupper()
+        ):
+            # Lowercase directives without a name knob are top-level script commands,
+            # while capitalized class names (e.g. Grade, Merge2, Dot) are valid nameless nodes.
+            global_commands.append(command)
+            limitations.append("未识别为节点的命令已保留：" + node_type)
+            continue
+        raw_name = parameters.get("name")
+        name = raw_name if isinstance(raw_name, str) and raw_name else f"{node_type}_{len(nodes)}"
         path = context + "/" + name
-        if any(n["path"] == path for n in nodes):
+        if path in seen_paths:
             raise ValueError("Duplicate Nuke node path")
+        seen_paths.add(path)
         node = {
             "path": path,
             "name": name,
@@ -325,29 +406,29 @@ def extract_nuke(data: bytes) -> dict:
             "raw_script": command,
             "children": [],
         }
-        node["position"] = [parameters.get("xpos"), parameters.get("ypos")]
+        xpos, ypos = parameters.get("xpos"), parameters.get("ypos")
+        try:
+            node["position"] = (
+                [float(xpos), float(ypos)] if xpos is not None and ypos is not None else None
+            )
+        except (TypeError, ValueError):
+            node["position"] = [xpos, ypos]
         nodes.append(node)
         if node_type == "Root":
             continue
-        default_inputs = (
-            0
-            if node_type
-            in {
-                "Read",
-                "DeepRead",
-                "Constant",
-                "Input",
-                "ReadGeo2",
-                "Camera2",
-                "Light2",
-                "BackdropNode",
-                "StickyNote",
-            }
-            else 1
-        )
-        count_text = parameters.get("inputs", str(default_inputs))
+        if node_type in zero_input_types:
+            default_inputs = 0
+        elif node_type in two_input_types:
+            default_inputs = 2
+        else:
+            default_inputs = 1
+        count_text = str(parameters.get("inputs", default_inputs))
         # Nuke serializes image and mask sockets as e.g. "1+1" or "4+1".
-        count = sum(map(int, count_text.split("+"))) if re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", count_text) else 1025
+        count = (
+            sum(map(int, count_text.split("+")))
+            if re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", count_text)
+            else 1025
+        )
         if count > 1024:
             limitations.append("未解析输入数量：" + path)
             count = 0
@@ -446,7 +527,15 @@ def extract_patterns(snapshot: dict) -> list[dict]:
             }
         )
 
-    add("scene", {k: snapshot[k] for k in ("nodes", "connections", "sticky_notes", "netboxes")})
+    add(
+        "scene",
+        {
+            "nodes": nodes,
+            "connections": snapshot["connections"],
+            "sticky_notes": snapshot["sticky_notes"],
+            "netboxes": snapshot["netboxes"],
+        },
+    )
     by_path = {n["path"]: n for n in nodes}
     adjacency = defaultdict(set)
     for edge in snapshot["connections"]:

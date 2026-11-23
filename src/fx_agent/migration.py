@@ -21,19 +21,19 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
     database = source / "memory.sqlite3"
     if not database.is_file():
         raise FileNotFoundError(database)
-    files = [
-        path
-        for path in source.rglob("*")
-        if not (exclude_import_history and path.relative_to(source).parts[0] == "imports")
-    ]
-    if any(path.is_symlink() or path.is_junction() for path in files):
-        raise ValueError("Migration source contains links; refusing to copy external data")
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".fx-data-", dir=target.parent)).resolve()
     count = 0
     try:
         with closing(sqlite3.connect(database, timeout=10)) as guard:
             guard.execute("BEGIN IMMEDIATE")  # Block database writes while snapshotting.
+            files = [
+                path
+                for path in source.rglob("*")
+                if not (exclude_import_history and path.relative_to(source).parts[0] == "imports")
+            ]
+            if any(path.is_symlink() or path.is_junction() for path in files):
+                raise ValueError("Migration source contains links; refusing to copy external data")
             with (
                 closing(sqlite3.connect(database)) as reader,
                 closing(sqlite3.connect(stage / database.name)) as writer,
@@ -55,6 +55,7 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                 copy_verified(path, destination)
                 count += 1
             archive = CaseArchive(stage)
+            verified_cases: set[tuple[str, str]] = set()
             cases = stage / "cases"
             for folder in cases.iterdir() if cases.exists() else []:
                 if folder.name == ".staging" and folder.is_dir() and not any(folder.iterdir()):
@@ -63,6 +64,15 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                 case = json.loads(manifest.read_text(encoding="utf-8"))
                 if not archive.verify(folder.name, case["project_id"])["valid"]:
                     raise ValueError("Migrated case failed checksum validation")
+                verified_cases.add((folder.name, case["project_id"]))
+
+            def _ensure_case_valid(cid: str, pid: str) -> None:
+                if (cid, pid) in verified_cases:
+                    return
+                if not archive.verify(cid, pid)["valid"]:
+                    raise ValueError("Database references an invalid case")
+                verified_cases.add((cid, pid))
+
             with closing(sqlite3.connect(stage / database.name)) as snapshot:
                 tables = {
                     row[0]
@@ -79,11 +89,12 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                         continue
                     for (payload,) in snapshot.execute(f"SELECT payload FROM {table}"):
                         record = json.loads(payload)
-                        if (
-                            record.get("case_id")
-                            and not archive.verify(record["case_id"], record["project_id"])["valid"]
-                        ):
-                            raise ValueError("Database references an invalid case")
+                        if record.get("case_id"):
+                            _ensure_case_valid(record["case_id"], record["project_id"])
+                        if table == "template_effects":
+                            for ev in record.get("visual_evidence", []):
+                                if ev.get("case_id"):
+                                    _ensure_case_valid(ev["case_id"], record["project_id"])
             baseline_check = validate_baselines(stage)
             if not baseline_check["valid"]:
                 raise ValueError("Migrated baseline failed validation: " + baseline_check["error"])
