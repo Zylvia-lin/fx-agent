@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import uuid
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -14,6 +15,20 @@ from fx_agent.archive import CaseArchive
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.store import Identifier, Store, compact, scope_id
+
+_LOCAL_ABS_PATH_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_$])[A-Za-z]:[/\\]|\\\\[^\\\s]+\\[^\\\s]+|//[A-Za-z0-9_.-]+/[^\s/]+)"
+)
+
+
+def validate_text_only_hygiene(*fields: str) -> None:
+    """Reject local drive or UNC paths inside reusable text-only experiences."""
+    for value in fields:
+        if value and _LOCAL_ABS_PATH_RE.search(value):
+            raise ValueError(
+                "Text-only reusable experience must not contain local or UNC absolute paths; "
+                "replace them with $HIP/... or project-agnostic descriptions"
+            )
 
 
 class Experience(BaseModel):
@@ -36,7 +51,7 @@ class Experience(BaseModel):
     applies_when: str = Field(default="", max_length=2000)
     source_type: Literal["user", "observed", "inferred"] = "inferred"
     source_ref: str = Field(min_length=1, max_length=2000)
-    project_dependent: bool = True
+    project_dependent: bool = False
     case_id: str = ""
     supersedes: str = ""
     reuse_scope: Literal["global", "shot"] = "global"
@@ -62,6 +77,10 @@ class MemoryStore(Store):
         request = Experience(**values)
         if request.kind != "preference" and (not request.reason or not request.applies_when):
             return {"decision": "rejected", "reason": "missing_reusable_decision_or_conditions"}
+        if not request.project_dependent and not request.case_id:
+            validate_text_only_hygiene(
+                request.title, request.method, request.reason, request.applies_when
+            )
 
         case = None
         if request.case_id:
@@ -96,6 +115,12 @@ class MemoryStore(Store):
                 "active",
                 "codex_observation_with_archive",
                 "observation_with_archived_output",
+            )
+        elif request.source_type == "observed" and not request.project_dependent and case is None:
+            status, evidence, reason = (
+                "active",
+                "live_verified_text",
+                "observed_text_experience",
             )
         if request.supersedes and (request.source_type != "user" or status != "active"):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
@@ -189,7 +214,14 @@ class MemoryStore(Store):
             "reason": reason,
             "evidence_status": evidence,
         }
-        if _db is None and request.supersedes:
+        if _db is None and (
+            request.supersedes
+            or (
+                status == "active"
+                and request.reuse_scope == "global"
+                and request.modules != ["unclassified"]
+            )
+        ):
             result["module_guides"] = refresh_guides(self.root, request.project_id)
         return result
 

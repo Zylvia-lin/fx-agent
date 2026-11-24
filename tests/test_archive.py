@@ -176,7 +176,10 @@ async def test_cancelled_mcp_archive_waits_for_cleanup_and_does_not_publish(
     module = importlib.import_module("fx_agent.archive")
     hip, image = source_files(tmp_path)
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
-    server = importlib.import_module("fx_agent.server").get_server()
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    srv_mod = importlib.import_module("fx_agent.server")
+    srv_mod.get_server.cache_clear()
+    server = srv_mod.get_server()
     entered, release = threading.Event(), threading.Event()
     original = module.copy_verified
 
@@ -216,7 +219,10 @@ async def test_cancelled_mcp_archive_waits_for_cleanup_and_does_not_publish(
 async def test_case_tools_archive_explicit_files_and_retrieve_summary(tmp_path, monkeypatch):
     hip, image = source_files(tmp_path)
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
-    server = importlib.import_module("fx_agent.server").get_server()
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    srv_mod = importlib.import_module("fx_agent.server")
+    srv_mod.get_server.cache_clear()
+    server = srv_mod.get_server()
     response = await server.call_tool(
         "fx_archive_case",
         {

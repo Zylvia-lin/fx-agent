@@ -7,19 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-_CLOUD_ENV_VARS = (
-    "FX_AGENT_DATA_MODE",
-    "FX_AGENT_SERVICE_URL",
-    "FX_AGENT_CLIENT_CONFIG",
-    "FX_AGENT_SERVER_IP",
-    "FX_AGENT_SERVER_PORT",
-    "FX_AGENT_API_KEY",
-    "FX_AGENT_SERVICE_TOKEN",
-    "FX_AGENT_CA_FILE",
-    "FX_AGENT_DATA_PROJECT",
-    "FX_AGENT_DEVICE_ID",
-    "FX_AGENT_ALLOW_HTTP",
-    "FX_AGENT_ALLOW_INSECURE_HTTP",
+_ENV_VARS = (
+    "FX_AGENT_LOCAL_ROOT",
     "FX_AGENT_TOOL_PROFILE",
     "FX_AGENT_HOUDINI_HIDE_GROUPS",
     "FX_AGENT_EMBEDDING_URL",
@@ -29,14 +18,9 @@ _CLOUD_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_cloud_env(monkeypatch):
-    """Prevent workstation cloud env vars from leaking into local unit tests.
-
-    Clearing FX_AGENT_DATA_MODE leaves data_context.remote_enabled() in its
-    default 'auto' mode, which stays strictly local unless a test explicitly
-    configures a service URL, server IP, client config, or mode='service'.
-    """
-    for name in _CLOUD_ENV_VARS:
+def _isolate_env(monkeypatch):
+    """Prevent workstation optional env vars from leaking into unit tests."""
+    for name in _ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
 

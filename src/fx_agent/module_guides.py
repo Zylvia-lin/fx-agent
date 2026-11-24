@@ -98,9 +98,12 @@ class ModuleGuides(Store):
                 "",
             ]
             for source in sorted(sources, key=lambda item: item["memory_id"]):
-                lines.append(
-                    f"来源：memory={source['memory_id']}；feedback={source['origin_feedback_id']}；case={source['case_id']}"
-                )
+                parts = [f"memory={source['memory_id']}"]
+                if source.get("origin_feedback_id"):
+                    parts.append(f"feedback={source['origin_feedback_id']}")
+                if source.get("case_id"):
+                    parts.append(f"case={source['case_id']}")
+                lines.append("来源：" + "；".join(parts))
             lines.append("")
         return "\n".join(lines) + "\n" + END, len(groups)
 
@@ -126,7 +129,9 @@ class ModuleGuides(Store):
                 + " AND NOT EXISTS (SELECT 1 FROM knowledge_sources ks JOIN memories k ON k.memory_id=ks.memory_id WHERE ks.source_id=m.memory_id AND k.status='active' AND "
                 + usable_sql("k")
                 + " AND EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(k.payload,'$.modules'),'[\"unclassified\"]')) replacement_tags WHERE replacement_tags.value=tags.value)) "
-                "AND (json_extract(m.payload,'$.dream_run_id') IS NOT NULL OR (json_extract(f.payload,'$.outcome')='accepted' "
+                "AND (json_extract(m.payload,'$.dream_run_id') IS NOT NULL "
+                "OR json_extract(m.payload,'$.evidence_status') IN ('live_verified_text','user_reported','user_verified_text','text_distilled_reference') "
+                "OR (json_extract(f.payload,'$.outcome')='accepted' "
                 "AND f.revision=(SELECT MAX(x.revision) FROM learning_feedback x WHERE x.project_id=f.project_id AND x.shot_id=f.shot_id AND x.attempt_id=f.attempt_id AND x.software=f.software)))"
                 + (" AND tags.value=? AND COALESCE(json_extract(m.payload,'$.software'),'houdini')=?" if module else ""),
                 (module, software) if module else (),
@@ -166,7 +171,7 @@ class ModuleGuides(Store):
                 if topic
                 else f"# {label}：全局工作流补充\n\n基础工作流：{sw}-workflow\n\n"
             )
-            header += "跨项目共享，按条目中的条件复用。归档在提炼时校验，复用前重新核验案例；不代表因果解释全部证实。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
+            header += "跨项目纯文本通用经验，按适用条件与边界复用；具体镜头尺度、材质和参数须结合当前现场核验。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
             path = self._path(project_id, sw, mod)
             if self._write(path, section, header):
                 updated.append(str(path.relative_to(self.root)))

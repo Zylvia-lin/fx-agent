@@ -4,10 +4,10 @@ import asyncio
 import copy
 from contextlib import nullcontext
 
-from fx_agent.data_contracts import KNOWLEDGE_WRITES as KNOWLEDGE_WRITES
 from fx_agent.modules import HOUDINI
 from fx_agent.task_gates import (
     HEAVY_BUILD_TOOLS,
+    KNOWLEDGE_WRITES,
     QUICK_TWEAK_MAX_EDITS,
     SourceAdaptation,
     TaskGates,
@@ -108,9 +108,6 @@ def install_task_gates(mcp, software, root_provider, live_target):
     manager = mcp._tool_manager
     if getattr(manager, "_fx_gated", False):
         return
-    from fx_agent.multidevice import install_remote_tools
-
-    install_remote_tools(mcp)
 
     @mcp.tool()
     async def fx_begin_task(spec: TaskSpec) -> dict:
@@ -142,13 +139,12 @@ def install_task_gates(mcp, software, root_provider, live_target):
         no_match_reason: str = "",
         source_adaptations: list[SourceAdaptation] | None = None,
     ) -> dict:
-        """Release writes after actual scoped rules/module/effect/memory reads.
+        """Release writes after actual scoped rules/module/memory reads.
 
-        selected_sources uses effect_card:/memory:/template_study: IDs actually
-        expanded in this task. Explain no applicable match instead of inventing
-        knowledge. Each selected source needs source_method, application and
-        verification in source_adaptations. Read merged components and relevant
-        template nodes/connections. These records do not prove visual correctness.
+        selected_sources uses memory: IDs actually expanded in this task.
+        Explain no applicable match instead of inventing knowledge. Each selected
+        source needs source_method, application and verification in source_adaptations.
+        These records do not prove visual correctness.
         """
         return await asyncio.to_thread(
             TaskGates(root_provider()).plan,
@@ -194,10 +190,11 @@ def install_task_gates(mcp, software, root_provider, live_target):
     async def fx_finish_task(
         task_id: str, expected_revision: int, verification_note: str, case_id: str = ""
     ) -> dict:
-        """Verify current save/structural check/archive/preview or reviewed learning studies.
+        """Verify current save and structural check for the target scene.
 
-        verification_note must describe actually viewed results. File existence
-        cannot prove aesthetics; user acceptance remains a separate requirement.
+        No project file archive is required in text-only mode (case_id is optional).
+        verification_note must describe actually viewed results; user acceptance
+        remains a separate requirement.
         """
         gates = TaskGates(root_provider())
         task = await asyncio.to_thread(gates.get, task_id, True)
@@ -369,58 +366,14 @@ def install_task_gates(mcp, software, root_provider, live_target):
                         "Verification target differs from task; omit fx_task_id for unrelated read-only investigation"
                     )
             elif knowledge_write or name == "fx_finalize_learning" or acceptance:
-                from fx_agent.multidevice import RemoteClient, remote_enabled
-
-                def _load_feedback(feedback_id: str, project_id: str) -> dict:
-                    if remote_enabled():
-                        return RemoteClient().call(
-                            "tool.fx_get_feedback",
-                            {"feedback_id": feedback_id, "project_id": project_id},
-                        )
-                    from fx_agent.learning import LearningStore
-
-                    return LearningStore(gates.root).get_feedback(feedback_id, project_id)
-
-                if remote_enabled() and not isinstance(gates, TaskGates):
-                    # RemoteTaskGates performs its own authorize/state checks via RPC.
-                    if knowledge_write:
-                        if not task["plan"] or (await asyncio.to_thread(gates.get, task_id))["missing"]:
-                            raise ValueError(
-                                "Learning task needs current knowledge and a plan before writing studies"
-                            )
-                        if task["kind"] == "learning":
-                            await asyncio.to_thread(gates.invalidate, task_id, verified=True)
-                    if name == "fx_finalize_learning" or acceptance:
-                        task = await asyncio.to_thread(gates.get, task_id, True)
-                        if task["state"] != "verified" or task["kind"] != "production":
-                            raise ValueError(
-                                "Successful learning requires a verified production task and user acceptance"
-                            )
-                        feedback = (
-                            arguments["feedback"]
-                            if acceptance
-                            else await asyncio.to_thread(
-                                _load_feedback, arguments["feedback_id"], arguments["project_id"]
-                            )
-                        )
-                        if any(
-                            feedback.get(k, "houdini" if k == "software" else "") != task[k]
-                            for k in ("project_id", "shot_id", "software", "case_id")
-                        ):
-                            raise ValueError("Accepted feedback/archive must belong to the verified task")
-                else:
-                    await asyncio.to_thread(
-                        check_knowledge_gate,
-                        gates,
-                        task_id,
-                        tool_name=name,
-                        arguments=arguments,
-                        feedback_loader=_load_feedback,
-                    )
-            from fx_agent.multidevice import task_scope
-
-            with task_scope(task_id):
-                result = await original(name, arguments, context=context, convert_result=False)
+                await asyncio.to_thread(
+                    check_knowledge_gate,
+                    gates,
+                    task_id,
+                    tool_name=name,
+                    arguments=arguments,
+                )
+            result = await original(name, arguments, context=context, convert_result=False)
             await asyncio.to_thread(gates.observe, task_id, name, arguments, result)
             if isinstance(result, dict):
                 open_questions = [

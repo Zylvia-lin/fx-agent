@@ -39,7 +39,7 @@ def register_shared_tools(mcp):
 
 def build_server(connection=None, ports=DEFAULT_PORTS):
     connection = connection or MayaConnection()
-    mcp = FastMCP("fx-maya", instructions="由当前宿主操作。显式选择Maya会话；读取真实灯光与渲染器状态。共用FX知识库，指定software=maya。修改前完成任务登记、知识读取与计划；超时后检查场景，不自动重试。")
+    mcp = FastMCP("fx-maya", instructions="由当前宿主操作。显式选择Maya会话；读取真实灯光与渲染器状态。共用FX纯文本知识库，指定software=maya，只沉淀可复用的纯文本经验，不保存工程或贴图。修改前完成任务登记、知识读取与计划；超时后检查场景，不自动重试。")
     register_shared_tools(mcp)
 
     @mcp.tool()

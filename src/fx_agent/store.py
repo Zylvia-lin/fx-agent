@@ -62,18 +62,11 @@ class Store:
 
     def __init__(self, root: Path):
         from fx_agent.config import database_path
-        from fx_agent.data_context import remote_enabled
 
-        if remote_enabled():
-            raise RuntimeError("Direct database access is disabled in remote data service mode")
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = database_path(self.root)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        from fx_agent.data_context import current_backend
-
-        if current_backend(self.root):
-            return
         cache_key = self._schema_cache_key()
         if cache_key and cache_key in self._verified_paths:
             return
@@ -230,13 +223,6 @@ class Store:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         """Commit successful operations, roll back errors, always close handles."""
-        from fx_agent.data_context import current_backend
-
-        backend = current_backend(self.root)
-        if backend:
-            with backend.connection() as db:
-                yield db
-            return
         with closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA busy_timeout=10000")
@@ -344,12 +330,5 @@ class Store:
 
 
 def checkpoint_key(project_id: str) -> str:
-    """A NUL-prefixed internal key cannot collide with validated user identifiers."""
-    from fx_agent.data_context import current_device
-
-    device = current_device()
-    return (
-        "\x00device:" + hashlib.sha256(compact([device, project_id]).encode()).hexdigest()
-        if device
-        else project_id
-    )
+    """Return the scoped checkpoint project key."""
+    return project_id

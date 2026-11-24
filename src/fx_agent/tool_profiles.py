@@ -4,7 +4,7 @@ import os
 
 from fx_agent.task_tools import BRIEF_TOOLS, GATE_TOOLS
 
-TOOL_PROFILES = frozenset({"full", "production", "learning"})
+TOOL_PROFILES = frozenset({"text_only", "full", "production", "learning"})
 
 # Tools never removed regardless of profile so gating, status, and briefs always work.
 PROTECTED_TOOLS = frozenset(
@@ -12,9 +12,33 @@ PROTECTED_TOOLS = frozenset(
     | BRIEF_TOOLS
     | {
         "fx_status",
-        "fx_get_data_service_status",
         "fx_check_production_path",
+        "fx_search_published_templates",
         "get_workflow_guide",
+    }
+)
+
+# Legacy project-archiving, static template ingestion and effect-card tools hidden in `text_only` profile.
+TEXT_ONLY_HIDDEN_FX_TOOLS = frozenset(
+    {
+        "fx_archive_case",
+        "fx_get_case",
+        "fx_validate_case",
+        "fx_plan_template_import",
+        "fx_learn_templates",
+        "fx_search_templates",
+        "fx_get_template",
+        "fx_validate_template",
+        "fx_export_template",
+        "fx_learn_template_experience",
+        "fx_plan_effect_study",
+        "fx_get_effect_learning_queue",
+        "fx_annotate_template_effects",
+        "fx_merge_effect_cards",
+        "fx_refine_effect",
+        "fx_search_effects",
+        "fx_get_effect",
+        "fx_review_template_effects",
     }
 )
 
@@ -152,9 +176,11 @@ HOUDINI_TOOL_GROUPS: dict[str, frozenset[str]] = {
 
 
 def resolve_tool_profile(profile: str | None = None) -> str:
-    raw = (os.getenv("FX_AGENT_TOOL_PROFILE", "full") if profile is None else profile).strip().lower()
+    raw = (
+        os.getenv("FX_AGENT_TOOL_PROFILE", "text_only") if profile is None else profile
+    ).strip().lower()
     if not raw:
-        return "full"
+        return "text_only"
     if raw not in TOOL_PROFILES:
         raise ValueError(
             f"Unsupported FX_AGENT_TOOL_PROFILE '{raw}'; expected one of {sorted(TOOL_PROFILES)}"
@@ -184,7 +210,9 @@ def apply_tool_profile(
     """Remove tools outside the requested profile from a FastMCP server's tool manager."""
     active_profile = resolve_tool_profile(profile)
     hidden: set[str] = set()
-    if active_profile == "production":
+    if active_profile == "text_only":
+        hidden.update(TEXT_ONLY_HIDDEN_FX_TOOLS)
+    elif active_profile == "production":
         hidden.update(PRODUCTION_HIDDEN_FX_TOOLS)
     elif active_profile == "learning":
         hidden.update(LEARNING_HIDDEN_FX_TOOLS)
@@ -194,11 +222,22 @@ def apply_tool_profile(
     hidden -= PROTECTED_TOOLS
 
     tools_map = getattr(mcp._tool_manager, "_tools", None)
+    stash = getattr(mcp._tool_manager, "_fx_profile_stash", None)
+    if not isinstance(stash, dict):
+        stash = {}
+        mcp._tool_manager._fx_profile_stash = stash
     removed: list[str] = []
-    if isinstance(tools_map, dict) and hidden:
+    if isinstance(tools_map, dict):
+        # Restore previously profile-hidden tools before applying the active profile.
+        for name, tool in list(stash.items()):
+            if name not in hidden and name not in tools_map:
+                tools_map[name] = tool
+                stash.pop(name, None)
         for name in sorted(hidden):
             if name in tools_map:
-                tools_map.pop(name, None)
+                stash[name] = tools_map.pop(name)
+                removed.append(name)
+            elif name in stash:
                 removed.append(name)
     return {
         "profile": active_profile,

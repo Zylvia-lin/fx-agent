@@ -165,12 +165,8 @@ class LearningStore(MemoryStore):
         return result
 
     def record_feedback(self, **values) -> dict:
-        from fx_agent.data_context import current_device
-
         request = Feedback(**values)
-        attempt = feedback_attempt_key(request.attempt_id, current_device())
-        if request.outcome == "accepted" and not request.case_id:
-            raise ValueError("Accepted feedback requires an archived case")
+        attempt = request.attempt_id
         if request.case_id:
             archive = CaseArchive(self.root)
             case = archive.get(request.case_id, request.project_id)
@@ -203,8 +199,6 @@ class LearningStore(MemoryStore):
                 "revision": current + 1,
                 "created_at": datetime.now(UTC).isoformat(),
             }
-            if current_device():
-                record["device_id"] = current_device()
             db.execute(
                 "INSERT INTO learning_feedback VALUES (?,?,?,?,?,?,?)",
                 (
@@ -332,16 +326,12 @@ class LearningStore(MemoryStore):
             if row is None:
                 raise ValueError("Feedback not found in this project")
             feedback = json.loads(row["payload"])
-            from fx_agent.data_context import current_device
-
-            if current_device() and feedback.get("device_id") != current_device():
-                raise PermissionError("Only the source device can finalize its feedback")
             latest = db.execute(
                 "SELECT feedback_id FROM learning_feedback WHERE project_id=? AND shot_id=? AND attempt_id=? AND software=? ORDER BY revision DESC LIMIT 1",
                 (
                     project_id,
                     feedback["shot_id"],
-                    feedback_attempt_key(feedback["attempt_id"], feedback.get("device_id", "")),
+                    feedback["attempt_id"],
                     feedback.get("software", "houdini"),
                 ),
             ).fetchone()[0]
@@ -349,6 +339,7 @@ class LearningStore(MemoryStore):
                 raise ValueError("Feedback is not the current revision")
             if feedback["outcome"] != "accepted":
                 raise ValueError("Only accepted final results can become reusable workflows")
+            has_case = bool(feedback.get("case_id"))
             result = self.submit(
                 _db=db,
                 _origin_feedback_id=feedback_id,
@@ -364,8 +355,8 @@ class LearningStore(MemoryStore):
                 applies_when=applies_when,
                 source_type="observed",
                 source_ref=f"feedback:{feedback_id}; {feedback['source_ref']}; 用户确认：{feedback['user_quote'][:512]}",
-                project_dependent=True,
-                case_id=feedback["case_id"],
+                project_dependent=has_case,
+                case_id=feedback.get("case_id", ""),
             )
             existing = db.execute(
                 "SELECT memory_id FROM learning_results WHERE feedback_id=?", (feedback_id,)

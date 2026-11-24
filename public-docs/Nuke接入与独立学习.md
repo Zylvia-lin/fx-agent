@@ -26,12 +26,12 @@
 
 当前宿主助手操作两个软件的工具集；“Houdini Agent / Nuke Agent”指两套制作工作流，不是两个另行启动的模型调度器。
 
-- `fx-agent`：原有 Houdini 操作及共同的记忆、规范、案例、学习和渲染问题记录。
+- `fx-agent`：原有 Houdini 操作及共同的纯文本记忆、规范、学习与渲染问题记录。
 - `fx-nuke`：独立 Nuke 操作入口，通过 stdio MCP 调用本机 Nuke 桥接。
-- 所有客户端连接同一工程，共用 `data/memory.sqlite3` 和 `data/cases/`。实际存储被 Git 忽略，代码推送不会同步或公开生产资料。
-- 经验、纠错与检查点指定 `software=houdini` 或 `nuke`，默认 Houdini 以兼容旧调用；同项目、同镜头的两套进度和调整不会互相覆盖。旧数据视为 Houdini。Dream 不把不同软件的方案合并。
+- 所有客户端连接同一工程，共用纯文本 `data/memory.sqlite3` 与 `data/modules/`（由 Git 跟踪共享，不保存任何 `.nk`、EXR 序列或截图文件；本地会话登记 `data/nuke_sessions/` 由 `.gitignore` 忽略）。
+- 经验、纠错与检查点指定 `software=houdini` 或 `nuke`，默认 Houdini；同项目、同镜头的两套进度和调整不会互相覆盖。Dream 不把不同软件的方案合并。
 - 共用用户规范保留真实来源，软件专属规范需明确写出软件。Houdini 的 `$HIP` 与 File Cache 约束不能直接用于 Nuke 文件旋钮。
-- 案例支持 `.nk`，复制到 `projects/nuke/`；HIP 仍在 `projects/houdini/`。同一案例可明确提供两种工程，但每条经验都必须有对应软件的工程证据。
+- 经验沉淀采用免工程归档的纯文本脱敏模式，仅提炼可跨项目复用的合成方法与避坑点；现成工程资产通过外部 FX Template 模板库管理与检索。
 
 ## 上游复用取舍
 
@@ -91,7 +91,7 @@ Nuke 15.2 尚未安装时，可以 `--register-disabled` 只预注册 `enabled=f
 3. 宿主按 Houdini 工作流核对现场，用 actor=houdini 更新 investigating；完成检查或修复后更新 awaiting_nuke_review。
 4. Nuke 实际重读新版素材并复查后，用 actor=nuke 关闭；仍有问题则重新 open。更新必须提供证据和当前修订号。
 
-问题单只保存事实声明与历史，不调用另一个软件、不自动重渲染、不将调用方填写的证据视作服务已验证。需要长期保留的图片、NK、HIP 与日志先归档，证据字段记录案例和文件引用。通过摘要列表按需展开，不将所有往返历史塞进上下文。
+问题单只保存纯文本事实声明与历史，不调用另一个软件、不自动重渲染、不在 `data/` 复制图片、NK 或 HIP。通过摘要列表按需展开，不将所有往返历史塞进上下文。
 
 同一操作者可以切换工作流完成闭环；该 actor 字段是职责记录，不是用户身份认证。大规模后台自动调度、全过程视觉判定与所有外部序列依赖自动复制不包含在本轮。
 

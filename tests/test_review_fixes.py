@@ -4,21 +4,16 @@ import importlib
 import importlib.util
 import json
 import sys
-import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
-from fx_data_service.app import ServiceConfig, create_app
-from fx_data_service.mysql import mysql_sql
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.baselines import sync_baselines
 from fx_agent.data_import import TABLES, import_data
 from fx_agent.effect_cards import EffectCardInput, EffectLibrary
 from fx_agent.install_config import mcp_servers_json
-from fx_agent.multidevice import RemoteClient
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store
 from fx_agent.task_gates import TaskGates, TaskSpec, install_task_gates, is_untitled_scene
@@ -539,103 +534,6 @@ def test_maya_bridge_windows_save_path_and_encode_fallback(tmp_path, monkeypatch
     payload = json.loads(sent[0][4:].decode("utf-8"))
     assert payload["status"] == "error"
     assert payload["id"] == "1"
-
-
-@pytest.mark.asyncio
-async def test_cloud_admin_security_and_download_hardening(tmp_path):
-    settings = ServiceConfig(
-        data_root=tmp_path / "data",
-        database_root=tmp_path / "db",
-        api_key="k" * 43,
-        admin_password="strong-admin-password",
-    )
-    settings.data_root.mkdir(parents=True, exist_ok=True)
-    (settings.data_root / "Memory.SQLITE3").write_bytes(b"secret-db")
-    (settings.data_root / "memory.sqlite3-wal").write_bytes(b"secret-wal")
-    (settings.data_root / "note.txt").write_text("hello", encoding="utf-8")
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(settings)), base_url="https://test"
-    ) as client:
-        # Admin page uses CSP nonce without 'unsafe-inline'.
-        page = await client.get("/admin")
-        assert page.status_code == 200
-        csp = page.headers["content-security-policy"]
-        assert "'nonce-" in csp and "'unsafe-inline'" not in csp
-        assert page.headers["x-content-type-options"] == "nosniff"
-
-        # Non-JSON Content-Type on login is rejected.
-        bad_ct = await client.post(
-            "/admin/api/login",
-            content=json.dumps({"password": settings.admin_password}),
-            headers={"Content-Type": "text/plain"},
-        )
-        assert bad_ct.status_code in {401, 415}
-
-        # Logout revokes the cookie token server-side so replay fails.
-        login = await client.post("/admin/api/login", json={"password": settings.admin_password})
-        assert login.status_code == 200
-        cookie = client.cookies.get("fx_admin")
-        assert cookie
-        logout = await client.post(
-            "/admin/api/logout",
-            headers={"X-FX-Admin-Request": "1", "Origin": "https://test"},
-        )
-        assert logout.status_code == 200
-        replayed = await client.get("/admin/api/keys", headers={"Cookie": "fx_admin=" + cookie})
-        assert replayed.status_code == 401
-
-        # Case-insensitive SQLite / WAL downloads are blocked; valid files have attachment headers.
-        auth = {"Authorization": "Bearer " + settings.api_key}
-        assert (await client.get("/v1/files/Memory.SQLITE3", headers=auth)).status_code == 404
-        assert (await client.get("/v1/files/memory.sqlite3-wal", headers=auth)).status_code == 404
-        ok = await client.get("/v1/files/note.txt", headers=auth)
-        assert ok.status_code == 200
-        assert ok.headers["x-content-type-options"] == "nosniff"
-        assert "attachment" in ok.headers["content-disposition"]
-
-
-def test_mysql_sql_preserves_literals_and_bounds_json_each():
-    sql = "SELECT original, stored FROM files WHERE note = 'what? stored' AND id = ?"
-    converted = mysql_sql(sql, {})
-    assert "'what? stored'" in converted
-    assert "`stored`" in converted
-    assert converted.count("%s") == 1
-
-    je_sql = "SELECT value FROM json_each(payload) AS item WHERE item.value = ?"
-    je_converted = mysql_sql(je_sql, {})
-    assert "json_each" not in je_converted.lower()
-    assert "fx_json_numbers" in je_converted
-    assert "JSON_LENGTH" in je_converted
-
-
-def test_remote_client_ipv6_bracketing_and_zip_bomb_limit(tmp_path, monkeypatch):
-    monkeypatch.delenv("FX_AGENT_CLIENT_CONFIG", raising=False)
-    monkeypatch.setenv("FX_AGENT_SERVER_IP", "::1")
-    monkeypatch.setenv("FX_AGENT_SERVER_PORT", "18443")
-    monkeypatch.setenv("FX_AGENT_API_KEY", "k" * 43)
-    client = RemoteClient()
-    assert client.url == "https://[::1]:18443"
-
-    # Simulate a zip whose decompressed output exceeds patched MAX_TRANSFER_BYTES.
-    import fx_agent.multidevice as md
-
-    monkeypatch.setattr(md, "MAX_TRANSFER_BYTES", 1024)
-    bundle_zip = tmp_path / "src.zip"
-    with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("template-manifest.json", "{}")
-        zf.writestr("big.bin", b"A" * 4096)
-
-    def fake_download(_relative, destination, _sha256):
-        Path(destination).write_bytes(bundle_zip.read_bytes())
-        return {"path": str(destination), "sha256": _sha256, "size": bundle_zip.stat().st_size}
-
-    monkeypatch.setattr(client, "download_file", fake_download)
-    with pytest.raises(ValueError, match="exceeds transfer limits"):
-        client.receive_export(
-            {"download": {"path": "x.zip", "sha256": "0" * 64}},
-            str(tmp_path / "out_dir"),
-        )
 
 
 def test_install_config_mcp_servers_json_and_nuke_menu_data_root(tmp_path):

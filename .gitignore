@@ -13,13 +13,14 @@ dist/
 .tmp/
 .runtime/
 
-# Runtime data and credentials never belong in the source repository
+# Runtime secrets, vendor bridges and heavy DCC media never belong in Git
 .env
 .env.*
 !.env.example
 .fx-data-*/
 integrations/nuke/vendor/
 *.sqlite3
+!data/memory.sqlite3
 *.sqlite3-*
 *.hip
 *.hiplc
@@ -28,7 +29,23 @@ integrations/nuke/vendor/
 *.vdb
 *.exr
 
-data/
+# Track pure-text knowledge under data/ (data/memory.sqlite3, data/baselines/, data/modules/)
+# while excluding local runtime sessions, locks, sync metadata and legacy binary folders
+data/nuke_sessions/
+data/maya_sessions/
+data/task-locks/
+data/cases/
+data/assets/
+data/effects/
+data/screenshots/
+data/reports/
+data/learning_reports/
+data/.stfolder/
+data/.stignore
+data/.stversions/
+data/.template-work/
+data/.baseline.lock
+
 # Machine-specific configuration
 .fx-agent.local.json
 
@@ -38,6 +55,6 @@ fix_info_panl_error/
 # Generated production reports and test output
 output/
 
-# Local development notes; published documentation lives in public-docs/
+# Local development scratch notes
 /docs/
 .pytest_review_mcp_env

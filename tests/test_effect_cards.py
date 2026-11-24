@@ -309,6 +309,8 @@ async def test_effect_mcp_tools_and_template_search_integration(tmp_path, monkey
 
     library, study_id, _ = study(tmp_path)
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(library.root))
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    get_server.cache_clear()
     server = get_server()
     task = TaskGates(library.root).begin(
         TaskSpec(

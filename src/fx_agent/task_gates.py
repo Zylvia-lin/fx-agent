@@ -150,13 +150,9 @@ def endpoint_lock(root, endpoint):
     """Nonblocking OS lock, shared across processes and released even on process exit."""
     import os
 
-    from fx_agent.data_context import current_device
-
     folder = Path(root) / "task-locks"
     folder.mkdir(parents=True, exist_ok=True)
-    device = current_device()
-    identity = compact([device, endpoint]) if device else endpoint
-    path = folder / (hashlib.sha256(identity.encode()).hexdigest() + ".lock")
+    path = folder / (hashlib.sha256(endpoint.encode()).hexdigest() + ".lock")
     with path.open("a+b") as handle:
         if not handle.tell():
             handle.write(b"0")
@@ -183,16 +179,19 @@ def endpoint_lock(root, endpoint):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+KNOWLEDGE_WRITES = frozenset(
+    {
+        "fx_learn_templates",
+        "fx_annotate_template_effects",
+        "fx_refine_effect",
+        "fx_merge_effect_cards",
+        "fx_learn_template_experience",
+        "fx_export_template",
+    }
+)
+
+
 class TaskGates:
-    def __new__(cls, root):
-        from fx_agent.data_context import remote_enabled
-
-        if remote_enabled():
-            from fx_agent.multidevice import RemoteTaskGates
-
-            return RemoteTaskGates()
-        return super().__new__(cls)
-
     def __init__(self, root):
         self.root = Path(root)
         self.store = Store(self.root)
@@ -201,12 +200,7 @@ class TaskGates:
         row = db.execute("SELECT payload FROM task_gates WHERE task_id=?", (task_id,)).fetchone()
         if not row:
             raise ValueError("Unknown task_id; use fx_begin_task")
-        from fx_agent.data_context import current_device
-
-        task = json.loads(row[0])
-        if current_device() and task.get("device_id") != current_device():
-            raise PermissionError("Task belongs to another device; create a local device task")
-        return task
+        return json.loads(row[0])
 
     def _write(self, db, task):
         db.execute(
@@ -234,8 +228,6 @@ class TaskGates:
         return result
 
     def begin(self, spec: TaskSpec):
-        from fx_agent.data_context import current_device
-
         task = spec.model_dump() | {
             "task_id": uuid.uuid4().hex,
             "revision": 1,
@@ -251,8 +243,6 @@ class TaskGates:
         }
         task["assets"] = self._assets(task)
         task["rules_hash"] = self._rules_hash(task["project_id"])
-        if current_device():
-            task["device_id"] = current_device()
         with self.store.connection() as db:
             self._write(db, task)
         return self._summary(task)
@@ -374,7 +364,7 @@ class TaskGates:
             topics = {"discipline"} | {HOUDINI[m][1] for m in task["modules"] if HOUDINI[m][1]}
             read_topics = {r.get("topic") for r in receipts if r["tool"] == "get_workflow_guide"}
             missing += ["guide:" + topic for topic in sorted(topics - read_topics)]
-        for name in ("fx_search_effects", "fx_search_memory"):
+        for name in ("fx_search_memory",):
             if not any(
                 r["tool"] == name
                 and (
@@ -1027,22 +1017,24 @@ class TaskGates:
                         raise ValueError("Current scene must be saved after the last edit")
                     if task["verified_seq"] != task["edit_seq"]:
                         raise ValueError("Current scene requires actual structural verification")
-                    archive = CaseArchive(self.root)
-                    case = archive.get(case_id, task["project_id"])
-                    if (
-                        case["shot_id"] != task["shot_id"]
-                        or not archive.verify(case_id, task["project_id"])["valid"]
-                    ):
-                        raise ValueError("Final archive scope/checksum mismatch")
-                    projects = [
-                        f
-                        for f in case["files"]
-                        if f["role"] == "project" and same_path(f["source_path"], task["scene_path"])
-                    ]
-                    if not projects or not any(f["role"] == "preview" for f in case["files"]):
-                        raise ValueError("Final archive needs the saved target scene and a preview")
-                    if file_hash(Path(task["scene_path"])) != projects[0]["sha256"]:
-                        raise ValueError("Final archive differs from the saved target scene")
+                    if case_id:
+                        archive = CaseArchive(self.root)
+                        case = archive.get(case_id, task["project_id"])
+                        if (
+                            case["shot_id"] != task["shot_id"]
+                            or not archive.verify(case_id, task["project_id"])["valid"]
+                        ):
+                            raise ValueError("Final archive scope/checksum mismatch")
+                        projects = [
+                            f
+                            for f in case["files"]
+                            if f["role"] == "project"
+                            and same_path(f["source_path"], task["scene_path"])
+                        ]
+                        if not projects or not any(f["role"] == "preview" for f in case["files"]):
+                            raise ValueError("Final archive needs the saved target scene and a preview")
+                        if file_hash(Path(task["scene_path"])) != projects[0]["sha256"]:
+                            raise ValueError("Final archive differs from the saved target scene")
                 else:
                     from fx_agent.effect_cards import EffectLibrary
 
@@ -1077,8 +1069,6 @@ def check_knowledge_gate(
     feedback_loader=None,
 ) -> None:
     """Shared admission check for knowledge writes, accepted feedback, and finalization."""
-    from fx_agent.data_contracts import KNOWLEDGE_WRITES
-
     acceptance = (
         tool_name == "fx_record_feedback"
         and isinstance(arguments.get("feedback"), dict)

@@ -113,7 +113,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
         )
     mcp = FastMCP(
         "FXNuke",
-        instructions="由当前宿主助手操作。先读真实工程，制作经验使用FX Agent共享记忆工具并指定software=nuke；素材问题通过渲染问题单反馈Houdini。",
+        instructions="由当前宿主助手操作。先读真实工程，制作经验使用FX Agent纯文本共享记忆工具并指定software=nuke，不保存工程或贴图；素材问题通过渲染问题单反馈Houdini。",
     )
     state = SimpleNamespace(mcp=mcp, connection=connection, version=version, event_log=None)
     for module in (graph, script, comp, render, batch):

@@ -606,6 +606,8 @@ async def test_template_tools_are_registered_and_read_only_plan(tmp_path, monkey
     from fx_agent.server import get_server
 
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    get_server.cache_clear()
     source = hip(tmp_path / "effect.hip")
     server = get_server()
     tools = {t.name: t for t in await server.list_tools()}
@@ -629,6 +631,8 @@ async def test_mcp_template_learning_search_export_and_candidate(tmp_path, monke
     from fx_agent.server import get_server
 
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    get_server.cache_clear()
     source = hip(tmp_path / "effect.hip")
     server = get_server()
 

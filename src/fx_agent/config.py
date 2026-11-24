@@ -8,11 +8,6 @@ DEFAULT_HOUDINI_PORT = 18186
 
 def data_root() -> Path:
     """Read the configured absolute data path without creating any files."""
-    from fx_agent.data_context import current_scope
-
-    scope = current_scope()
-    if scope:
-        return scope[0]
     configured = os.getenv("FX_AGENT_DATA_ROOT")
     if configured:
         path = Path(configured).expanduser()
@@ -25,12 +20,7 @@ def data_root() -> Path:
 
 
 def database_path(root: Path) -> Path:
-    """Only the service's authoritative root uses its separate local database."""
-    from fx_agent.data_context import current_scope
-
-    scope = current_scope()
-    if scope and Path(root).resolve() == scope[0].resolve():
-        return scope[1] / "memory.sqlite3"
+    """Return the local SQLite database path under the configured data root."""
     return Path(root) / "memory.sqlite3"
 
 

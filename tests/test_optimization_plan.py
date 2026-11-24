@@ -3,9 +3,7 @@
 import json
 from pathlib import Path
 
-import httpx
 import pytest
-from fx_data_service.app import ServiceConfig, create_app
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.baselines import sync_baselines, validate_baselines
@@ -85,50 +83,6 @@ async def test_phase1_prepare_task_brief_satisfies_houdini_gate_in_one_call(tmp_
     )
     assert plan["state"] == "ready"
     assert plan["missing"] == []
-
-
-@pytest.mark.asyncio
-async def test_phase1_prepare_task_brief_works_via_cloud_data_service(tmp_path):
-    settings = ServiceConfig(
-        data_root=tmp_path / "data",
-        database_root=tmp_path / "db",
-        api_key="k" * 43,
-        admin_password="strong-admin-password",
-        allowed_roots=[tmp_path],
-    )
-    headers = {"Authorization": "Bearer " + settings.api_key, "X-FX-Device-ID": "dev1"}
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(settings)), base_url="https://test"
-    ) as client:
-        begin = await client.post(
-            "/v1/operations",
-            headers=headers,
-            json={
-                "request_id": "a" * 32,
-                "task_id": "",
-                "operation": "task.begin",
-                "arguments": {
-                    "spec": _spec(tmp_path, software="nuke", modules=["compositing"]).model_dump()
-                },
-            },
-        )
-        assert begin.status_code == 200
-        tid = begin.json()["result"]["task_id"]
-
-        brief = await client.post(
-            "/v1/operations",
-            headers=headers,
-            json={
-                "request_id": "b" * 32,
-                "task_id": tid,
-                "operation": "tool.fx_prepare_task_brief",
-                "arguments": {"task_id": tid},
-            },
-        )
-        assert brief.status_code == 200
-        payload = brief.json()["result"]
-        assert payload["task_state"]["missing"] == []
-        assert payload["production_rules"]["software"] == "nuke"
 
 
 # --- Phase 2: quick_tweak task gate tier ---

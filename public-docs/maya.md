@@ -49,7 +49,7 @@ Arnold 使用 `arnoldRender(batch=True,seq=...)`；RS 在 batch Maya 使用 batc
 
 渲染设置预检可写，临时修改后逐项尝试恢复；恢复失败保留原始错误并报告。许可证、GPU、AOV、色彩管理和实际图像仍须检查，文件稳定不等于美术质量认可。
 
-共享 SQLite、规范、反馈、纠错、进度、任务、Dream、模块 MD 与案例归档。经验按 `software=maya` 和功能模块筛选；Maya 工程归档至 `projects/maya`。现有 Houdini/Nuke 记录不迁移或重标。静态 Maya 工程模板解析明确不支持。
+共享纯文本 SQLite、规范、反馈、纠错、进度、任务、Dream 与模块 MD 手册（不向 `data/` 归档 `.ma`/`.mb` 或渲染图）。经验按 `software=maya` 和功能模块筛选，现有 Houdini/Nuke 记录相互隔离。静态 Maya 工程模板解析明确不支持；现成工程资产由外部 FX Template 模板库管理。
 
 ## 验证
 

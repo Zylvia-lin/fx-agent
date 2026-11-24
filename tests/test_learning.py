@@ -131,10 +131,16 @@ def test_revised_feedback_invalidates_derived_method_and_blocks_stale_finalize(t
     assert len(store.history("p", "s", "逆光烟尘")["items"]) == 2
 
 
-def test_accepted_feedback_needs_project_preview_and_matching_scope(tmp_path):
+def test_accepted_feedback_supports_text_only_and_validates_optional_case_scope(tmp_path):
     store = learning(tmp_path)
-    with pytest.raises(ValueError, match="case"):
-        store.record_feedback(**feedback(outcome="accepted"))
+    text_accepted = store.record_feedback(**feedback(outcome="accepted"))
+    assert text_accepted["outcome"] == "accepted"
+    assert text_accepted["case_id"] == ""
+    learned = store.finalize(
+        text_accepted["feedback_id"], "p", "先分离轮廓灯再调整局部对比", "不抬高背景", "逆光烟尘"
+    )
+    assert learned["decision"] == "admitted"
+    assert learned["evidence_status"] == "live_verified_text"
     case = case_at(tmp_path)
     with pytest.raises(ValueError, match="shot"):
         store.record_feedback(**feedback(outcome="accepted", case_id=case, shot_id="other"))

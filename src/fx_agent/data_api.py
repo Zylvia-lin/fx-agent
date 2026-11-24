@@ -105,9 +105,7 @@ async def fx_get_production_rules(
         raise ValueError(RULES_PAGINATION_ERROR)
     if project_id:
         scope_id.validate_python(project_id)
-    from fx_agent.data_context import current_backend
-
-    if not current_backend() and not database_path(data_root()).exists():
+    if not database_path(data_root()).exists():
         return production_rules(software) | {
             "user_rules": [],
             "omitted_rules": 0,
@@ -214,11 +212,12 @@ async def fx_validate_case(case_id: str, project_id: str) -> dict:
 
 
 async def fx_submit_experience(experience: Experience) -> dict:
-    """Screen milestone knowledge, keeping inferences as non-default candidates.
+    """Admit a project-agnostic, text-only reusable experience with explicit provenance.
 
-    Codex must truthfully label source_type. User statements are not visual
-    verification. Project-dependent entries need an archived project for their software. To correct
-    an old entry, submit a distinct explicit user statement with supersedes.
+    Do not include local/UNC paths or archive project files/textures. Explicit user
+    statements and verified live text observations enter active recall directly and
+    refresh global module Markdown guides; inferred hypotheses stay candidates.
+    To correct an old entry, submit a distinct explicit user statement with supersedes.
     """
     return await asyncio.to_thread(
         lambda: MemoryStore(data_root()).submit(**experience.model_dump())
@@ -289,10 +288,10 @@ async def fx_get_user_rule(
 
 
 async def fx_record_feedback(feedback: Feedback) -> dict:
-    """Keep the user's correction, change, reasoning and observed result as history.
+    """Keep the user's correction, change, reasoning and observed result as text history.
 
     Pending/improved/failed attempts are not successful workflow memories.
-    Accepted requires actual user confirmation plus an archived HIP and preview.
+    Accepted requires actual user confirmation (no project/file archiving needed).
     Revising feedback disables methods derived from its older revisions.
     """
     return await asyncio.to_thread(
@@ -910,8 +909,6 @@ async def fx_prepare_task_brief(
         raise ValueError("max_chars must be between 2048 and 32000")
 
     def build() -> dict:
-        from fx_agent.data_context import current_backend
-
         root = data_root()
         gates = TaskGates(root)
         task = gates.get(task_id, detail=True)
@@ -923,7 +920,7 @@ async def fx_prepare_task_brief(
         search_query = query.strip() or task["goal"]
 
         rules_budget = min(6000, max(1024, max_chars // 3))
-        if not current_backend() and not database_path(root).exists():
+        if not database_path(root).exists():
             rules = production_rules(software) | {
                 "user_rules": [],
                 "omitted_rules": 0,
@@ -992,19 +989,7 @@ async def fx_prepare_task_brief(
                     truncated_modules.append(mod)
             brief["module_knowledge"] = module_knowledge
 
-            effects_budget = min(3200, max(800, max_chars // 5))
-            effects = EffectLibrary(root).search(
-                search_query, software=software, limit=5, max_chars=effects_budget
-            )
-            gates.observe(
-                task_id,
-                "fx_search_effects",
-                {"software": software, "query": search_query},
-                effects,
-            )
-            brief["effect_matches"] = effects
-
-            mem_budget = min(3200, max(800, max_chars // 5))
+            mem_budget = min(4000, max(1000, max_chars // 3))
             mem_store = MemoryStore(root)
             primary_mod = modules[0] if len(modules) == 1 else ""
             memories = mem_store.search(
@@ -1027,6 +1012,9 @@ async def fx_prepare_task_brief(
             }
             gates.observe(task_id, "fx_search_memory", mem_args, memories)
             brief["memory_matches"] = memories
+            brief["template_library_hint"] = (
+                "如需复用现成工程模板，请直接调用 fx_search_published_templates 检索外部特效模板库。"
+            )
 
             if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
                 cand_res = mem_store.search(
