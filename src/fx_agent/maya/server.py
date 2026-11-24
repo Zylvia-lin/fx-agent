@@ -9,9 +9,11 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.config import data_root, session_root
+from fx_agent.data_api import shared_functions
 from fx_agent.maya.client import DEFAULT_PORTS, MayaConnection, discover, validate_port
 from fx_agent.maya.launcher import start_maya as launch_maya
 from fx_agent.task_tools import GATE_TOOLS, install_task_gates
+from fx_agent.tool_profiles import apply_tool_profile
 
 Renderer = Literal["arnold", "redshift"]
 
@@ -19,17 +21,20 @@ Renderer = Literal["arnold", "redshift"]
 def register_shared_tools(mcp):
     """Reuse existing knowledge implementations and data root, not Houdini dispatch.
 
-    Register original functions so this MCP installs its own Maya task gate.
-    Houdini's upstream lifespan is never entered and no DCC connection is opened.
+    Register original functions directly so Maya MCP stays decoupled from Houdini
+    tool profiles and installs its own Maya task gate.
     """
-    from fx_agent.server import get_server
-
-    excluded = GATE_TOOLS | {"fx_status", "fx_check_production_path", "fx_report_render_issue", "fx_get_render_issue",
-                            "fx_list_render_issues", "fx_update_render_issue"}
-    for tool in get_server()._tool_manager.list_tools():
-        if tool.name.startswith("fx_") and tool.name not in excluded and not tool.name.startswith("fx_render_view_"):
-            mcp.add_tool(tool.fn, name=tool.name, description=tool.description,
-                         annotations=tool.annotations)
+    excluded = GATE_TOOLS | {
+        "fx_status",
+        "fx_check_production_path",
+        "fx_report_render_issue",
+        "fx_get_render_issue",
+        "fx_list_render_issues",
+        "fx_update_render_issue",
+    }
+    for function in shared_functions():
+        if function.__name__ not in excluded and not function.__name__.startswith("fx_render_view_"):
+            mcp.tool()(function)
 
 
 def build_server(connection=None, ports=DEFAULT_PORTS):
@@ -186,6 +191,7 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
             return await original(name, *args, **kwargs)
 
     manager.call_tool = serialized
+    apply_tool_profile(mcp, software="maya")
     return mcp
 
 

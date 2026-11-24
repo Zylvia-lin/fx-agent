@@ -15,17 +15,16 @@ description: 使用 FX Agent 操作 Houdini，检查连接、查询节点与指�
 
 1. **登记任务（只读核对 → `fx_begin_task`）**
    - 先理解目标外观、运动、输入与参考、验收要求与预算；只读核对 `fx_status`、真实会话/工程（多会话不猜目标）与 `fx_get_module_catalog`。
-   - 调用 `fx_begin_task(spec)` 登记 `kind="production"`、`software="houdini"`、`project_id`、`shot_id`、真实 `scene_path`、`endpoint`（`127.0.0.1:实际端口`）、`goal`、`acceptance`、`budget`、`modules` 及已解析的 `input_paths`。
+   - 调用 `fx_begin_task(spec)` 登记：`software="houdini"`、`project_id`、`shot_id`、真实 `scene_path`、`endpoint`（`127.0.0.1:实际端口`）、`goal`、`acceptance`、`budget`、`modules` 及 `input_paths`：
+     - **正式制作 / 新建系统**：`kind="production"`（走完整知识读取与方案放行）；
+     - **同场景局部调参 / 排查**：`kind="quick_tweak"`（仍强制端口锁、场景路径锁与 `$HIP`/File Cache 护栏；跳过重复全量检索与 `source_adaptations`，但禁用重型搭建工具且上限 15 次编辑，不可直接 `fx_finalize_learning`；需要扩展时用 `fx_update_task` 原地升级为 `production`）。
 
-2. **收集证据（全部携带同一 `fx_task_id`）**
-   - `fx_get_production_rules(project_id=..., offset=0)` 按 `next_offset` 连续翻页；标记 `detail_required` 的规则用 `fx_get_user_rule` 展开。
-   - `fx_get_context` 读取进度（可传 `content_hash` 避重；需要完整信息时读 `fx_get_checkpoint`）。
-   - 每会话先读 `get_workflow_guide("discipline")`，按 `fx_get_module_catalog` 映射首次读取对应模块原指南（如 SOP→`model`、粒子→`dopparticles`、Pyro→`pyro`、FLIP→`fluid`、RBD→`destruction`；两次同类修复失败时重读）。
-   - 调用 `fx_get_module_knowledge(project_id, module)` 读取全局模块 MD 补充；若 `truncated=true`，不把摘要当全文，改为按该 `module` 调用 `fx_search_memory` 并完整展开所选来源（真实零命中则记录 `no_match_reason`）。
-   - 按目标检索 `fx_search_effects` 与 `fx_search_memory`（需要镜头限定、额外条件或候选时传 `module` / `include_candidates`）；选中效果卡用 `fx_get_effect` 读全文，选中经验用 `fx_get_memory` 读全文，尾页或截断内容不算全文。
+2. **收集证据（推荐优先用 `fx_prepare_task_brief` 一次聚合）**
+   - **优先调用 `fx_prepare_task_brief(task_id=...)`**：一次按预算聚合读取 `production_rules`（自动展开 `detail_required`）、`context`、所选模块 `module_knowledge`、`effect_matches`、`memory_matches`（含 `reference_hint` 候选自动补查）以及 Houdini 必需的 `get_workflow_guide("discipline")` 和模块上游指南，并**自动记齐任务门禁凭据**。
+   - 需要翻页或深挖具体来源时，再携带同一 `fx_task_id` 调用 `fx_get_effect` / `fx_get_memory` / `fx_get_template` / `fx_get_production_rules` 展开全文（尾页或截断内容不算全文）。
 
-3. **保存制作方案（`fx_set_task_plan`）**
-   - 提交 `method`、`applies_when`、`changes`、实际读过的 `selected_sources`（`effect_card:` / `memory:` / `template_study:`）及对应的 `source_adaptations`；无适用案例时写清真实 `no_match_reason`，不得编造命中。
+3. **保存制作方案（`production` 必做：`fx_set_task_plan`）**
+   - `quick_tweak` 完成 `fx_prepare_task_brief` 后即可直接局部调整；`production` 须提交 `method`、`applies_when`、`changes`、实际读过的 `selected_sources`（`effect_card:` / `memory:` / `template_study:`）及对应的 `source_adaptations`（无适用案例写清真实 `no_match_reason`）。
    - 检查返回状态：`missing` 非空、存在未解问题或未放行时，只能继续只读调查、补证据或登记问题，禁止修改工程、缓存、渲染和保存。
 
 4. **受门禁制作与变更维护**
@@ -35,10 +34,10 @@ description: 使用 FX Agent 操作 Houdini，检查连接、查询节点与指�
    - 门禁报错后读 `fx_get_task` 按缺项恢复，不删除任务 ID、伪造来源或盲目重试。
    - 查证后仍不理解时，调用 `fx_task_question` 登记具体问题并在对话中集中向用户发问；仅用真实答复（`answer`、`user_quote`、`source_ref`）解除。未解问题阻止修改与完成。
 
-5. **验证、归档与完成（`fx_finish_task`）**
-   - 修改后携带 `fx_task_id` 执行 `verify_network`；保存真实 HIP；实际查看多时间点截图或预览（工具不报错不等于画面合格）。
-   - 调用 `fx_archive_case` 归档已保存工程、预览及必要依赖（明确 `project` / `reference` / `preview` / `dependency` 角色）；`fx_save_checkpoint` 只记阶段进度，不复制 HIP 也不替代保存。
-   - 调用 `fx_finish_task` 提交当前 `revision`、`case_id` 和真实 `verification_note`。新修改或校验失败会使旧验证失效；无画面证据不得宣称视觉验收通过。
+5. **验证、视觉审片、归档与完成（`fx_finish_task`）**
+   - 修改后携带 `fx_task_id` 执行 `verify_network`；保存真实 HIP；实际查看多时间点截图或 Render View 预览，**并按配套 `fx-visual-critique`（及其 `references/houdini_fx_critique.md`）做结构化审片**（核对大中小尺度、剪影、密度梯度与动态节奏，列出节点级问题后再决定是否过关）。
+   - `production` 调用 `fx_archive_case` 归档已保存工程、预览及必要依赖（明确 `project` / `reference` / `preview` / `dependency` 角色）；`fx_save_checkpoint` 只记阶段进度，不复制 HIP 也不替代保存。
+   - 调用 `fx_finish_task` 提交当前 `revision`、`case_id` 和真实 `verification_note`（须包含审片观察结论）。新修改或校验失败会使旧验证失效；无画面证据不得宣称视觉验收通过。
 
 6. **学习回写（配套 `fx-learning`）**
    - 长期要求及时 `fx_record_user_rule`，调整过程如实 `fx_record_feedback`，有证据的方法按 `fx_submit_experience` 回写（依赖工程先归档并关联 `case_id`）。

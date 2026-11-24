@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -96,18 +97,34 @@ def _replace_retry(src: Path, dst: Path) -> None:
             time.sleep(0.02 * 2**attempt)
 
 
+_LOCK_GUARD = threading.Lock()
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+
+
 @contextmanager
 def baseline_lock(root: Path):
-    """Serialize baseline synchronization using an OS file lock released automatically on crash."""
+    """Serialize baseline synchronization using a thread lock plus OS file lock."""
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    key = os.path.normcase(str(root))
+    with _LOCK_GUARD:
+        tlock = _THREAD_LOCKS.setdefault(key, threading.Lock())
     lock = root / ".baseline.lock"
     deadline = time.monotonic() + 30
+    if not tlock.acquire(timeout=30):
+        raise ValueError("Baseline writer is busy; wait for the active synchronization to finish")
     try:
-        with lock.open("a+b") as handle:
-            if not handle.tell():
-                handle.write(b"0")
-                handle.flush()
+        handle = None
+        while handle is None:
+            try:
+                handle = lock.open("a+b")
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValueError(
+                        "Baseline writer is busy; wait for the active synchronization to finish"
+                    ) from None
+                time.sleep(0.02)
+        with handle:
             while True:
                 handle.seek(0)
                 try:
@@ -137,6 +154,7 @@ def baseline_lock(root: Path):
     finally:
         with suppress(OSError):
             lock.unlink(missing_ok=True)
+        tlock.release()
 
 
 def baseline_destination(root: Path, manifest: dict, reserved: set[str] | None = None) -> tuple[Path, bool]:
@@ -338,12 +356,26 @@ def _sync_baselines(root: Path) -> dict:
         raise ValueError("Installed upstream baseline or license files are incomplete")
     sources = [("fxhoudinimcp", package.version, upstream + licenses)]
     project = Path(__file__).resolve().parents[2]
+    skill_names = (
+        "fx-workflow",
+        "fx-learning",
+        "nuke-workflow",
+        "maya-workflow",
+        "fx-project-learn",
+        "fx-visual-critique",
+    )
     skills = [
         (project / "skills" / name / "SKILL.md", f"skills/{name}/SKILL.md")
-        for name in ("fx-workflow", "fx-learning", "nuke-workflow", "maya-workflow", "fx-project-learn")
+        for name in skill_names
+    ]
+    skill_refs = [
+        (ref, "skills/" + ref.relative_to(project / "skills").as_posix())
+        for name in skill_names
+        if (project / "skills" / name / "references").is_dir()
+        for ref in sorted((project / "skills" / name / "references").rglob("*.md"))
     ]
     if all(path.is_file() for path, _ in skills):
-        sources.append(("fx-agent", __version__, skills))
+        sources.append(("fx-agent", __version__, skills + skill_refs))
     base = contained(root, "baselines")
     if base != root / "baselines":
         raise ValueError("Baseline directories must not be links")

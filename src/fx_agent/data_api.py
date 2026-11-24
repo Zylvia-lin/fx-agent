@@ -22,6 +22,7 @@ from fx_agent.module_guides import ModuleGuides, refresh_guides
 from fx_agent.modules import module_catalog
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store, compact, scope_id
+from fx_agent.task_gates import TaskGates
 from fx_agent.templates import TemplateLibrary, TemplatePolicy
 
 RULES_PAGINATION_ERROR = (
@@ -891,6 +892,199 @@ async def fx_review_template_effects(
         media_source=media_source,
         media_reviews=[x.model_dump() for x in media_reviews or []],
     )
+
+
+async def fx_prepare_task_brief(
+    task_id: str,
+    query: str = "",
+    include_candidates: bool = False,
+    max_chars: int = 16000,
+) -> dict:
+    """Aggregate scoped rules, context, module guides, effects and memories in one read.
+
+    Automatically records verified task-gate receipts for every component fetched
+    so production or quick_tweak tasks avoid 6+ serial preflight tool calls.
+    For Houdini, the local MCP wrapper also loads required upstream workflow guides.
+    """
+    if not 2048 <= max_chars <= 32000:
+        raise ValueError("max_chars must be between 2048 and 32000")
+
+    def build() -> dict:
+        from fx_agent.data_context import current_backend
+
+        root = data_root()
+        gates = TaskGates(root)
+        task = gates.get(task_id, detail=True)
+        project_id = task["project_id"]
+        shot_id = task["shot_id"]
+        software = task["software"]
+        modules = list(task["modules"])
+        kind = task["kind"]
+        search_query = query.strip() or task["goal"]
+
+        rules_budget = min(6000, max(1024, max_chars // 3))
+        if not current_backend() and not database_path(root).exists():
+            rules = production_rules(software) | {
+                "user_rules": [],
+                "omitted_rules": 0,
+                "next_offset": 0,
+            }
+        else:
+            rules = LearningStore(root).get_rules(project_id, rules_budget, 0, software)
+        gates.observe(
+            task_id,
+            "fx_get_production_rules",
+            {"project_id": project_id, "offset": 0, "software": software},
+            rules,
+        )
+        # Auto-expand detail_required user rules so a single brief satisfies rules gate cleanly.
+        expanded_rules: list[dict] = []
+        for rule_card in rules.get("user_rules", []):
+            if rule_card.get("detail_required"):
+                r_scope = rule_card.get("scope", "global")
+                r_proj = project_id if r_scope == "project" else ""
+                full_rule = LearningStore(root).get_rule(
+                    rule_card["rule_key"], r_scope, r_proj, rule_card.get("revision", 0)
+                )
+                gates.observe(
+                    task_id,
+                    "fx_get_user_rule",
+                    {
+                        "rule_key": rule_card["rule_key"],
+                        "scope": r_scope,
+                        "project_id": r_proj,
+                        "revision": rule_card.get("revision", 0),
+                    },
+                    full_rule,
+                )
+                expanded_rules.append(full_rule)
+
+        context_budget = min(2000, max(512, max_chars // 8))
+        context = Store(root).get_context(project_id, shot_id, "", context_budget, software)
+
+        brief: dict = {
+            "task_id": task_id,
+            "kind": kind,
+            "software": software,
+            "modules": modules,
+            "query": search_query,
+            "production_rules": rules,
+            "context": context,
+        }
+        if expanded_rules:
+            brief["expanded_user_rules"] = expanded_rules
+
+        if kind != "quick_tweak":
+            per_mod_budget = min(3600, max(1000, (max_chars // 4) // max(1, len(modules))))
+            module_knowledge: dict[str, dict] = {}
+            truncated_modules: list[str] = []
+            guides = ModuleGuides(root)
+            for mod in modules:
+                mod_res = guides.get(project_id, mod, software, per_mod_budget, 0)
+                gates.observe(
+                    task_id,
+                    "fx_get_module_knowledge",
+                    {"project_id": project_id, "module": mod, "software": software, "offset": 0},
+                    mod_res,
+                )
+                module_knowledge[mod] = mod_res
+                if mod_res.get("truncated"):
+                    truncated_modules.append(mod)
+            brief["module_knowledge"] = module_knowledge
+
+            effects_budget = min(3200, max(800, max_chars // 5))
+            effects = EffectLibrary(root).search(
+                search_query, software=software, limit=5, max_chars=effects_budget
+            )
+            gates.observe(
+                task_id,
+                "fx_search_effects",
+                {"software": software, "query": search_query},
+                effects,
+            )
+            brief["effect_matches"] = effects
+
+            mem_budget = min(3200, max(800, max_chars // 5))
+            mem_store = MemoryStore(root)
+            primary_mod = modules[0] if len(modules) == 1 else ""
+            memories = mem_store.search(
+                project_id,
+                search_query,
+                shot_id,
+                include_candidates,
+                5,
+                mem_budget,
+                software,
+                primary_mod,
+            )
+            mem_args = {
+                "project_id": project_id,
+                "shot_id": shot_id,
+                "software": software,
+                "module": primary_mod,
+                "query": search_query,
+                "include_candidates": include_candidates,
+            }
+            gates.observe(task_id, "fx_search_memory", mem_args, memories)
+            brief["memory_matches"] = memories
+
+            if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
+                cand_res = mem_store.search(
+                    project_id,
+                    search_query,
+                    shot_id,
+                    True,
+                    5,
+                    min(2000, mem_budget),
+                    software,
+                    primary_mod,
+                )
+                gates.observe(
+                    task_id,
+                    "fx_search_memory",
+                    mem_args | {"include_candidates": True},
+                    cand_res,
+                )
+                brief["candidate_memories"] = cand_res
+
+            extra_module_memories: dict[str, dict] = {}
+            for mod in truncated_modules:
+                if mod == primary_mod:
+                    continue
+                mod_mem = mem_store.search(
+                    project_id,
+                    search_query,
+                    shot_id,
+                    include_candidates,
+                    3,
+                    min(1500, mem_budget),
+                    software,
+                    mod,
+                )
+                mod_mem_args = mem_args | {"module": mod}
+                gates.observe(task_id, "fx_search_memory", mod_mem_args, mod_mem)
+                extra_module_memories[mod] = mod_mem
+            if extra_module_memories:
+                brief["module_memory_matches"] = extra_module_memories
+
+        brief["task_state"] = gates.get(task_id)
+        # Keep response within max_chars by trimming secondary preview fields first.
+        if len(compact(brief)) > max_chars:
+            for key in ("candidate_memories", "module_memory_matches", "context"):
+                if key in brief and len(compact(brief)) > max_chars:
+                    brief[key] = {"truncated": True, "omitted_for_budget": True}
+            if "module_knowledge" in brief and len(compact(brief)) > max_chars:
+                for mod, entry in brief["module_knowledge"].items():
+                    if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                        entry = dict(entry)
+                        entry["text"] = entry["text"][:400]
+                        entry["brief_trimmed"] = True
+                        brief["module_knowledge"][mod] = entry
+                        if len(compact(brief)) <= max_chars:
+                            break
+        return brief
+
+    return await asyncio.to_thread(build)
 
 
 def shared_functions():

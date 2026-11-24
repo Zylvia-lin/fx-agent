@@ -11,16 +11,15 @@ description: 由当前宿主助手通过 FX Agent 操作 Nuke 15.2 合成，参�
 
 > 参数名区分：任务管理工具使用 `task_id`；受门禁的读取、修改、校验、保存与渲染工具使用 `fx_task_id`。
 
-1. **只读核对与建任务**：明确目标画面、动态、素材/参考、验收和预算；只读调用 `fx_status`、`list_nuke_sessions` / `get_nuke_connection_status`、`get_script_info`、`fx_get_module_catalog(software="nuke")`，再用 `fx_begin_task` 登记 `kind="production"`、`software="nuke"`、真实 `scene_path`、`endpoint`、`modules` 与 `input_paths`（与 Houdini/Maya 共用 `data_root`）。
-2. **收集证据（携带 `fx_task_id`）**：
-   - `fx_get_production_rules(project_id=..., software="nuke", offset=0)` 按 `next_offset` 翻页（`detail_required` 用 `fx_get_user_rule` 展开）；软件专属规范已独立返回，切勿把 Houdini `$HIP` 规则写入 Nuke 旋钮。
-   - 读取 `fx_get_module_knowledge(..., software="nuke", module=...)`、`fx_search_effects(software="nuke", ...)` 与 `fx_search_memory(software="nuke", ...)`，完整展开选中来源。模块补充 `truncated=true` 时改为按该 `module` 检索并展开选中项，零命中写清 `no_match_reason`。
-3. **保存方案（`fx_set_task_plan`）**：填写 `method`、`applies_when`、`changes`、实际读过的 `selected_sources` 及逐来源 `source_adaptations`（效果卡另填 `source_node_paths`），或真实 `no_match_reason`。
+1. **只读核对与建任务**：明确目标画面、动态、素材/参考、验收和预算；只读调用 `fx_status`、`list_nuke_sessions` / `get_nuke_connection_status`、`get_script_info`、`fx_get_module_catalog(software="nuke")`，再用 `fx_begin_task` 登记 `software="nuke"`、真实 `scene_path`、`endpoint`、`modules` 与 `input_paths`（正式合成/搭建用 `kind="production"`；局部调色/参数微调用 `kind="quick_tweak"`，仍保留端口/场景锁，禁重型构建且上限 15 次编辑，可随时 `fx_update_task` 升级 `production`）。
+2. **收集证据（优先调用 `fx_prepare_task_brief`）**：
+   - 优先调用 `fx_prepare_task_brief(task_id=...)` 一次性按预算读取 `production_rules(software="nuke")`（软件专属规范，切勿把 Houdini `$HIP` 写进 Nuke 旋钮）、`context`、模块知识、效果卡与记忆检索，并自动记齐门禁凭据；需要翻页或展开全文时再携带 `fx_task_id` 调用 `fx_get_effect` / `fx_get_memory` / `fx_get_template`。
+3. **保存方案（`production` 必做：`fx_set_task_plan`）**：`quick_tweak` 读完简报后即可局部微调；`production` 填写 `method`、`applies_when`、`changes`、实际读过的 `selected_sources` 及逐来源 `source_adaptations`（效果卡另填 `source_node_paths`），或真实 `no_match_reason`。
 4. **受门禁制作**：节点修改、批量操作、保存与渲染均携带同一 `fx_task_id`。输入、目标 NK、帧段、FPS、格式或色彩管理变化时，先 `fx_update_task` 再重查证据并更新方案。只读调查无需放行。
-5. **验收与完成**：
+5. **验收、视觉审片与完成**：
    - 实际调用 `save_script`（按既有用户授权填写 `confirm`；仅确认提示不算保存）。
-   - 携带 `fx_task_id` 执行 `find_broken_reads` 并实际查看输出或 Viewer 截图。
-   - 调用 `fx_archive_case` 归档已保存 NK、预览及必要依赖，在 `fx-nuke` 入口调用 `fx_finish_task`（提交当前 `revision`、`case_id` 和真实 `verification_note`）。
+   - 携带 `fx_task_id` 执行 `find_broken_reads`，并**按配套 `fx-visual-critique`（及其 `references/nuke_comp_critique.md`）做合成诊断审片**：用 `set_nuke_viewer_state` + `capture_nuke_viewer` 分别检查默认曝光、提亮暗部查黑场色偏、压暗查高光滚降、以及 Alpha/RGB 单通道边缘与颗粒匹配，审完复位 Viewer。
+   - `production` 调用 `fx_archive_case` 归档已保存 NK、预览及必要依赖，在 `fx-nuke` 入口调用 `fx_finish_task`（提交当前 `revision`、`case_id` 和包含审片结论的真实 `verification_note`）。
    - 用户确认后再通过共享入口带同一 `fx_task_id` 提交 `accepted` 反馈和 `fx_finalize_learning`。
 6. **疑问处理**：查证后仍不明确处用 `fx_task_question` 登记并向用户集中发问，仅用真实答复（`answer`、`user_quote`、`source_ref`）解除。重启或续作须重新核对现场并更新任务。
 

@@ -5,7 +5,10 @@ import copy
 from contextlib import nullcontext
 
 from fx_agent.data_contracts import KNOWLEDGE_WRITES as KNOWLEDGE_WRITES
+from fx_agent.modules import HOUDINI
 from fx_agent.task_gates import (
+    HEAVY_BUILD_TOOLS,
+    QUICK_TWEAK_MAX_EDITS,
     SourceAdaptation,
     TaskGates,
     TaskSpec,
@@ -23,6 +26,7 @@ GATE_TOOLS = {
     "fx_task_question",
     "fx_finish_task",
 }
+BRIEF_TOOLS = {"fx_prepare_task_brief"}
 SAVES = {"save_scene", "save_script"}
 RENDER_VIEW_WRITES = {
     "fx_render_view_start",
@@ -198,7 +202,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
         gates = TaskGates(root_provider())
         task = await asyncio.to_thread(gates.get, task_id, True)
         live_kwargs = {}
-        if task["kind"] == "production":
+        if task["kind"] in {"production", "quick_tweak"}:
             target = await live_target(mcp.get_context())
             await asyncio.to_thread(gates.authorize, task_id, software, *target)
             if isinstance(gates, TaskGates):
@@ -213,12 +217,12 @@ def install_task_gates(mcp, software, root_provider, live_target):
 
     original = manager.call_tool
     for tool in manager.list_tools():
-        if tool.name in GATE_TOOLS:
+        if tool.name in GATE_TOOLS | BRIEF_TOOLS:
             continue
         tool.parameters = copy.deepcopy(tool.parameters)
         tool.parameters.setdefault("properties", {})["fx_task_id"] = {
             "type": "string",
-            "description": "Task evidence scope.",
+            "description": "Task evidence scope (use fx_task_id here; task management tools use task_id).",
         }
         if (
             is_scene_write(tool.name)
@@ -230,6 +234,49 @@ def install_task_gates(mcp, software, root_provider, live_target):
     async def guarded(name, arguments, context=None, convert_result=False):
         if name in GATE_TOOLS:
             return await original(name, arguments, context=context, convert_result=convert_result)
+        if name in BRIEF_TOOLS:
+            result = await original(name, arguments, context=context, convert_result=False)
+            # For Houdini production/learning briefs, locally load required upstream workflow guides
+            # and record their receipts so a single brief satisfies the entire preflight gate.
+            if (
+                software == "houdini"
+                and isinstance(result, dict)
+                and result.get("kind") != "quick_tweak"
+                and manager.get_tool("get_workflow_guide") is not None
+            ):
+                brief_task_id = str(arguments.get("task_id", "") or result.get("task_id", ""))
+                topics = ["discipline"] + sorted(
+                    {
+                        HOUDINI[m][1]
+                        for m in result.get("modules", [])
+                        if m in HOUDINI and HOUDINI[m][1]
+                    }
+                )
+                guides_out: dict[str, str] = {}
+                gates = TaskGates(root_provider())
+                for topic in topics:
+                    guide_val = await original(
+                        "get_workflow_guide",
+                        {"topic": topic},
+                        context=context,
+                        convert_result=False,
+                    )
+                    await asyncio.to_thread(
+                        gates.observe,
+                        brief_task_id,
+                        "get_workflow_guide",
+                        {"topic": topic},
+                        guide_val,
+                    )
+                    text = guide_val if isinstance(guide_val, str) else str(guide_val)
+                    guides_out[topic] = text[:1200]
+                result = result | {
+                    "workflow_guides": guides_out,
+                    "task_state": await asyncio.to_thread(gates.get, brief_task_id),
+                }
+            if convert_result:
+                result = manager.get_tool(name).fn_metadata.convert_result(result)
+            return result
         arguments = dict(arguments)
         task_id = arguments.pop("fx_task_id", "")
         acceptance = (
@@ -246,7 +293,9 @@ def install_task_gates(mcp, software, root_provider, live_target):
         required = scene_write or knowledge_write or name == "fx_finalize_learning" or acceptance
         if required and not task_id:
             raise ValueError(
-                "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
+                "Task gate requires fx_task_id (note: fx_begin_task/fx_get_task/fx_prepare_task_brief "
+                "use task_id, while gated DCC/knowledge tools use fx_task_id); "
+                "call fx_begin_task then fx_prepare_task_brief"
             )
         if not task_id:
             return await original(name, arguments, context=context, convert_result=convert_result)
@@ -260,6 +309,17 @@ def install_task_gates(mcp, software, root_provider, live_target):
             if needs_lock and (await asyncio.to_thread(gates.get, task_id, True))["endpoint"] != task["endpoint"]:
                 raise ValueError("Task target changed; retry with current task state")
             if scene_write:
+                if task["kind"] == "quick_tweak":
+                    if name in HEAVY_BUILD_TOOLS:
+                        raise ValueError(
+                            f"Tool '{name}' is blocked in quick_tweak mode; "
+                            "upgrade kind to 'production' via fx_update_task"
+                        )
+                    if name not in SAVES | JOBS and task["edit_seq"] >= QUICK_TWEAK_MAX_EDITS:
+                        raise ValueError(
+                            f"quick_tweak edit limit ({QUICK_TWEAK_MAX_EDITS}) reached; "
+                            "upgrade kind to 'production' via fx_update_task"
+                        )
                 target = await live_target(context)
                 endpoint, scene_path = target[:2]
                 scene_context = target[2] if len(target) > 2 else None

@@ -49,6 +49,113 @@ class TemplatePolicy(BaseModel):
     auto_dependencies: bool = True
 
 
+_SOLVER_HINTS = (
+    ("pyro", ("pyrosolver", "smokesolver", "gas", "pyrobakevolume")),
+    ("particles", ("popsolver", "popnet", "popsource", "popforce")),
+    ("flip", ("flipsolver", "fliptank", "whitewatersolver")),
+    ("vellum", ("vellumsolver", "vellumconstraints", "vellumconfigure")),
+    ("rbd", ("rbdbulletsolver", "rbdmaterialfracture", "voronoifracture", "bulletrbdsolver")),
+    ("compositing", ("write", "merge", "keylight", "grade", "zdefocus", "glow")),
+)
+
+
+def _build_draft_skeleton(snapshot: dict, *, limit: int = 12) -> list[dict]:
+    """Derive deterministic provisional branch drafts from a static snapshot (never writes cards)."""
+    nodes = snapshot.get("nodes") or []
+    if not nodes:
+        return []
+    by_path = {n["path"]: n for n in nodes if n.get("path")}
+    upstream: dict[str, list[str]] = {}
+    for edge in snapshot.get("connections") or []:
+        src, dst = edge.get("src_path", ""), edge.get("dst_path", "")
+        if src and dst:
+            upstream.setdefault(dst, []).append(src)
+
+    def _is_output(node: dict) -> bool:
+        ntype = str(node.get("type", "")).lower()
+        path = str(node.get("path", "")).lower()
+        return (
+            ntype in {"write", "writegeo", "mantra", "karma", "ifd", "filecache", "rop_geometry", "rop_alembic", "usdrender_rop"}
+            or ntype.startswith(("rop_", "redshift_rop", "arnold", "octane"))
+            or path.startswith("/out/")
+        )
+
+    sinks = [n for n in nodes if _is_output(n)]
+    if not sinks:
+        # Fall back to top-level /obj containers or leaf nodes with incoming connections.
+        has_outgoing = {e.get("src_path") for e in snapshot.get("connections") or []}
+        sinks = [
+            n
+            for n in nodes
+            if n.get("path") not in has_outgoing and n.get("path") in upstream
+        ] or nodes[:limit]
+
+    box_labels = [
+        (b.get("label") or "").strip()
+        for b in (snapshot.get("netboxes") or [])
+        if (b.get("label") or "").strip()
+    ]
+    note_labels = [
+        (s.get("text") or "").strip()[:120]
+        for s in (snapshot.get("sticky_notes") or [])
+        if (s.get("text") or "").strip()
+    ]
+
+    drafts: list[dict] = []
+    seen_sets: set[frozenset[str]] = set()
+    for sink in sinks:
+        if len(drafts) >= limit:
+            break
+        start = sink.get("path", "")
+        if not start:
+            continue
+        visited: list[str] = []
+        queue = [start]
+        seen_local = {start}
+        while queue and len(visited) < 40:
+            cur = queue.pop(0)
+            visited.append(cur)
+            for parent in upstream.get(cur, []):
+                if parent not in seen_local:
+                    seen_local.add(parent)
+                    queue.append(parent)
+        # Also collect child nodes inside a container path (e.g. /obj/geo1/*).
+        prefix = start.rstrip("/") + "/"
+        for p in by_path:
+            if p.startswith(prefix) and p not in seen_local and len(visited) < 40:
+                seen_local.add(p)
+                visited.append(p)
+        sig = frozenset(visited)
+        if sig in seen_sets:
+            continue
+        seen_sets.add(sig)
+        types_text = " ".join(str(by_path.get(p, {}).get("type", "")).lower() for p in visited)
+        solvers = [
+            family
+            for family, keywords in _SOLVER_HINTS
+            if any(kw in types_text for kw in keywords)
+        ]
+        node_labels = [
+            str(by_path[p].get("parameters", {}).get("label", "")).strip()[:120]
+            for p in visited
+            if p in by_path and str(by_path[p].get("parameters", {}).get("label", "")).strip()
+        ]
+        slug = re.sub(r"[^a-z0-9_]+", "_", sink.get("name", "branch").lower()).strip("_") or "branch"
+        drafts.append(
+            {
+                "suggested_effect_key": f"draft_{slug}",
+                "suggested_title": f"{sink.get('name', start)} ({'/'.join(solvers) or sink.get('type', 'branch')})",
+                "output_node": start,
+                "detected_solvers": solvers,
+                "node_paths": sorted(visited),
+                "author_labels": list(dict.fromkeys(node_labels + box_labels[:3] + note_labels[:2]))[:6],
+                "naming_basis": "provisional",
+                "requires_visual_confirmation": True,
+            }
+        )
+    return drafts
+
+
 def _cache(path: Path) -> bool:
     return path.suffix.lower() in CACHES or path.name.lower().endswith((".bgeo.sc", ".geo.sc"))
 
@@ -570,6 +677,7 @@ class TemplateLibrary:
         return {
             "state": "imported" if snapshot["parse_status"] == "parsed" else "partial",
             **self._card(record),
+            "draft_suggestions": _build_draft_skeleton(snapshot),
         }
 
     @staticmethod

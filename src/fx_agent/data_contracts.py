@@ -46,6 +46,7 @@ DATA_TOOLS = frozenset(
         "fx_search_effects",
         "fx_get_effect",
         "fx_review_template_effects",
+        "fx_prepare_task_brief",
     ]
 )
 

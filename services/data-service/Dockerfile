@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY src/fx_agent/__init__.py src/fx_agent/archive.py src/fx_agent/baselines.py \
      src/fx_agent/config.py src/fx_agent/data_api.py src/fx_agent/data_context.py \
      src/fx_agent/data_contracts.py src/fx_agent/data_import.py src/fx_agent/dream.py \
-     src/fx_agent/effect_cards.py src/fx_agent/effect_study.py src/fx_agent/handoff.py \
+     src/fx_agent/effect_cards.py src/fx_agent/effect_study.py src/fx_agent/embeddings.py \
+     src/fx_agent/handoff.py \
      src/fx_agent/learning.py src/fx_agent/memory.py src/fx_agent/migration.py \
      src/fx_agent/module_guides.py src/fx_agent/modules.py src/fx_agent/production_rules.py \
      src/fx_agent/store.py src/fx_agent/task_gates.py src/fx_agent/templates.py \

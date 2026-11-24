@@ -42,7 +42,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 9
+    SCHEMA_VERSION = 10
     _verified_paths: set[tuple] = set()
 
     def _schema_cache_key(self) -> tuple | None:
@@ -84,7 +84,7 @@ class Store:
                 if key:
                     self._verified_paths.add(key)
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute("BEGIN IMMEDIATE")
             # A concurrent initializer may have upgraded while we waited for the lock.
@@ -94,7 +94,7 @@ class Store:
                 if key:
                     self._verified_paths.add(key)
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
+            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -205,6 +205,16 @@ class Store:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS task_gates_endpoint ON task_gates("
                 "json_extract(payload,'$.endpoint'),COALESCE(json_extract(payload,'$.device_id'),''))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS embeddings ("
+                "item_type TEXT NOT NULL, item_id TEXT NOT NULL, software TEXT NOT NULL, "
+                "model TEXT NOT NULL, dim INTEGER NOT NULL, text_hash TEXT NOT NULL, "
+                "vector TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "PRIMARY KEY(item_type, item_id, model))"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS embeddings_scope ON embeddings(item_type,software,model)"
             )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
         try:

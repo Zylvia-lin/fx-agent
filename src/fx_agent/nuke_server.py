@@ -14,6 +14,7 @@ from fx_agent.nuke_graph_tools import register as register_graph_tools
 from fx_agent.nuke_sessions import list_sessions
 from fx_agent.nuke_viewer_tools import register as register_viewer_tools
 from fx_agent.task_tools import install_task_gates
+from fx_agent.tool_profiles import apply_tool_profile
 
 
 class SerializedConnection:
@@ -201,6 +202,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
             return await original_call(*args, **kwargs)
 
     manager.call_tool = serialized_call
+    apply_tool_profile(mcp, software="nuke")
     return mcp
 
 

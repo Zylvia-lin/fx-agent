@@ -1044,9 +1044,35 @@ class EffectLibrary:
             docs.append((r, counts, fields, sum(counts.values())))
         average = sum(d[3] for d in docs) / max(len(docs), 1) or 1
         frequencies = {t: sum(t in d[1] for d in docs) for t in wanted}
-        scored = []
-        for r, counts, fields, length in docs:
-            score = sum(
+        from fx_agent.embeddings import embedding_enabled, semantic_scores
+
+        sem_scores: dict[str, float] = {}
+        if query.strip() and docs and embedding_enabled():
+            sem_items = {
+                r["card_id"]: " ".join(
+                    [
+                        r["title"],
+                        *r.get("aliases", []),
+                        r["subject"],
+                        r["appearance"],
+                        r["motion"],
+                        r.get("effect_kind", ""),
+                        *r.get("effect_family", []),
+                        *r.get("behaviors", []),
+                        r.get("method", ""),
+                    ]
+                )
+                for r, _, _, _ in docs
+            }
+            sem_scores = semantic_scores(
+                self.root,
+                item_type="effect_card",
+                software=software,
+                query=query,
+                items=sem_items,
+            )
+        raw_lex = [
+            sum(
                 math.log(1 + (len(docs) - frequencies[t] + 0.5) / (frequencies[t] + 0.5))
                 * counts[t]
                 * 2.2
@@ -1054,6 +1080,17 @@ class EffectLibrary:
                 for t in wanted
                 if counts[t]
             )
+            for _, counts, _, length in docs
+        ]
+        max_lex = max(raw_lex, default=0.0)
+        scored = []
+        for (r, _counts, fields, _length), lex_score in zip(docs, raw_lex, strict=True):
+            sem_sim = sem_scores.get(r["card_id"], 0.0)
+            if sem_scores:
+                lex_norm = (lex_score / max_lex) if max_lex > 0 else 0.0
+                score = 0.55 * lex_norm + 0.45 * sem_sim
+            else:
+                score = lex_score
             explicit = " ".join(
                 r.get("effect_family", []) + r.get("behaviors", []) + [r.get("effect_kind", "")]
             )
@@ -1094,7 +1131,7 @@ class EffectLibrary:
                 if present & wanted_concepts
                 else "candidate"
             )
-            if not query or score > 0 or present & wanted_concepts:
+            if not query or lex_score > 0 or present & wanted_concepts or sem_sim >= 0.35:
                 scored.append((score, r, fields, kind, missing, unverified))
         scored.sort(
             key=lambda d: ({"complete": 2, "partial": 1, "candidate": 0}[d[3]], d[0]), reverse=True

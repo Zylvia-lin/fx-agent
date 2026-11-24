@@ -9,6 +9,7 @@ from fx_agent.config import DEFAULT_HOUDINI_PORT, data_root
 from fx_agent.data_api import shared_functions
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.task_tools import install_task_gates
+from fx_agent.tool_profiles import apply_tool_profile
 from fx_agent.vfx_catalog import fx_search_published_templates
 
 HOST_WORKFLOW_INSTRUCTIONS = """【FX Agent 宿主执行约束：制作任务必须逐关完成】
@@ -117,4 +118,5 @@ def get_server():
         return f"127.0.0.1:{bridge.port}", info["hip_file"], settings
 
     install_task_gates(mcp, "houdini", data_root, live_target)
+    apply_tool_profile(mcp, software="houdini")
     return mcp

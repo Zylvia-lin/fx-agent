@@ -20,7 +20,7 @@ class TaskSpec(BaseModel):
     project_id: Identifier
     shot_id: Identifier
     software: Literal["houdini", "nuke", "maya"]
-    kind: Literal["production", "learning"] = "production"
+    kind: Literal["production", "quick_tweak", "learning"] = "production"
     scene_path: str = Field(min_length=1, max_length=4096)
     endpoint: str = Field(pattern=r"^127\.0\.0\.1:[0-9]{1,5}$")
     goal: str = Field(min_length=1, max_length=2000)
@@ -35,6 +35,24 @@ class TaskSpec(BaseModel):
         if not 1 <= int(self.endpoint.rsplit(":", 1)[1]) <= 65535:
             raise ValueError("Invalid endpoint port")
         return self
+
+
+QUICK_TWEAK_MAX_EDITS = 15
+HEAVY_BUILD_TOOLS = frozenset(
+    {
+        "setup_pyro_sim",
+        "setup_rbd_sim",
+        "setup_flip_sim",
+        "setup_vellum_sim",
+        "build_network",
+        "build_sop_chain",
+        "batch_reconnect",
+        "create_hda",
+        "setup_basic_comp",
+        "setup_keyer",
+        "setup_grade_chain",
+    }
+)
 
 
 class SourceAdaptation(BaseModel):
@@ -232,6 +250,7 @@ class TaskGates:
             "case_id": "",
         }
         task["assets"] = self._assets(task)
+        task["rules_hash"] = self._rules_hash(task["project_id"])
         if current_device():
             task["device_id"] = current_device()
         with self.store.connection() as db:
@@ -305,6 +324,8 @@ class TaskGates:
             and r.get("project_id", "") in {"", task["project_id"]}
         }
         missing = [] if complete and detail_keys <= expanded else ["rules"]
+        if task.get("kind") == "quick_tweak":
+            return missing
         for module in task["modules"]:
             selected = set((task.get("plan") or {}).get("selected_sources", []))
             expanded_module = any(
@@ -426,10 +447,13 @@ class TaskGates:
             )
             old_spec = {k: task.get(k) for k in spec_keys}
             same_spec = old_spec == new_spec
+            quick_tweak_upgrade = (
+                task["kind"] == "quick_tweak" and new_spec["kind"] == "production"
+            )
             scope_changed = (
                 task["project_id"] != new_spec["project_id"]
                 or task["software"] != new_spec["software"]
-                or task["kind"] != new_spec["kind"]
+                or (task["kind"] != new_spec["kind"] and not quick_tweak_upgrade)
             )
             current_rules_hash = self._rules_hash(new_spec["project_id"])
             rules_changed = task.get("rules_hash") and task.get("rules_hash") != current_rules_hash
@@ -622,15 +646,33 @@ class TaskGates:
             self._summary(task) | found | {"action_required": "continue" if answer else "ask_user"}
         )
 
-    def authorize(self, task_id, software, endpoint, scene_path, scene_context=None):
+    def authorize(
+        self, task_id, software, endpoint, scene_path, scene_context=None, *, tool_name: str = ""
+    ):
         task = self.get(task_id, True)
-        if (
-            task["kind"] != "production"
+        kind = task["kind"]
+        if kind == "quick_tweak":
+            if task["state"] not in {"needs_knowledge", "ready", "verified"}:
+                raise ValueError("Task is not active; check fx_get_task")
+            if tool_name and tool_name in HEAVY_BUILD_TOOLS:
+                raise ValueError(
+                    f"Tool '{tool_name}' is blocked in quick_tweak mode; upgrade kind to 'production' via fx_update_task"
+                )
+            if (
+                tool_name
+                and tool_name not in {"save_scene", "save_script", "render_viewport", "render_quad_view", "render_sheet", "render_node_network", "fx_render_view_start", "fx_render_view_save", "fx_render_view_stop", "render_maya_frame", "render_frames", "write_cache", "cook_frame_range", "cook_top_node", "start_render"}
+                and task["edit_seq"] >= QUICK_TWEAK_MAX_EDITS
+            ):
+                raise ValueError(
+                    f"quick_tweak edit limit ({QUICK_TWEAK_MAX_EDITS}) reached; upgrade kind to 'production' via fx_update_task"
+                )
+        elif (
+            kind != "production"
             or task["state"] not in {"ready", "verified"}
             or not task["plan"]
         ):
             raise ValueError(
-                "Task is not ready; understand requirements, read knowledge and save a plan"
+                "Task is not ready; call fx_prepare_task_brief then fx_set_task_plan"
             )
         if (
             task["software"] != software
@@ -643,11 +685,17 @@ class TaskGates:
         ):
             raise ValueError("Task environment/rules changed; update task and recheck knowledge")
         if self._missing(task):
-            raise ValueError("Task knowledge changed; recheck reads and save a plan")
-        self._source_adaptations(
-            task, task["plan"].get("selected_sources", []),
-            task["plan"].get("source_adaptations", []),
-        )
+            raise ValueError(
+                "Task knowledge missing ("
+                + ",".join(self._missing(task))
+                + "); call fx_prepare_task_brief or read missing items"
+            )
+        if kind == "production":
+            self._source_adaptations(
+                task,
+                task["plan"].get("selected_sources", []),
+                task["plan"].get("source_adaptations", []),
+            )
         if any(not q.get("answer") for q in task["questions"]):
             raise ValueError("Unresolved task questions; ask the user before modifying")
         if scene_context is not None:
@@ -735,6 +783,7 @@ class TaskGates:
             if tool == "fx_get_production_rules":
                 if arguments.get("project_id", "") != task["project_id"]:
                     return
+                current_hash = self._rules_hash(task["project_id"])
                 receipt.update(
                     offset=arguments.get("offset", 0),
                     next_offset=value.get("next_offset", 0),
@@ -744,8 +793,10 @@ class TaskGates:
                         for r in value.get("user_rules", [])
                         if r.get("detail_required")
                     ],
-                    rules_hash=self._rules_hash(task["project_id"]),
+                    rules_hash=current_hash,
                 )
+                if task.get("kind") == "quick_tweak":
+                    task["rules_hash"] = current_hash
             if tool == "fx_get_user_rule":
                 rule_scope = value.get("scope", "global")
                 rule_project = value.get("project_id", arguments.get("project_id", ""))
@@ -949,9 +1000,9 @@ class TaskGates:
                 raise ValueError("Unresolved question; ask the user and save the answer")
             if not verification_note.strip():
                 raise ValueError("Actual verification observation is required")
-            if not task["plan"] or self._missing(task):
-                raise ValueError("Task needs a plan backed by current knowledge before completion")
-            if task["kind"] == "production":
+            if task["kind"] == "quick_tweak":
+                if self._missing(task):
+                    raise ValueError("Task requires production rules check before completion")
                 self.authorize(
                     task_id,
                     task["software"],
@@ -961,35 +1012,48 @@ class TaskGates:
                 )
                 if task["saved_seq"] != task["edit_seq"]:
                     raise ValueError("Current scene must be saved after the last edit")
-                if task["verified_seq"] != task["edit_seq"]:
-                    raise ValueError("Current scene requires actual structural verification")
-                archive = CaseArchive(self.root)
-                case = archive.get(case_id, task["project_id"])
-                if (
-                    case["shot_id"] != task["shot_id"]
-                    or not archive.verify(case_id, task["project_id"])["valid"]
-                ):
-                    raise ValueError("Final archive scope/checksum mismatch")
-                projects = [
-                    f
-                    for f in case["files"]
-                    if f["role"] == "project" and same_path(f["source_path"], task["scene_path"])
-                ]
-                if not projects or not any(f["role"] == "preview" for f in case["files"]):
-                    raise ValueError("Final archive needs the saved target scene and a preview")
-                if file_hash(Path(task["scene_path"])) != projects[0]["sha256"]:
-                    raise ValueError("Final archive differs from the saved target scene")
             else:
-                from fx_agent.effect_cards import EffectLibrary
-
-                studies = {i for r in task["receipts"].values() for i in r.get("study_ids", [])}
-                if not studies or any(
-                    EffectLibrary(self.root).catalog(i)["learning_state"] != "reviewed"
-                    for i in studies
-                ):
-                    raise ValueError(
-                        "Learning incomplete; investigate evidence, record concrete questions and ask the user"
+                if not task["plan"] or self._missing(task):
+                    raise ValueError("Task needs a plan backed by current knowledge before completion")
+                if task["kind"] == "production":
+                    self.authorize(
+                        task_id,
+                        task["software"],
+                        live_endpoint if live_endpoint is not None else task["endpoint"],
+                        live_scene_path if live_scene_path is not None else task["scene_path"],
+                        live_scene_context,
                     )
+                    if task["saved_seq"] != task["edit_seq"]:
+                        raise ValueError("Current scene must be saved after the last edit")
+                    if task["verified_seq"] != task["edit_seq"]:
+                        raise ValueError("Current scene requires actual structural verification")
+                    archive = CaseArchive(self.root)
+                    case = archive.get(case_id, task["project_id"])
+                    if (
+                        case["shot_id"] != task["shot_id"]
+                        or not archive.verify(case_id, task["project_id"])["valid"]
+                    ):
+                        raise ValueError("Final archive scope/checksum mismatch")
+                    projects = [
+                        f
+                        for f in case["files"]
+                        if f["role"] == "project" and same_path(f["source_path"], task["scene_path"])
+                    ]
+                    if not projects or not any(f["role"] == "preview" for f in case["files"]):
+                        raise ValueError("Final archive needs the saved target scene and a preview")
+                    if file_hash(Path(task["scene_path"])) != projects[0]["sha256"]:
+                        raise ValueError("Final archive differs from the saved target scene")
+                else:
+                    from fx_agent.effect_cards import EffectLibrary
+
+                    studies = {i for r in task["receipts"].values() for i in r.get("study_ids", [])}
+                    if not studies or any(
+                        EffectLibrary(self.root).catalog(i)["learning_state"] != "reviewed"
+                        for i in studies
+                    ):
+                        raise ValueError(
+                            "Learning incomplete; investigate evidence, record concrete questions and ask the user"
+                        )
             with self.store.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = self._read(db, task_id)

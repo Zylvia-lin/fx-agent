@@ -350,10 +350,49 @@ class MemoryStore(Store):
                         matched.append((score, row["rowid"], row))
                 matched.sort(key=lambda item: (item[0], item[1]), reverse=True)
                 rows = [item[2] for item in matched]
-        # Relevance ranking: prioritize title/applies_when hits over body hits, then recency.
-        if tokens and len(rows) > 1:
-            def _rank(row):
+            # Optional hybrid semantic search when an embedding provider is configured.
+            from fx_agent.embeddings import embedding_enabled, semantic_scores
+
+            sem_scores: dict[str, float] = {}
+            if query.strip() and embedding_enabled():
+                all_scoped = db.execute(
+                    f"SELECT rowid,payload,status,{conflict_expr} FROM memories WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY rowid DESC LIMIT 200",
+                    base_params,
+                ).fetchall()
+                sem_items: dict[str, str] = {}
+                scoped_by_id: dict[str, object] = {}
+                for r in all_scoped:
+                    rec = json.loads(r["payload"])
+                    mid = rec["memory_id"]
+                    scoped_by_id[mid] = r
+                    sem_items[mid] = " ".join(
+                        [
+                            rec.get("title", ""),
+                            rec.get("applies_when", ""),
+                            rec.get("method", ""),
+                            rec.get("reason", ""),
+                        ]
+                    )
+                sem_scores = semantic_scores(
+                    self.root,
+                    item_type="memory",
+                    software=software,
+                    query=query,
+                    items=sem_items,
+                )
+                existing_ids = {json.loads(r["payload"])["memory_id"] for r in rows}
+                for mid, sim in sem_scores.items():
+                    if sim >= 0.35 and mid not in existing_ids and mid in scoped_by_id:
+                        rows.append(scoped_by_id[mid])
+        # Relevance ranking: prioritize title/applies_when hits (fused with semantic similarity if enabled).
+        if tokens and len(rows) > 1 or sem_scores:
+            lex_scores: list[int] = []
+            parsed_ids: list[str] = []
+            for row in rows:
                 rec = json.loads(row["payload"])
+                parsed_ids.append(rec["memory_id"])
                 title = rec.get("title", "").casefold()
                 cond = rec.get("applies_when", "").casefold()
                 method = rec.get("method", "").casefold()
@@ -365,9 +404,18 @@ class MemoryStore(Store):
                         score += 2
                     if tok in method:
                         score += 1
-                return (score, row["rowid"])
-
-            rows = sorted(rows, key=_rank, reverse=True)
+                lex_scores.append(score)
+            max_lex = max(lex_scores, default=0)
+            ranked = []
+            for row, lex, mid in zip(rows, lex_scores, parsed_ids, strict=True):
+                if sem_scores:
+                    lex_norm = (lex / max_lex) if max_lex > 0 else 0.0
+                    fused = 0.55 * lex_norm + 0.45 * sem_scores.get(mid, 0.0)
+                    ranked.append((fused, row["rowid"], row))
+                else:
+                    ranked.append((float(lex), row["rowid"], row))
+            ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            rows = [item[2] for item in ranked]
         paged = rows[offset : offset + limit + 1]
         for row in paged[:limit]:
             record = json.loads(row["payload"]) | {"status": row["status"]}
