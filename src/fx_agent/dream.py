@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import re
 import uuid
 from datetime import UTC, datetime
 
@@ -91,17 +90,6 @@ def _plan(db, cursor, limit, software, module):
         library.setdefault(group_key(entry), []).append(entry["memory_id"])
     for row in rows[:limit]:
         record = json.loads(row["payload"])
-        source_texts = [record.get("source_ref", "")]
-        source_texts.extend(
-            json.loads(r[0]).get("source_ref", "")
-            for r in db.execute(
-                "SELECT source_payload FROM knowledge_sources WHERE memory_id=?",
-                (row["memory_id"],),
-            )
-        )
-        effect_ids = sorted(
-            {m for text in source_texts for m in re.findall(r"effect_card:([a-f0-9]{32})", text)}
-        )
         key = group_key(row)
         if key in library:
             groups[key] = library[key]
@@ -115,7 +103,6 @@ def _plan(db, cursor, limit, software, module):
                 "summary": record["method"][:240],
                 "source_project": row["project_id"],
                 "detail_required": True,
-                "effect_card_ids": effect_ids,
             }
         )
     actions = []
@@ -142,14 +129,6 @@ def _plan(db, cursor, limit, software, module):
         "module": module,
         "cursor": cursor,
         "limit": limit,
-        "effect_learning": {
-            "queue_tool": "fx_get_effect_learning_queue",
-            "inspect_tool": "fx_plan_effect_study",
-            "revision_tool": "fx_refine_effect",
-            "merge_tool": "fx_merge_effect_cards",
-            "required": "迭代中理解效果后，读取关联效果卡及新证据，补充明确效果名、类别、运动与其他信息。检查同一效果是否被对象编号或组成渲染层拆碎；核对完整来源、外观、运动和用途后，用fx_merge_effect_cards先预览再合并，保留各层节点、输入、输出差异和证据，旧卡保留历史。不可只凭名称相似或节点相同合并；有独立外观、动态或用途的变体保持独立。疑问先查渲染序列，仍不明确则询问用户。",
-            "automatic_promotion": False,
-        },
     }
 
 

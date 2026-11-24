@@ -1,52 +1,67 @@
-"""Maya uses the existing database, archive, task gate and learned module views."""
+"""Maya uses the existing database, task gate and learned module views."""
 
 import pytest
 
-from fx_agent.archive import CaseArchive
 from fx_agent.memory import MemoryStore
 from fx_agent.modules import module_catalog
 from fx_agent.store import Store
 from fx_agent.task_gates import TaskGates, TaskSpec
-from fx_agent.template_extract import extract_project
 
 
-def test_maya_archive_memories_and_checkpoints_keep_software_scopes(tmp_path):
+def test_maya_memories_and_checkpoints_keep_software_scopes(tmp_path):
     scene = tmp_path / "灯光.ma"
     scene.write_text("// Maya fixture", encoding="utf-8")
-    archive = CaseArchive(tmp_path)
-    case = archive.create(project_id="p", shot_id="s", title="Maya fixture",
-                          files=[{"path": str(scene), "role": "project"}])
-    assert case["files"][0]["archive_path"].startswith("projects/maya/")
     memory = MemoryStore(tmp_path)
-    base = dict(project_id="p", shot_id="s", kind="lighting", title="Maya灯光",
-                method="按实际节点属性修改曝光", reason="插件版本属性不同", applies_when="灯光",
-                source_type="user", source_ref="test fixture", project_dependent=True,
-                case_id=case["case_id"], modules=["lighting"], software="maya")
+    base = dict(
+        project_id="p",
+        shot_id="s",
+        kind="lighting",
+        title="Maya灯光",
+        method="按实际节点属性修改曝光",
+        reason="插件版本属性不同",
+        applies_when="灯光",
+        source_type="user",
+        source_ref="test fixture",
+        modules=["lighting"],
+        software="maya",
+    )
     record = memory.submit(**base)
     assert record["decision"] == "admitted"
     assert memory.search("p", "", software="maya", module="lighting")["items"]
     assert memory.search("p", "", software="houdini", module="lighting")["items"] == []
     assert memory.search("p", "", software="nuke")["items"] == []
     store = Store(tmp_path)
-    store.save_checkpoint(project_id="p", shot_id="s", software="maya", summary="灯光已创建",
-                          scene_path=str(scene), next_steps=["检查渲染"], expected_revision=0)
+    store.save_checkpoint(
+        project_id="p",
+        shot_id="s",
+        software="maya",
+        summary="灯光已创建",
+        scene_path=str(scene),
+        next_steps=["检查渲染"],
+        expected_revision=0,
+    )
     assert store.get_checkpoint("p", "s", software="maya")["software"] == "maya"
     assert store.get_checkpoint("p", "s", software="houdini") is None
-    assert archive.verify(case["case_id"], "p")["valid"]
 
 
-def test_maya_catalog_task_and_unsupported_parser(tmp_path):
+def test_maya_catalog_and_task_gate(tmp_path):
     assert module_catalog("maya")["workflow_skill"] == "maya-workflow"
-    spec = TaskSpec(project_id="p", shot_id="s", software="maya", scene_path="D:/灯光.ma",
-                    endpoint="127.0.0.1:18770", goal="布光", acceptance=["实际渲染"],
-                    budget="64x64", modules=["lighting"])
+    spec = TaskSpec(
+        project_id="p",
+        shot_id="s",
+        software="maya",
+        scene_path="D:/灯光.ma",
+        endpoint="127.0.0.1:18770",
+        goal="布光",
+        acceptance=["实际渲染"],
+        budget="64x64",
+        modules=["lighting"],
+    )
     gates = TaskGates(tmp_path)
     task = gates.begin(spec)
     assert task["software"] == "maya"
     with pytest.raises(ValueError, match="knowledge"):
         gates.plan(task["task_id"], 1, "方法", "条件", "修改", [], "无适用记录")
-    with pytest.raises(ValueError, match="not implemented"):
-        extract_project(b"//Maya", "maya")
 
 
 @pytest.mark.asyncio

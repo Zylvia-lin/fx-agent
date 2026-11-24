@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from fx_agent.archive import CaseArchive
 from fx_agent.memory import MemoryStore
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
@@ -167,24 +166,6 @@ class LearningStore(MemoryStore):
     def record_feedback(self, **values) -> dict:
         request = Feedback(**values)
         attempt = request.attempt_id
-        if request.case_id:
-            archive = CaseArchive(self.root)
-            case = archive.get(request.case_id, request.project_id)
-            if case["shot_id"] != request.shot_id:
-                raise ValueError("Case belongs to another shot")
-            if not archive.verify(request.case_id, request.project_id)["valid"]:
-                raise ValueError("Case evidence failed checksum validation")
-            if request.outcome == "accepted" and not {"project", "preview"} <= {
-                item["role"] for item in case["files"]
-            }:
-                raise ValueError("Accepted case requires project and preview files")
-            projects = [item for item in case["files"] if item["role"] == "project"]
-            if projects and not any(
-                item["role"] == "project"
-                and item["archive_path"].startswith(f"projects/{request.software}/")
-                for item in projects
-            ):
-                raise ValueError("Case project belongs to another software")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute(

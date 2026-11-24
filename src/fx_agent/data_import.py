@@ -8,7 +8,6 @@ import tempfile
 from contextlib import closing, nullcontext
 from pathlib import Path
 
-from fx_agent.archive import CaseArchive, contained, copy_verified, file_hash, publish_directory
 from fx_agent.baselines import (
     baseline_destination,
     baseline_lock,
@@ -18,6 +17,7 @@ from fx_agent.baselines import (
     validate_baseline,
     write_baseline_indexes,
 )
+from fx_agent.fs_utils import contained, copy_verified, file_hash, publish_directory
 from fx_agent.memory import usable_sql
 from fx_agent.migration import migrate_data
 from fx_agent.module_guides import refresh_guides
@@ -33,9 +33,6 @@ TABLES = (
     "memory_aliases",
     "dream_runs",
     "render_issues",
-    "template_studies",
-    "template_effects",
-    "template_effect_reviews",
 )
 SNAPSHOT_TABLES = (*TABLES, "memory_conflicts", "import_runs")
 
@@ -51,52 +48,6 @@ def _connect(path):
     db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     return db
-
-
-def _blocked_effect_components(incoming, db, blocked, blocked_cases):
-    """Preflight component bindings before ID-sorted imports can publish a total card."""
-    rows = {r["card_id"]: dict(r) for r in incoming.execute("SELECT * FROM template_effects")}
-    payloads = {key: json.loads(row["payload"]) for key, row in rows.items()}
-    invalid = set()
-    for key, row in rows.items():
-        local = db.execute("SELECT * FROM template_effects WHERE card_id=?", (key,)).fetchone()
-        payload = payloads[key]
-        if (
-            local is not None
-            and dict(local) != row
-            or row["study_id"] in blocked["template_studies"]
-            or payload.get("case_id") in blocked_cases
-            or any(e.get("case_id") in blocked_cases for e in payload.get("visual_evidence", []))
-        ):
-            invalid.add(key)
-    component_conflicts = set()
-    while True:
-        newly_blocked = set()
-        for key, payload in payloads.items():
-            for component_id in payload.get("component_card_ids", []):
-                source = payloads.get(component_id)
-                if source is None:
-                    local = db.execute(
-                        "SELECT payload FROM template_effects WHERE card_id=?", (component_id,)
-                    ).fetchone()
-                    source = json.loads(local[0]) if local else None
-                if (
-                    component_id in invalid
-                    or not source
-                    or source["study_id"] != payload["study_id"]
-                ):
-                    newly_blocked.add(key)
-            for parent_id in payload.get("parent_ids", []):
-                if parent_id in invalid:
-                    newly_blocked.add(key)
-            for ref in payload.get("refinement_sources", []):
-                kind, _, ref_id = str(ref).partition(":")
-                if kind == "effect_card" and ref_id in invalid:
-                    newly_blocked.add(key)
-        component_conflicts.update(newly_blocked)
-        if newly_blocked <= invalid:
-            return component_conflicts
-        invalid.update(newly_blocked)
 
 
 def _fingerprint(db, root):
@@ -236,34 +187,9 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                             prune_baseline_copies(target, manifest)
                     if apply and sum(report["baseline_snapshots"].values()):
                         write_baseline_indexes(target)
-                blocked_cases = set()
-                for folder in sorted((stage if stage.exists() else archive_path).glob("cases/*")):
-                    if folder.name == ".staging":
-                        continue
-                    current = contained(target, f"cases/{folder.name}")
-                    if current.exists():
-                        if (current / "manifest.json").read_bytes() != (
-                            folder / "manifest.json"
-                        ).read_bytes():
-                            blocked_cases.add(folder.name)
-                            report["conflicts"].append(
-                                {"table": "cases", "key": folder.name, "reason": "case_id_diverged"}
-                            )
-                        else:
-                            case = json.loads(
-                                (folder / "manifest.json").read_text(encoding="utf-8")
-                            )
-                            if not CaseArchive(target).verify(folder.name, case["project_id"])[
-                                "valid"
-                            ]:
-                                raise ValueError("Existing case checksum validation failed")
-                    elif apply:
-                        _publish_tree(folder, current)
                 blocked = {
                     "memories": set(),
                     "learning_feedback": set(),
-                    "template_studies": set(),
-                    "template_effects": set(),
                 }
                 feedback_branches = _feedback_branches(incoming, db)
                 for table in TABLES:
@@ -271,11 +197,6 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                     report["counts"][table] = counts
                     info = incoming.execute(f"PRAGMA table_info({table})").fetchall()
                     keys = [row["name"] for row in sorted(info, key=lambda r: r["pk"]) if row["pk"]]
-                    component_conflicts = (
-                        _blocked_effect_components(incoming, db, blocked, blocked_cases)
-                        if table == "template_effects"
-                        else set()
-                    )
                     order_sql = _order_by_pk(incoming, table)
                     for row in incoming.execute(f"SELECT * FROM {table} ORDER BY {order_sql}"):
                         values = dict(row)
@@ -292,31 +213,12 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                             or values["canonical_id"] in blocked["memories"]
                         ):
                             problem = "source_conflict"
-                        if table == "template_effects" and values["card_id"] in component_conflicts:
-                            problem = "component_card_conflict"
                         if (
                             table == "learning_feedback"
                             and values["feedback_id"] in feedback_branches
                         ):
                             problem = "attempt_branch_conflict"
                         payload = json.loads(values["payload"]) if "payload" in values else {}
-                        if (
-                            table in {"template_effects", "template_effect_reviews"}
-                            and values["study_id"] in blocked["template_studies"]
-                        ):
-                            problem = "study_conflict"
-                        if (
-                            table == "template_effect_reviews"
-                            and set(payload.get("card_ids", [])) & blocked["template_effects"]
-                        ):
-                            problem = "effect_card_conflict"
-                        if payload.get("case_id") in blocked_cases:
-                            problem = "case_conflict"
-                        if table == "template_effects" and any(
-                            evidence.get("case_id") in blocked_cases
-                            for evidence in payload.get("visual_evidence", [])
-                        ):
-                            problem = "visual_evidence_case_conflict"
                         if table == "learning_results" and (
                             values["feedback_id"] in blocked["learning_feedback"]
                             or values["memory_id"] in blocked["memories"]
@@ -401,9 +303,6 @@ def import_data(source: Path, target: Path, *, apply: bool = False) -> dict:
                     db.rollback()
             if apply:
                 report["module_guides"] = refresh_guides(target)
-                from fx_agent.effect_cards import refresh_effect_documents
-
-                report["effect_documents"] = refresh_effect_documents(target)
             return {k: v for k, v in report.items() if k != "records"} | {
                 "conflict_records": len(report["records"]),
                 "dream_required": bool(report["new_memory_ids"] or report["records"]),
@@ -487,18 +386,6 @@ def resolve_memory(
             incoming = entry["incoming"]
             payload = json.loads(incoming["payload"])
             archive_path = contained(store.root, f"imports/{import_id}")
-            case_id = payload.get("case_id")
-            if case_id:
-                saved = contained(archive_path, f"cases/{case_id}/manifest.json")
-                live = contained(store.root, f"cases/{case_id}/manifest.json")
-                if (
-                    not live.exists()
-                    or saved.read_bytes() != live.read_bytes()
-                    or not CaseArchive(store.root).verify(case_id, payload["project_id"])["valid"]
-                ):
-                    raise ValueError(
-                        "Resolve the case archive conflict before selecting this memory"
-                    )
             origin = payload.get("origin_feedback_id")
             with closing(_connect(archive_path / "memory.sqlite3")) as saved:
                 if origin:

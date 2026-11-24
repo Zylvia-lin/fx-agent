@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from fx_agent.archive import CaseArchive
 from fx_agent.learning import LearningStore
 from fx_agent.module_guides import ModuleGuides
 from fx_agent.store import compact
@@ -18,16 +17,7 @@ def test_omitted_module_reads_general_knowledge(tmp_path, software):
 
 
 def accepted(root, **changes):
-    hip, image = root / "scene.hip", root / "preview.png"
-    hip.write_bytes(b"synthetic HIP")
-    image.write_bytes(b"synthetic preview")
     store = LearningStore(root / "data")
-    case = CaseArchive(store.root).create(
-        project_id="p",
-        shot_id="s",
-        title="fixture",
-        files=[{"path": str(hip), "role": "project"}, {"path": str(image), "role": "preview"}],
-    )
     values = (
         dict(
             project_id="p",
@@ -42,7 +32,6 @@ def accepted(root, **changes):
             outcome="accepted",
             user_quote="这个版本可以",
             source_ref="user",
-            case_id=case["case_id"],
             expected_revision=0,
         )
         | changes

@@ -10,7 +10,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from fx_agent.archive import CaseArchive, file_hash
 from fx_agent.modules import HOUDINI, normalize_modules
 from fx_agent.store import Identifier, Step, Store, compact
 
@@ -93,17 +92,8 @@ EVIDENCE_TOOLS = frozenset(
         "fx_get_user_rule",
         "fx_get_module_knowledge",
         "get_workflow_guide",
-        "fx_search_effects",
         "fx_search_memory",
-        "fx_search_templates",
-        "fx_get_effect",
         "fx_get_memory",
-        "fx_get_template",
-        "fx_learn_templates",
-        "fx_review_template_effects",
-        "fx_annotate_template_effects",
-        "fx_merge_effect_cards",
-        "fx_refine_effect",
         "save_scene",
         "save_script",
         "verify_network",
@@ -179,16 +169,7 @@ def endpoint_lock(root, endpoint):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-KNOWLEDGE_WRITES = frozenset(
-    {
-        "fx_learn_templates",
-        "fx_annotate_template_effects",
-        "fx_refine_effect",
-        "fx_merge_effect_cards",
-        "fx_learn_template_experience",
-        "fx_export_template",
-    }
-)
+KNOWLEDGE_WRITES: frozenset[str] = frozenset()
 
 
 class TaskGates:
@@ -269,17 +250,7 @@ class TaskGates:
 
     @staticmethod
     def _available_sources(task) -> set[str]:
-        receipts = list(task["receipts"].values())
-        available = {s for r in receipts for s in r.get("sources", [])}
-        sections_by_study: dict[str, set[str]] = {}
-        for r in receipts:
-            if r.get("tool") == "fx_get_template" and r.get("template_section"):
-                for study_id in r.get("study_ids", []):
-                    sections_by_study.setdefault(study_id, set()).add(r["template_section"])
-        for study_id, sections in sections_by_study.items():
-            if "snapshot" in sections or {"nodes", "connections"} <= sections:
-                available.add("template_study:" + study_id)
-        return available
+        return {s for r in task["receipts"].values() for s in r.get("sources", [])}
 
     def _missing(self, task):
         receipts = list(task["receipts"].values())
@@ -542,62 +513,6 @@ class TaskGates:
             a["source"] for a in records
         } != set(selected_sources):
             raise ValueError("Each selected source requires one source adaptation")
-        receipts = list(task["receipts"].values())
-        expanded = {s for r in receipts for s in r.get("sources", [])}
-        pending, visited, studies = list(selected_sources), set(), set()
-        while pending:
-            source = pending.pop()
-            if source in visited:
-                continue
-            visited.add(source)
-            for receipt in receipts:
-                if source not in receipt.get("sources", []):
-                    continue
-                if source.startswith("effect_card:") and receipt.get("card_read_version") != 1:
-                    raise ValueError("Read selected effect card again for source node evidence")
-                for card_id in receipt.get("component_card_ids", []):
-                    component = "effect_card:" + card_id
-                    if component not in expanded:
-                        raise ValueError("Read selected effect component in full: " + component)
-                    pending.append(component)
-                if source.startswith("effect_card:"):
-                    studies.update(receipt.get("study_ids", []))
-        for study_id in studies:
-            sections = {
-                r.get("template_section") for r in receipts if study_id in r.get("study_ids", [])
-            }
-            if "snapshot" not in sections and not {"nodes", "connections"} <= sections:
-                raise ValueError("Read relevant template nodes and connections: " + study_id)
-        for adaptation in records:
-            if not adaptation["source"].startswith("effect_card:"):
-                continue
-            related, queue = set(), [adaptation["source"]]
-            while queue:
-                source = queue.pop()
-                if source in related:
-                    continue
-                related.add(source)
-                queue.extend("effect_card:" + card_id for r in receipts
-                             if source in r.get("sources", [])
-                             for card_id in r.get("component_card_ids", []))
-            card_receipts = [r for r in receipts if related.intersection(r.get("sources", []))]
-            allowed = {p for r in card_receipts for p in r.get("source_node_paths", [])}
-            declared = set(adaptation["source_node_paths"])
-            if allowed and (not declared or not declared <= allowed):
-                raise ValueError("Source adaptation must identify source_node_paths from its read cards")
-            for path in declared:
-                source_studies = {s for r in card_receipts if path in r.get("source_node_paths", [])
-                                  for s in r.get("study_ids", [])}
-                node_studies = {s for r in receipts if path in r.get("template_nodes", [])
-                                for s in r.get("study_ids", [])} & source_studies
-                if not node_studies:
-                    raise ValueError("Read declared source node in template nodes: " + path)
-                if not any(
-                    set(r.get("study_ids", [])) & node_studies
-                    and (path in r.get("template_edge_nodes", []) or r.get("template_connections_complete"))
-                    for r in receipts
-                ):
-                    raise ValueError("Read related template connections for source node: " + path)
         return records
 
     def question(
@@ -821,106 +736,34 @@ class TaskGates:
                     if value.get("truncated")
                     else value.get("total", len(value.get("items", [])))
                 )
-            if not value.get("detail_required") and not value.get("truncated"):
-                for name, key in (
-                    ("fx_get_effect", "card_id"),
-                    ("fx_get_memory", "memory_id"),
-                    ("fx_get_template", "study_id"),
-                ):
-                    section = arguments.get(
-                        "section", "card" if tool == "fx_get_effect" else "summary"
-                    )
-                    full = (
-                        (
-                            tool == "fx_get_effect"
-                            and section == "card"
-                            and value.get("card", {}).get("card_id") == arguments.get(key)
-                        )
-                        or (
-                            tool == "fx_get_memory" and value.get("memory_id") == arguments.get(key)
-                        )
-                        or (
-                            tool == "fx_get_template"
-                            and section == "snapshot"
-                            and arguments.get("offset", 0) == 0
-                            and isinstance(value.get("content"), dict)
-                        )
-                    )
-                    source = value.get("card", value.get("content", value))
-                    source_software = (
-                        source.get("software", "houdini") if isinstance(source, dict) else ""
-                    )
-                    if (
-                        tool == name
-                        and arguments.get(key)
-                        and full
-                        and source_software == task["software"]
-                    ):
-                        prefix = {
-                            "card_id": "effect_card",
-                            "memory_id": "memory",
-                            "study_id": "template_study",
-                        }[key]
-                        receipt["sources"] = [prefix + ":" + arguments[key]]
-                        receipt["source_modules"] = source.get("modules", []) + source.get(
-                            "component_modules", []
-                        )
-                        receipt["component_card_ids"] = source.get("component_card_ids", [])
-                        if tool == "fx_get_effect":
-                            receipt["card_read_version"] = 1
-                            receipt["source_node_paths"] = source.get("node_paths", [])
-            if tool == "fx_get_template" and not value.get("detail_required"):
-                section = arguments.get("section", "summary")
-                if section in {"nodes", "connections"} and (
-                    value.get("content") or section == "connections" and not value.get("truncated")
-                ):
-                    receipt["template_section"] = section
-                elif (
-                    section == "snapshot"
-                    and not value.get("truncated")
-                    and isinstance(value.get("content"), dict)
-                ):
-                    receipt["template_section"] = "snapshot"
-                content = value.get("content")
-                nodes = content.get("nodes", []) if isinstance(content, dict) else content
-                edges = content.get("connections", []) if isinstance(content, dict) else content
-                if section in {"nodes", "snapshot"} and isinstance(nodes, list):
-                    receipt["template_nodes"] = [n["path"] for n in nodes if n.get("path")]
-                if section in {"connections", "snapshot"} and isinstance(edges, list):
-                    receipt["template_edge_nodes"] = sorted(
-                        {e[key] for e in edges for key in ("src_path", "dst_path") if e.get(key)}
-                    )
-                    receipt["template_connections_complete"] = (
-                        arguments.get("offset", 0) == 0 and not value.get("truncated")
-                    )
-            questions = list(value.get("card", {}).get("questions", []))
-            current_heads = set(value.get("current_card_ids", []))
-            equivalent = set(value.get("equivalent_card_ids", []))
+            if (
+                tool == "fx_get_memory"
+                and not value.get("detail_required")
+                and not value.get("truncated")
+                and arguments.get("memory_id")
+                and value.get("memory_id") == arguments.get("memory_id")
+                and value.get("software", "houdini") == task["software"]
+            ):
+                receipt["sources"] = ["memory:" + arguments["memory_id"]]
+                receipt["source_modules"] = value.get("modules", [])
+            questions: list[str] = []
             # Module-wide guides may contain unrelated historical disputes; only surface
-            # blocking questions when reading an individual memory or effect card.
+            # blocking questions when reading an individual memory.
             if tool != "fx_get_module_knowledge" and (
                 value.get("has_conflict")
                 or value.get("conflict_memory_ids")
                 or value.get("status") in {"disputed", "needs_review"}
-                or len(current_heads) > 1
-                and not current_heads <= equivalent
             ):
                 conflict_ids = (
                     value.get("conflict_memory_ids")
-                    or value.get("current_card_ids")
                     or ([value["memory_id"]] if value.get("memory_id") else [])
                     or ([arguments["memory_id"]] if arguments.get("memory_id") else [])
-                    or ([arguments["card_id"]] if arguments.get("card_id") else [])
                 )
                 questions.append(
                     "知识来源存在未解决争议，请核对来源并确认适用方案：" + ",".join(conflict_ids)
                 )
             if tool == "fx_get_memory":
                 source_ref = "memory:" + str(value.get("memory_id") or arguments.get("memory_id", ""))
-            elif tool == "fx_get_effect":
-                source_ref = "effect_card:" + str(
-                    value.get("card", {}).get("card_id") or arguments.get("card_id", "")
-                )
             else:
                 source_ref = tool
             for question in questions:
@@ -933,24 +776,6 @@ class TaskGates:
                             "source_ref": source_ref,
                         }
                     )
-            if tool in {
-                "fx_learn_templates",
-                "fx_get_template",
-                "fx_review_template_effects",
-                "fx_annotate_template_effects",
-                "fx_merge_effect_cards",
-                "fx_refine_effect",
-                "fx_get_effect",
-            }:
-                receipt["study_ids"] = sorted(
-                    {r["study_id"] for r in value.get("items", []) if r.get("study_id")}
-                    | ({value["study_id"]} if value.get("study_id") else set())
-                    | (
-                        {value["card"]["study_id"]}
-                        if value.get("card", {}).get("study_id")
-                        else set()
-                    )
-                )
             if tool in {"save_scene", "save_script"}:
                 if tool == "save_script" and not arguments.get("confirm"):
                     return
@@ -1017,35 +842,6 @@ class TaskGates:
                         raise ValueError("Current scene must be saved after the last edit")
                     if task["verified_seq"] != task["edit_seq"]:
                         raise ValueError("Current scene requires actual structural verification")
-                    if case_id:
-                        archive = CaseArchive(self.root)
-                        case = archive.get(case_id, task["project_id"])
-                        if (
-                            case["shot_id"] != task["shot_id"]
-                            or not archive.verify(case_id, task["project_id"])["valid"]
-                        ):
-                            raise ValueError("Final archive scope/checksum mismatch")
-                        projects = [
-                            f
-                            for f in case["files"]
-                            if f["role"] == "project"
-                            and same_path(f["source_path"], task["scene_path"])
-                        ]
-                        if not projects or not any(f["role"] == "preview" for f in case["files"]):
-                            raise ValueError("Final archive needs the saved target scene and a preview")
-                        if file_hash(Path(task["scene_path"])) != projects[0]["sha256"]:
-                            raise ValueError("Final archive differs from the saved target scene")
-                else:
-                    from fx_agent.effect_cards import EffectLibrary
-
-                    studies = {i for r in task["receipts"].values() for i in r.get("study_ids", [])}
-                    if not studies or any(
-                        EffectLibrary(self.root).catalog(i)["learning_state"] != "reviewed"
-                        for i in studies
-                    ):
-                        raise ValueError(
-                            "Learning incomplete; investigate evidence, record concrete questions and ask the user"
-                        )
             with self.store.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = self._read(db, task_id)
@@ -1101,10 +897,6 @@ def check_knowledge_gate(
             )
         if any(not q.get("answer") for q in task["questions"]):
             raise ValueError("Unresolved task questions; ask the user before finalizing")
-        if task.get("case_id"):
-            archive = CaseArchive(gates.root)
-            if not archive.verify(task["case_id"], task["project_id"])["valid"]:
-                raise ValueError("Verified task archive failed checksum validation")
         if acceptance:
             feedback = arguments["feedback"]
         elif feedback_loader is not None:

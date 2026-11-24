@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from fx_agent.archive import CaseArchive
 from fx_agent.task_gates import SourceAdaptation, TaskGates, TaskSpec, install_task_gates
 
 
@@ -42,12 +41,6 @@ def evidence(gates, task_id):
         {"text": "baseline"},
     )
     gates.observe(
-        task_id,
-        "fx_search_effects",
-        {"software": "houdini", "query": "贴身能量"},
-        {"items": [], "total": 0},
-    )
-    gates.observe(
         task_id, "fx_search_memory", {"software": "houdini", "query": "贴身能量"}, {"items": []}
     )
 
@@ -72,102 +65,56 @@ def ready(tmp_path, *, root=None, scene_path=None):
 
 
 def adaptation(source):
-    return {"source": source, "source_method": "读取源方法及关键连接",
-            "application": "保留速度平流并适配Y轴，改动写入节点方案",
-            "verification": "实际查看前中后帧的丝流和轮廓",
-            "source_node_paths": ["/obj/source"] if source.startswith("effect_card:") else []}
+    return {
+        "source": source,
+        "source_method": "读取源方法及关键连接",
+        "application": "保留速度平流并适配Y轴，改动写入节点方案",
+        "verification": "实际查看前中后帧的丝流和轮廓",
+        "source_node_paths": [],
+    }
 
 
 @pytest.mark.parametrize("path", ["", " " * 3, "/" + "a" * 4096])
 def test_adaptation_source_paths_are_bounded(path):
     with pytest.raises(ValueError):
-        SourceAdaptation.model_validate(adaptation("effect_card:" + "a" * 32)
-                                        | {"source_node_paths": [path]})
-
-
-def test_selected_card_needs_components_template_and_application_mapping(tmp_path):
-    gates, task = ready(tmp_path)
-    task_id = task["task_id"]
-    source = "effect_card:" + "a" * 32
-    gates.observe(task_id, "fx_get_effect", {"card_id": "a" * 32},
-                  {"card": {"card_id": "a" * 32, "study_id": "c" * 32,
-                            "modules": ["particles"], "component_card_ids": ["b" * 32],
-                            "node_paths": ["/obj/source"]}})
-    with pytest.raises(ValueError, match="adaptation"):
-        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source])
-    with pytest.raises(ValueError, match="component"):
-        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                   source_adaptations=[adaptation(source)])
-    gates.observe(task_id, "fx_get_effect", {"card_id": "b" * 32},
-                  {"card": {"card_id": "b" * 32, "study_id": "c" * 32}})
-    with pytest.raises(ValueError, match="template"):
-        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                   source_adaptations=[adaptation(source)])
-    for section in ("nodes", "connections"):
-        gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": section},
-                      {"study_id": "c" * 32, "content": [{"path": "/obj/unrelated"}],
-                       "truncated": True, "next_offset": 1})
-    with pytest.raises(ValueError, match="declared source node"):
-        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                   source_adaptations=[adaptation(source)])
-    gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": "nodes", "offset": 1},
-                  {"study_id": "c" * 32, "content": [{"path": "/obj/source"}], "truncated": True})
-    with pytest.raises(ValueError, match="related template connections"):
-        gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                   source_adaptations=[adaptation(source)])
-    gates.observe(task_id, "fx_get_template", {"study_id": "c" * 32, "section": "connections", "offset": 1},
-                  {"study_id": "c" * 32, "content": [{"src_path": "/obj/source", "dst_path": "/obj/out"}],
-                   "truncated": True})
-    result = gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                        source_adaptations=[adaptation(source)])
-    assert result["state"] == "ready"
-    assert gates.get(task_id, True)["plan"]["source_adaptations"][0]["source"] == source
+        SourceAdaptation.model_validate(
+            adaptation("memory:" + "a" * 32) | {"source_node_paths": [path]}
+        )
 
 
 def test_empty_active_search_with_reference_hint_requires_reference_inspection(tmp_path):
     gates, task = ready(tmp_path)
-    gates.observe(task["task_id"], "fx_search_memory", {"module": "particles", "query": "能量"},
-                  {"items": [], "reference_hint": {"has_matches": True}})
+    gates.observe(
+        task["task_id"],
+        "fx_search_memory",
+        {"module": "particles", "query": "能量"},
+        {"items": [], "reference_hint": {"has_matches": True}},
+    )
     with pytest.raises(ValueError, match="candidate_search"):
         gates.plan(task["task_id"], task["revision"], "方法", "条件", "差异", [], "没有正式经验")
-    gates.observe(task["task_id"], "fx_search_memory",
-                  {"module": "particles", "query": "能量", "include_candidates": True,
-                   "source_project": "unrelated"}, {"items": []})
+    gates.observe(
+        task["task_id"],
+        "fx_search_memory",
+        {"module": "particles", "query": "能量", "include_candidates": True, "source_project": "unrelated"},
+        {"items": []},
+    )
     assert "candidate_search:particles" in gates.get(task["task_id"])["missing"]
-    gates.observe(task["task_id"], "fx_search_memory",
-                  {"module": "particles", "query": "能量", "include_candidates": True},
-                  {"items": [{"memory_id": "a" * 32, "status": "candidate"}]})
-    result = gates.plan(task["task_id"], task["revision"], "方法", "条件", "差异", [],
-                        "候选依赖不同，按已读指南重新设计")
+    gates.observe(
+        task["task_id"],
+        "fx_search_memory",
+        {"module": "particles", "query": "能量", "include_candidates": True},
+        {"items": [{"memory_id": "a" * 32, "status": "candidate"}]},
+    )
+    result = gates.plan(
+        task["task_id"],
+        task["revision"],
+        "方法",
+        "条件",
+        "差异",
+        [],
+        "候选依赖不同，按已读指南重新设计",
+    )
     assert result["state"] == "ready"
-
-
-@pytest.mark.parametrize("offset,truncated,edges,allowed", [
-    (4, False, [], False),
-    (0, False, [], True),
-    (0, False, [{"src_path": "/other", "dst_path": "/other_out"}], True),
-    (0, True, [{"src_path": "/other", "dst_path": "/other_out"}], False),
-])
-def test_isolated_source_requires_complete_connections_not_an_empty_tail(
-    tmp_path, offset, truncated, edges, allowed
-):
-    gates, task = ready(tmp_path)
-    task_id, source, study_id = task["task_id"], "effect_card:" + "a" * 32, "c" * 32
-    gates.observe(task_id, "fx_get_effect", {"card_id": "a" * 32},
-                  {"card": {"card_id": "a" * 32, "study_id": study_id,
-                            "node_paths": ["/obj/source"]}})
-    gates.observe(task_id, "fx_get_template", {"study_id": study_id, "section": "nodes"},
-                  {"study_id": study_id, "content": [{"path": "/obj/source"}]})
-    gates.observe(task_id, "fx_get_template",
-                  {"study_id": study_id, "section": "connections", "offset": offset},
-                  {"study_id": study_id, "content": edges, "truncated": truncated})
-    if allowed:
-        assert gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                          source_adaptations=[adaptation(source)])["state"] == "ready"
-    else:
-        with pytest.raises(ValueError, match="template"):
-            gates.plan(task_id, task["revision"], "方法", "条件", "差异", [source],
-                       source_adaptations=[adaptation(source)])
 
 
 def test_compact_json_receipt_retains_rules_offsets_and_errors(tmp_path):
@@ -240,21 +187,6 @@ def test_questions_request_user_and_block_completion(tmp_path):
     assert answered["action_required"] == "continue"
 
 
-def test_automatic_learning_questions_are_not_silently_dropped(tmp_path):
-    gates = TaskGates(tmp_path / "data")
-    task = gates.begin(spec(tmp_path).model_copy(update={"kind": "learning"}))
-    gates.observe(
-        task["task_id"],
-        "fx_get_effect",
-        {"card_id": "a" * 32},
-        {"card": {"card_id": "a" * 32, "questions": ["实际渲染分支未知"]}},
-    )
-    state = gates.get(task["task_id"], detail=True)
-    assert state["questions"][0]["question"] == "实际渲染分支未知"
-    with pytest.raises(ValueError, match="question"):
-        gates.finish(task["task_id"], state["revision"], "", "不能冒充学完")
-
-
 @pytest.mark.asyncio
 async def test_tool_dispatch_is_guarded_without_changing_upstream_arguments(tmp_path):
     mcp = FastMCP("gated-test")
@@ -266,7 +198,7 @@ async def test_tool_dispatch_is_guarded_without_changing_upstream_arguments(tmp_
         return {"created": name}
 
     @mcp.tool()
-    def fx_search_effects(query: str = "") -> dict:
+    def fx_search_memory(query: str = "") -> dict:
         return {"items": [], "total": 0}
 
     async def live(_context):
@@ -284,26 +216,18 @@ async def test_tool_dispatch_is_guarded_without_changing_upstream_arguments(tmp_
     assert gates.get(task["task_id"], detail=True)["edit_seq"] == 1
 
 
-def test_completion_requires_saved_current_scene_archive_and_verification(tmp_path):
+def test_completion_requires_saved_current_scene_and_verification(tmp_path):
     gates, task = ready(tmp_path)
     path = Path(task["scene_path"])
     path.write_bytes(b"saved scene")
-    preview = tmp_path / "preview.png"
-    preview.write_bytes(b"preview fixture")
-    case = CaseArchive(gates.root).create(
-        project_id="p",
-        shot_id="s",
-        title="final",
-        files=[{"path": str(path), "role": "project"}, {"path": str(preview), "role": "preview"}],
-    )
     with pytest.raises(ValueError, match="saved"):
-        gates.finish(task["task_id"], task["revision"], case["case_id"], "已查看预览")
+        gates.finish(task["task_id"], task["revision"], "", "已查看预览")
     gates.observe(task["task_id"], "save_scene", {}, {"success": True})
     with pytest.raises(ValueError, match="verification"):
-        gates.finish(task["task_id"], task["revision"], case["case_id"], "已查看预览")
+        gates.finish(task["task_id"], task["revision"], "", "已查看预览")
     gates.observe(task["task_id"], "verify_network", {}, {"valid": True})
     done = gates.finish(
-        task["task_id"], task["revision"], case["case_id"], "已查看预览，贴合且运动连续"
+        task["task_id"], task["revision"], "", "已查看预览，贴合且运动连续"
     )
     assert done["state"] == "verified"
     gates.edit(task["task_id"])
@@ -324,17 +248,11 @@ def test_rules_pagination_cannot_be_skipped(tmp_path):
     assert "rules" in gates.get(task["task_id"])["missing"]
 
 
-def test_tail_pages_and_truncated_module_do_not_count_as_full_read(tmp_path):
+def test_unread_source_and_truncated_module_do_not_count_as_full_read(tmp_path):
     gates, task = ready(tmp_path)
-    gates.observe(
-        task["task_id"],
-        "fx_get_effect",
-        {"card_id": "a" * 32, "section": "text", "offset": 999999},
-        {"text": "", "truncated": False},
-    )
     with pytest.raises(ValueError, match="full"):
         gates.plan(
-            task["task_id"], task["revision"], "方法", "条件", "差异", ["effect_card:" + "a" * 32]
+            task["task_id"], task["revision"], "方法", "条件", "差异", ["memory:" + "a" * 32]
         )
     updated = gates.update(task["task_id"], task["revision"], spec(tmp_path))
     gates.observe(
@@ -431,8 +349,9 @@ def test_nuke_full_memory_reads_are_scoped_by_payload_not_missing_software_argum
         {"software": "nuke", "module": "compositing"},
         {},
     )
-    for name in ("fx_search_effects", "fx_search_memory"):
-        gates.observe(task["task_id"], name, {"software": "nuke", "query": "发光"}, {"items": []})
+    gates.observe(
+        task["task_id"], "fx_search_memory", {"software": "nuke", "query": "发光"}, {"items": []}
+    )
     gates.observe(
         task["task_id"],
         "fx_get_memory",
@@ -523,27 +442,6 @@ async def test_failed_verification_invalidates_earlier_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unresolved_learning_question_is_returned_as_user_action(tmp_path):
-    mcp = FastMCP("question-test")
-
-    @mcp.tool()
-    def fx_get_effect(card_id: str) -> dict:
-        return {"card": {"card_id": card_id, "questions": ["这是什么缓存版本？"]}}
-
-    async def live(_context):
-        raise AssertionError("Reading learning evidence must not access DCC")
-
-    install_task_gates(mcp, "houdini", lambda: tmp_path / "data", live)
-    gates = TaskGates(tmp_path / "data")
-    task = gates.begin(spec(tmp_path).model_copy(update={"kind": "learning"}))
-    result = await mcp.call_tool(
-        "fx_get_effect", {"card_id": "a" * 32, "fx_task_id": task["task_id"]}
-    )
-    assert "ask_user" in str(result)
-    assert gates.get(task["task_id"])["open_questions"] == 1
-
-
-@pytest.mark.asyncio
 async def test_wrong_live_scene_cannot_supply_verification_receipt(tmp_path):
     mcp = FastMCP("wrong-scene")
     calls = []
@@ -565,24 +463,14 @@ async def test_wrong_live_scene_cannot_supply_verification_receipt(tmp_path):
     assert calls == ["verified"]
 
 
-@pytest.mark.parametrize(
-    "tool,args,result",
-    [
-        (
-            "fx_get_memory",
-            {"memory_id": "a" * 32},
-            {"memory_id": "a" * 32, "conflict_memory_ids": ["b" * 32], "status": "disputed"},
-        ),
-        (
-            "fx_get_effect",
-            {"card_id": "a" * 32},
-            {"card": {"card_id": "a" * 32}, "current_card_ids": ["a" * 32, "b" * 32]},
-        ),
-    ],
-)
-def test_real_conflict_shapes_create_questions(tmp_path, tool, args, result):
+def test_real_conflict_shapes_create_questions(tmp_path):
     gates, task = ready(tmp_path)
-    gates.observe(task["task_id"], tool, args, result)
+    gates.observe(
+        task["task_id"],
+        "fx_get_memory",
+        {"memory_id": "a" * 32},
+        {"memory_id": "a" * 32, "conflict_memory_ids": ["b" * 32], "status": "disputed"},
+    )
     assert gates.get(task["task_id"])["open_questions"] == 1
     with pytest.raises(ValueError, match="questions"):
         gates.authorize(task["task_id"], "houdini", task["endpoint"], task["scene_path"])
@@ -590,7 +478,7 @@ def test_real_conflict_shapes_create_questions(tmp_path, tool, args, result):
 
 @pytest.mark.asyncio
 async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
-    """Real dispatcher/evidence/database/archive, with a synthetic DCC only."""
+    """Real dispatcher/evidence/database, with a synthetic DCC only."""
     mcp = FastMCP("complete-journey")
     scene = tmp_path / "scene.hip"
     edits = []
@@ -602,10 +490,6 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     @mcp.tool()
     def fx_get_module_knowledge(module: str, software: str = "houdini") -> dict:
         return {"module": module, "content": "existing baseline"}
-
-    @mcp.tool()
-    def fx_search_effects(query: str) -> dict:
-        return {"items": [], "total": 0}
 
     @mcp.tool()
     def fx_search_memory(query: str) -> dict:
@@ -647,7 +531,6 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     for name, args in [
         ("fx_get_production_rules", {"project_id": "p"}),
         ("fx_get_module_knowledge", {"module": "particles"}),
-        ("fx_search_effects", {"query": "贴身能量"}),
         ("fx_search_memory", {"query": "贴身能量"}),
         ("get_workflow_guide", {"topic": "discipline"}),
         ("get_workflow_guide", {"topic": "dopparticles"}),
@@ -668,20 +551,12 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     await mcp.call_tool("create_node", {"name": "draft"} | scope)
     await mcp.call_tool("verify_network", scope)
     await mcp.call_tool("save_scene", scope)
-    preview = tmp_path / "result.png"
-    preview.write_bytes(b"synthetic preview")
-    case = CaseArchive(tmp_path / "data").create(
-        project_id="p",
-        shot_id="s",
-        title="final",
-        files=[{"path": str(scene), "role": "project"}, {"path": str(preview), "role": "preview"}],
-    )
     task = await call(
         "fx_finish_task",
         {
             "task_id": task["task_id"],
             "expected_revision": task["revision"],
-            "case_id": case["case_id"],
+            "case_id": "",
             "verification_note": "实际查看对应预览",
         },
     )
@@ -690,7 +565,6 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
         "outcome": "accepted",
         "project_id": "p",
         "shot_id": "s",
-        "case_id": case["case_id"],
         "software": "houdini",
     }
     assert (await call("fx_record_feedback", {"feedback": feedback} | scope))[

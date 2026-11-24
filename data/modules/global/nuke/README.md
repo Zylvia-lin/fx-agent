@@ -4,7 +4,7 @@
 
 ## 当前基础规范
 
-- [fx-agent 0.1.0](../../../baselines/project/manifest.json)：9个文件，6份工作流。
+- [fx-agent 0.1.0](../../../baselines/project/manifest.json)：8个文件，5份工作流。
   [nuke工作流](../../../baselines/project/skills/nuke-workflow/SKILL.md)。
 
 ## 个人学习补充

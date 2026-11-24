@@ -11,7 +11,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from fx_agent.archive import CaseArchive
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.store import Identifier, Store, compact, scope_id
@@ -77,51 +76,19 @@ class MemoryStore(Store):
         request = Experience(**values)
         if request.kind != "preference" and (not request.reason or not request.applies_when):
             return {"decision": "rejected", "reason": "missing_reusable_decision_or_conditions"}
-        if not request.project_dependent and not request.case_id:
-            validate_text_only_hygiene(
-                request.title, request.method, request.reason, request.applies_when
-            )
-
-        case = None
-        if request.case_id:
-            archive = CaseArchive(self.root)
-            case = archive.get(request.case_id, request.project_id)
-            if request.shot_id and case["shot_id"] != request.shot_id:
-                raise ValueError("Case does not belong to the requested shot")
-            if not archive.verify(request.case_id, request.project_id)["valid"]:
-                raise ValueError("Case archive failed checksum validation")
-            if request.project_dependent and not any(
-                item["role"] == "project"
-                and item["archive_path"].startswith(f"projects/{request.software}/")
-                for item in case["files"]
-            ):
-                raise ValueError(
-                    "Project-dependent experience requires an archived project for its software"
-                )
+        validate_text_only_hygiene(
+            request.title, request.method, request.reason, request.applies_when
+        )
 
         status, evidence, reason = "candidate", "unverified", "inference_requires_evidence"
-        if request.project_dependent and case is None:
-            reason = "project_archive_required"
-        elif request.source_type == "user":
+        if request.source_type == "user":
             status = "active"
-            evidence = "user_reported_with_archive" if case else "user_reported"
+            evidence = "user_reported"
             reason = "explicit_user_statement"
-        elif (
-            request.source_type == "observed"
-            and case
-            and any(item["role"] == "preview" for item in case["files"])
-        ):
-            status, evidence, reason = (
-                "active",
-                "codex_observation_with_archive",
-                "observation_with_archived_output",
-            )
-        elif request.source_type == "observed" and not request.project_dependent and case is None:
-            status, evidence, reason = (
-                "active",
-                "live_verified_text",
-                "observed_text_experience",
-            )
+        elif request.source_type == "observed":
+            status = "active"
+            evidence = "live_verified_text"
+            reason = "observed_text_experience"
         if request.supersedes and (request.source_type != "user" or status != "active"):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
 

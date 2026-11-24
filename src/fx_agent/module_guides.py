@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from fx_agent.archive import contained, file_hash
+from fx_agent.fs_utils import contained, file_hash
 from fx_agent.modules import CATALOGS, normalize_modules
 from fx_agent.store import Store, compact, scope_id
 

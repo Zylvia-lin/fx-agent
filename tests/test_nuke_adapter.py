@@ -62,8 +62,9 @@ async def test_curated_tools_work_without_second_memory_system(connection, tmp_p
     gates.observe(
         task_id, "fx_get_module_knowledge", {"software": "nuke", "module": "compositing"}, {}
     )
-    for name in ("fx_search_effects", "fx_search_memory"):
-        gates.observe(task_id, name, {"software": "nuke", "query": "合成"}, {"items": []})
+    gates.observe(
+        task_id, "fx_search_memory", {"software": "nuke", "query": "合成"}, {"items": []}
+    )
     gates.plan(task_id, 1, "调色", "当前素材", "调低亮度", [], "没有匹配案例")
     names = {tool.name for tool in await server.list_tools()}
     assert {

@@ -12,6 +12,27 @@ from fx_agent.server import get_server
 from fx_agent.task_gates import TaskGates, TaskSpec, check_knowledge_gate
 from fx_agent.tool_profiles import TEXT_ONLY_HIDDEN_FX_TOOLS, resolve_tool_profile
 
+REMOVED_LEGACY_PROJECT_TOOLS = (
+    "fx_archive_case",
+    "fx_get_case",
+    "fx_validate_case",
+    "fx_plan_effect_study",
+    "fx_get_effect_learning_queue",
+    "fx_refine_effect",
+    "fx_plan_template_import",
+    "fx_learn_templates",
+    "fx_search_templates",
+    "fx_get_template",
+    "fx_validate_template",
+    "fx_export_template",
+    "fx_learn_template_experience",
+    "fx_annotate_template_effects",
+    "fx_merge_effect_cards",
+    "fx_search_effects",
+    "fx_get_effect",
+    "fx_review_template_effects",
+)
+
 
 def test_default_tool_profile_is_text_only_and_hides_legacy_project_tools(monkeypatch):
     monkeypatch.delenv("FX_AGENT_TOOL_PROFILE", raising=False)
@@ -20,7 +41,7 @@ def test_default_tool_profile_is_text_only_and_hides_legacy_project_tools(monkey
     get_server.cache_clear()
     server = get_server()
     tool_names = set(server._tool_manager._tools.keys())
-    for legacy in TEXT_ONLY_HIDDEN_FX_TOOLS:
+    for legacy in set(TEXT_ONLY_HIDDEN_FX_TOOLS) | set(REMOVED_LEGACY_PROJECT_TOOLS):
         assert legacy not in tool_names
     for core in (
         "fx_status",
@@ -37,6 +58,17 @@ def test_default_tool_profile_is_text_only_and_hides_legacy_project_tools(monkey
         "fx_finish_task",
     ):
         assert core in tool_names
+
+
+def test_task_gate_handlers_are_async_for_upstream_dispatch(monkeypatch):
+    import inspect
+
+    monkeypatch.delenv("FX_AGENT_TOOL_PROFILE", raising=False)
+    get_server.cache_clear()
+    server = get_server()
+    for name in ("fx_begin_task", "fx_set_task_plan", "fx_finish_task"):
+        tool = server._tool_manager._tools[name]
+        assert inspect.iscoroutinefunction(tool.fn)
 
 
 def test_text_only_experience_admission_hygiene_and_auto_guide_sync(tmp_path):

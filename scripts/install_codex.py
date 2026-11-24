@@ -111,7 +111,6 @@ def main() -> None:
         "fx-workflow",
         "fx-learning",
         "nuke-workflow",
-        "fx-project-learn",
         "fx-visual-critique",
     ):
         link = Path.home() / ".agents/skills" / name

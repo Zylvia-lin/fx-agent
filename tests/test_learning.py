@@ -39,20 +39,6 @@ def feedback(**changes):
     } | changes
 
 
-def case_at(root, name="draft"):
-    from fx_agent.archive import CaseArchive
-
-    hip, image = root / f"{name}.hip", root / f"{name}.png"
-    hip.write_bytes(b"test HIP fixture " + name.encode())
-    image.write_bytes(b"test preview fixture")
-    return CaseArchive(root).create(
-        project_id="p",
-        shot_id="s",
-        title=name,
-        files=[{"path": str(hip), "role": "project"}, {"path": str(image), "role": "preview"}],
-    )["case_id"]
-
-
 def test_user_rules_are_revisioned_scoped_and_keep_original_quotes(tmp_path):
     store = learning(tmp_path)
     first = store.record_rule(**rule())
@@ -82,12 +68,11 @@ def test_feedback_history_does_not_become_a_success_before_acceptance(tmp_path):
         store.record_feedback(**feedback())
 
 
-def test_accepted_result_learns_a_reusable_method_with_archived_evidence(tmp_path):
+def test_accepted_result_learns_a_reusable_text_method(tmp_path):
     store = learning(tmp_path)
     saved = store.record_feedback(
         **feedback(
             outcome="accepted",
-            case_id=case_at(tmp_path),
             result="达到最终效果",
             user_quote="这个版本可以，保留这个方案",
         )
@@ -110,7 +95,8 @@ def test_accepted_result_learns_a_reusable_method_with_archived_evidence(tmp_pat
     )
     expanded = store.get(learned["memory_id"], "p")
     assert saved["feedback_id"] in expanded["source_ref"]
-    assert expanded["case_id"] == saved["case_id"]
+    assert expanded["case_id"] == ""
+    assert expanded["evidence_status"] == "live_verified_text"
     assert not expanded["visual_verified"]
     with pytest.raises(ValueError, match="different method"):
         store.finalize(saved["feedback_id"], "p", "未确认的另一个方法", "原因", "条件")
@@ -119,7 +105,7 @@ def test_accepted_result_learns_a_reusable_method_with_archived_evidence(tmp_pat
 
 def test_revised_feedback_invalidates_derived_method_and_blocks_stale_finalize(tmp_path):
     store = learning(tmp_path)
-    accepted = store.record_feedback(**feedback(outcome="accepted", case_id=case_at(tmp_path)))
+    accepted = store.record_feedback(**feedback(outcome="accepted"))
     memory = store.finalize(accepted["feedback_id"], "p", "旧方法", "旧原因", "旧条件")
     store.record_feedback(
         **feedback(expected_revision=1, outcome="failed", result="换镜头后暴露问题")
@@ -131,7 +117,7 @@ def test_revised_feedback_invalidates_derived_method_and_blocks_stale_finalize(t
     assert len(store.history("p", "s", "逆光烟尘")["items"]) == 2
 
 
-def test_accepted_feedback_supports_text_only_and_validates_optional_case_scope(tmp_path):
+def test_accepted_feedback_supports_text_only_finalization(tmp_path):
     store = learning(tmp_path)
     text_accepted = store.record_feedback(**feedback(outcome="accepted"))
     assert text_accepted["outcome"] == "accepted"
@@ -141,9 +127,6 @@ def test_accepted_feedback_supports_text_only_and_validates_optional_case_scope(
     )
     assert learned["decision"] == "admitted"
     assert learned["evidence_status"] == "live_verified_text"
-    case = case_at(tmp_path)
-    with pytest.raises(ValueError, match="shot"):
-        store.record_feedback(**feedback(outcome="accepted", case_id=case, shot_id="other"))
 
 
 def test_dream_reduces_duplicate_recall_without_losing_sources_or_upgrading_candidates(tmp_path):
@@ -151,11 +134,10 @@ def test_dream_reduces_duplicate_recall_without_losing_sources_or_upgrading_cand
     from test_memory import experience
 
     ids = []
-    for name in ("draft1", "draft2"):
-        case = case_at(tmp_path, name)
-        entry = experience(project_id="p", shot_id="s", source_type="user", case_id=case)
+    for shot in ("s1", "s2"):
+        entry = experience(project_id="p", shot_id=shot, source_type="user")
         ids.append(store.submit(**entry)["memory_id"])
-    store.submit(**experience(project_id="p", shot_id="s", title="未验证的新想法"))
+    store.submit(**experience(project_id="p", shot_id="s1", title="未验证的新想法"))
     before = store.search("p", "逆光")
     plan = store.dream("p")
     assert len(before["items"]) == 2
@@ -202,16 +184,14 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
     from test_task_gates import ready
 
     gates, task = ready(tmp_path, root=tmp_path, scene_path=tmp_path / "draft.hip")
-    case_id = case_at(tmp_path)
     gates.observe(task["task_id"], "save_scene", {}, {"success": True})
     gates.observe(task["task_id"], "verify_network", {}, {"healthy": True})
-    gates.finish(task["task_id"], task["revision"], case_id, "测试中已核对归档预览")
+    gates.finish(task["task_id"], task["revision"], "", "测试中已核对渲染预览")
     result = await server.call_tool(
         "fx_record_feedback",
         {
             "feedback": feedback(
                 outcome="accepted",
-                case_id=case_id,
                 user_quote="这个版本可以，保存该方案",
             ),
             "fx_task_id": task["task_id"],
@@ -244,15 +224,14 @@ def test_independent_acceptances_do_not_share_invalidation_and_reacceptance_is_n
     tmp_path,
 ):
     store = learning(tmp_path)
-    case = case_at(tmp_path)
-    a = store.record_feedback(**feedback(outcome="accepted", case_id=case))
-    b = store.record_feedback(**feedback(outcome="accepted", case_id=case, attempt_id="lighting-2"))
+    a = store.record_feedback(**feedback(outcome="accepted"))
+    b = store.record_feedback(**feedback(outcome="accepted", attempt_id="lighting-2"))
     ma = store.finalize(a["feedback_id"], "p", "方法", "原因", "条件")
     mb = store.finalize(b["feedback_id"], "p", "方法", "原因", "条件")
     assert ma["memory_id"] != mb["memory_id"]
     store.record_feedback(**feedback(expected_revision=1, outcome="failed"))
     assert store.get(mb["memory_id"], "p")["status"] == "active"
-    again = store.record_feedback(**feedback(expected_revision=2, outcome="accepted", case_id=case))
+    again = store.record_feedback(**feedback(expected_revision=2, outcome="accepted"))
     revised = store.finalize(again["feedback_id"], "p", "方法", "原因", "条件")
     assert revised["status"] == "active"
     assert revised["memory_id"] != ma["memory_id"]

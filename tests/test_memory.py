@@ -88,80 +88,23 @@ def test_non_reusable_output_is_rejected_without_inserting(tmp_path):
     assert store.search("广告A", "逆光", include_candidates=True)["items"] == []
 
 
-def test_engineering_memory_requires_an_independent_project_archive(tmp_path):
+def test_observed_and_user_text_experiences_admit_directly_and_reject_absolute_paths(tmp_path):
     store = memories(tmp_path)
-    candidate = store.submit(**experience(source_type="user", project_dependent=True))
-    assert candidate["decision"] == "candidate"
-    assert "archive" in candidate["reason"]
-    with pytest.raises(ValueError):
-        store.submit(**experience(case_id="../missing", project_dependent=True))
-
-
-def test_archived_project_is_traceable_but_does_not_claim_visual_verification(tmp_path):
-    archive = importlib.import_module("fx_agent.archive").CaseArchive(tmp_path)
-    hip = tmp_path / "scene.hip"
-    hip.write_bytes(b"test fixture")
-    case = archive.create(
-        project_id="广告A",
-        shot_id="sh010",
-        title="test",
-        files=[{"path": str(hip), "role": "project"}],
-    )
-    store = memories(tmp_path)
-    result = store.submit(
-        **experience(source_type="user", project_dependent=True, case_id=case["case_id"])
-    )
-    assert result["decision"] == "admitted"
-    record = store.get(result["memory_id"], "广告A")
-    assert record["case_id"] == case["case_id"]
-    assert record["evidence_status"] == "user_reported_with_archive"
+    observed = store.submit(**experience(source_type="observed", project_dependent=True))
+    assert observed["decision"] == "admitted"
+    assert observed["evidence_status"] == "live_verified_text"
+    record = store.get(observed["memory_id"], "广告A")
     assert record["visual_verified"] is False
     assert record["reproduction_status"] == "not_tested"
-    assert store.get(result["memory_id"], "其他项目")["project_id"] == "广告A"
+    assert store.get(observed["memory_id"], "其他项目")["project_id"] == "广告A"
 
-
-def test_observation_needs_archived_output_and_corrupt_evidence_is_rejected(tmp_path):
-    archive = importlib.import_module("fx_agent.archive").CaseArchive(tmp_path)
-    hip, preview = tmp_path / "scene.hip", tmp_path / "preview.png"
-    hip.write_bytes(b"fixture hip")
-    preview.write_bytes(b"fixture preview")
-    case = archive.create(
-        project_id="广告A",
-        shot_id="sh010",
-        title="draft",
-        files=[{"path": str(hip), "role": "project"}, {"path": str(preview), "role": "preview"}],
-    )
-    store = memories(tmp_path)
-    result = store.submit(
-        **experience(
-            case_id=case["case_id"],
-            source_type="observed",
-            project_dependent=True,
+    with pytest.raises(ValueError, match="absolute paths"):
+        store.submit(
+            **experience(
+                source_type="user",
+                method=r"打开 D:\project\shot01.hip 调整参数",
+            )
         )
-    )
-    assert result["decision"] == "admitted"
-    assert result["evidence_status"] == "codex_observation_with_archive"
-    with pytest.raises(ValueError, match="shot"):
-        store.submit(**experience(case_id=case["case_id"], shot_id="sh020"))
-    from pathlib import Path
-
-    (Path(case["case_path"]) / case["files"][1]["archive_path"]).write_bytes(b"corrupt")
-    with pytest.raises(ValueError, match="checksum"):
-        store.submit(**experience(case_id=case["case_id"]))
-
-
-def test_project_dependent_memory_cannot_use_a_reference_only_case(tmp_path):
-    archive = importlib.import_module("fx_agent.archive").CaseArchive(tmp_path)
-    image = tmp_path / "reference.png"
-    image.write_bytes(b"fixture")
-    case = archive.create(
-        project_id="广告A",
-        shot_id="sh010",
-        title="reference",
-        files=[{"path": str(image), "role": "reference"}],
-    )
-    with pytest.raises(ValueError, match="archived project"):
-        memories(tmp_path).submit(**experience(case_id=case["case_id"], project_dependent=True))
 
 
 def test_user_correction_supersedes_old_memory_and_retains_history(tmp_path):

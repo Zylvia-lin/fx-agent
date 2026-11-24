@@ -14,7 +14,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from fx_agent import __version__
-from fx_agent.archive import contained, copy_verified, file_hash
+from fx_agent.fs_utils import contained, copy_verified, file_hash
 from fx_agent.store import compact
 
 
@@ -361,7 +361,6 @@ def _sync_baselines(root: Path) -> dict:
         "fx-learning",
         "nuke-workflow",
         "maya-workflow",
-        "fx-project-learn",
         "fx-visual-critique",
     )
     skills = [

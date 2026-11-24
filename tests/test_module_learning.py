@@ -72,18 +72,7 @@ def test_dream_never_merges_recipes_from_different_modules(tmp_path):
 
 
 def test_finalized_learning_inherits_feedback_modules(tmp_path):
-    from fx_agent.archive import CaseArchive
-
-    hip, preview = tmp_path / "final.hip", tmp_path / "preview.png"
-    hip.write_bytes(b"synthetic HIP")
-    preview.write_bytes(b"synthetic image")
     store = LearningStore(tmp_path / "data")
-    case = CaseArchive(store.root).create(
-        project_id="p",
-        shot_id="s",
-        title="test",
-        files=[{"path": str(hip), "role": "project"}, {"path": str(preview), "role": "preview"}],
-    )
     feedback = store.record_feedback(
         project_id="p",
         shot_id="s",
@@ -97,7 +86,6 @@ def test_finalized_learning_inherits_feedback_modules(tmp_path):
         outcome="accepted",
         user_quote="这个版本可以",
         source_ref="user",
-        case_id=case["case_id"],
         expected_revision=0,
     )
     assert store.history("p", "s", module="pyro")["items"] == []

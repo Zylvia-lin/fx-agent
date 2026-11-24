@@ -18,31 +18,10 @@ PROTECTED_TOOLS = frozenset(
     }
 )
 
-# Legacy project-archiving, static template ingestion and effect-card tools hidden in `text_only` profile.
-TEXT_ONLY_HIDDEN_FX_TOOLS = frozenset(
-    {
-        "fx_archive_case",
-        "fx_get_case",
-        "fx_validate_case",
-        "fx_plan_template_import",
-        "fx_learn_templates",
-        "fx_search_templates",
-        "fx_get_template",
-        "fx_validate_template",
-        "fx_export_template",
-        "fx_learn_template_experience",
-        "fx_plan_effect_study",
-        "fx_get_effect_learning_queue",
-        "fx_annotate_template_effects",
-        "fx_merge_effect_cards",
-        "fx_refine_effect",
-        "fx_search_effects",
-        "fx_get_effect",
-        "fx_review_template_effects",
-    }
-)
+# Legacy tools kept empty in text_only after physical removal from data_api.
+TEXT_ONLY_HIDDEN_FX_TOOLS: frozenset[str] = frozenset()
 
-# Low-frequency template ingestion/annotation/maintenance tools hidden in `production` profile.
+# Low-frequency maintenance tools hidden in `production` profile.
 PRODUCTION_HIDDEN_FX_TOOLS = frozenset(
     {
         "fx_sync_module_baselines",
@@ -53,16 +32,6 @@ PRODUCTION_HIDDEN_FX_TOOLS = frozenset(
         "fx_import_data",
         "fx_get_import_records",
         "fx_resolve_import_memory",
-        "fx_plan_template_import",
-        "fx_learn_templates",
-        "fx_validate_template",
-        "fx_learn_template_experience",
-        "fx_plan_effect_study",
-        "fx_get_effect_learning_queue",
-        "fx_annotate_template_effects",
-        "fx_merge_effect_cards",
-        "fx_refine_effect",
-        "fx_review_template_effects",
     }
 )
 

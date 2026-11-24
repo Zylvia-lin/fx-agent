@@ -12,13 +12,10 @@ from mcp.server.fastmcp import FastMCP
 
 from fx_agent.baselines import sync_baselines
 from fx_agent.data_import import TABLES, import_data
-from fx_agent.effect_cards import EffectCardInput, EffectLibrary
 from fx_agent.install_config import mcp_servers_json
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store
 from fx_agent.task_gates import TaskGates, TaskSpec, install_task_gates, is_untitled_scene
-from fx_agent.template_extract import _hip_parameters, extract_nuke
-from fx_agent.templates import TemplateLibrary
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,12 +51,6 @@ def _observe_base(gates: TaskGates, task_id: str, *, module_truncated: bool = Fa
         "fx_get_module_knowledge",
         {"software": "houdini", "module": "particles"},
         {"text": "trimmed", "truncated": module_truncated},
-    )
-    gates.observe(
-        task_id,
-        "fx_search_effects",
-        {"software": "houdini", "query": "能量粒子"},
-        {"items": [], "total": 0},
     )
 
 
@@ -176,12 +167,6 @@ def test_task_gate_deduplicates_rules_and_normalizes_module_alias(tmp_path):
         {"software": "houdini", "module": "pop", "query": "能量粒子"},
         {"items": [], "truncated": False},
     )
-    gates.observe(
-        tid,
-        "fx_search_effects",
-        {"software": "houdini", "query": "能量粒子"},
-        {"items": [], "total": 0},
-    )
     plan = gates.plan(
         tid,
         task["revision"],
@@ -242,113 +227,6 @@ async def test_render_view_start_requires_task_gate(tmp_path):
     install_task_gates(mcp, "houdini", lambda: tmp_path / "data", live_target)
     with pytest.raises(Exception, match="fx_task_id"):
         await mcp.call_tool("fx_render_view_start", {"rop_path": "/out/mantra1"})
-
-
-def test_template_extract_scientific_notation_and_nuke_parser():
-    parms = _hip_parameters("  rate ( 1e+05 )\n  scale [ 0 ] ( -2.5E-03 )\n")
-    assert parms["rate"] == "1e+05"
-    assert parms["scale"] == "-2.5E-03"
-    nk = """
-Root {
- first_frame 1001
- last_frame 1050
-}
-Read {
- name ReadA
- file "plate.%04d.exr"
-}
-Read {
- name ReadB
- file "fx.%04d.exr"
-}
-Merge2 {
- name Merge1
- operation plus
-}
-set Cclone_node [stack 0]
-clone $Cclone_node {
- name ClonedMerge
- xpos 200
-}
-"""
-    snap = extract_nuke(nk.encode("utf-8"))
-    names = {node["name"] for node in snap["nodes"]}
-    assert {"ReadA", "ReadB", "Merge1", "ClonedMerge"} <= names
-    merge_edges = [c for c in snap["connections"] if c["dst_path"] == "/Merge1"]
-    assert len(merge_edges) == 2
-
-
-def test_effect_cards_long_author_label_and_prefix_exclusion(tmp_path):
-    long_note = "  " + ("详细制作说明" * 30) + "  "
-    nk_path = tmp_path / "comp.nk"
-    nk_path.write_text(
-        'Root {\n first_frame 1\n last_frame 10\n}\n'
-        'Read {\n name Read1\n file "a.exr"\n}\n'
-        f'Grade {{\n name Grade1\n label "{long_note.strip()}"\n}}\n'
-        'Group {\n name TechRig\n}\n Camera2 {\n  name CamMain\n }\nend_group\n',
-        encoding="utf-8",
-    )
-    data = tmp_path / "data"
-    lib = TemplateLibrary(data)
-    learned = lib.ingest(str(nk_path), project_id="p", shot_id="s")
-    study_id = learned["items"][0]["study_id"]
-    cards = EffectLibrary(data)
-    card_payload = {
-        "scheme_key": "comp_grade",
-        "scheme_name": "基础调色",
-        "effect_key": "grade_pass",
-        "title": "主画面调色",
-        "effect_family": ["compositing"],
-        "effect_kind": "color_grade",
-        "behaviors": ["color_shift"],
-        "naming_basis": "user",
-        "subject": "主画面",
-        "appearance": "暖色调",
-        "motion": "静态",
-        "variant_notes": "标准暖色",
-        "scope": "frames 1-10",
-        "method": "Read 接 Grade",
-        "reuse_steps": ["连接 Read1 到 Grade1"],
-        "limitations": "仅示例工程",
-        "evidence_note": "基于用户说明与静态 NK 解析",
-        "modules": ["compositing"],
-        "node_paths": ["/Read1", "/Grade1"],
-        "author_labels": [long_note],
-        "basis": "user",
-        "user_quote": "这是主画面暖色调色",
-    }
-    validated = EffectCardInput.model_validate(card_payload)
-    assert len(validated.author_labels[0]) > 80
-    assert not validated.author_labels[0].startswith(" ")
-
-    annotated = cards.annotate(study_id, [card_payload])
-    card_id = annotated["items"][0]["card_id"]
-    # Review with prefix wildcard exclusion for /TechRig/*
-    snapshot_nodes = sorted(
-        {n["path"] for n in lib.get(study_id, section="nodes", max_chars=20000)["content"]}
-    )
-    media_dir = tmp_path / "media"
-    media_dir.mkdir()
-    review = cards.review(
-        study_id,
-        reviewed_node_paths=snapshot_nodes,
-        expected_card_ids=[card_id],
-        exclusions=[
-            {"node_path": "/TechRig/*", "reason": "技术相机组"},
-            {"node_path": "/TechRig", "reason": "技术相机组"},
-            {"node_path": "/Root_0", "reason": "工程根节点"},
-        ],
-        media_source=str(media_dir),
-    )
-    assert review["state"] == "reviewed"
-    # Merge preview must validate non-existent node_paths before apply.
-    with pytest.raises(ValueError):
-        cards.merge(
-            [card_id, card_id],
-            {**card_payload, "effect_key": "merged", "node_paths": ["/DoesNotExist"]},
-            reason="invalid preview",
-            apply=False,
-        )
 
 
 def test_data_import_tables_and_baselines_stale_lock_recovery(tmp_path):

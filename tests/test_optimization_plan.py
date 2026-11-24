@@ -8,12 +8,10 @@ from mcp.server.fastmcp import FastMCP
 
 from fx_agent.baselines import sync_baselines, validate_baselines
 from fx_agent.data_api import fx_prepare_task_brief
-from fx_agent.effect_cards import EffectLibrary
 from fx_agent.embeddings import set_embedder
 from fx_agent.memory import MemoryStore
 from fx_agent.store import Store
 from fx_agent.task_gates import QUICK_TWEAK_MAX_EDITS, TaskGates, TaskSpec, install_task_gates
-from fx_agent.templates import TemplateLibrary
 from fx_agent.tool_profiles import (
     HOUDINI_TOOL_GROUPS,
     LEARNING_HIDDEN_FX_TOOLS,
@@ -223,7 +221,7 @@ def test_phase4_tool_profile_filtering():
         + list(LEARNING_HIDDEN_FX_TOOLS)[:4]
         + list(HOUDINI_TOOL_GROUPS["chop"])
         + list(HOUDINI_TOOL_GROUPS["hda"])[:3]
-        + ["set_parameter", "fx_search_effects"]
+        + ["set_parameter", "fx_search_memory"]
     )
     for name in dict.fromkeys(sample_tools):
         mcp.tool(name=name)(lambda: {"ok": True})
@@ -238,7 +236,7 @@ def test_phase4_tool_profile_filtering():
     )
     remaining = set(mcp._tool_manager._tools)
     assert remaining >= PROTECTED_TOOLS
-    assert "set_parameter" in remaining and "fx_search_effects" in remaining
+    assert "set_parameter" in remaining and "fx_search_memory" in remaining
     assert not (PRODUCTION_HIDDEN_FX_TOOLS & remaining)
     assert not (HOUDINI_TOOL_GROUPS["chop"] & remaining)
     assert len(prod["removed"]) >= 8
@@ -258,7 +256,7 @@ def test_phase4_tool_profile_filtering():
         apply_tool_profile(mcp2, software="houdini", profile="full", hide_groups="bogus")
 
 
-# --- Phase 5: Hybrid semantic retrieval & template draft skeleton ---
+# --- Phase 5: Hybrid semantic retrieval ---
 
 
 def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
@@ -269,58 +267,21 @@ def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "embeddings" in tables
 
-    # Seed one effect card and one memory with words that DO NOT lexically overlap our semantic query.
-    nk_path = tmp_path / "comp.nk"
-    nk_path.write_text(
-        'Root {\n first_frame 1\n last_frame 10\n}\n'
-        'Read {\n name Read1\n file "a.exr"\n}\n'
-        'Write {\n name WriteOut\n file "out.%04d.exr"\n}\n',
-        encoding="utf-8",
-    )
-    lib = TemplateLibrary(data)
-    learned = lib.ingest(str(nk_path), project_id="p", shot_id="s")
-    study_item = learned["items"][0]
-    study_id = study_item["study_id"]
-
-    # Phase 5B: Template ingest emits deterministic provisional draft_suggestions without creating cards.
-    drafts = study_item["draft_suggestions"]
-    assert drafts and drafts[0]["output_node"] == "/WriteOut"
-    assert "/Read1" in drafts[0]["node_paths"]
-    assert drafts[0]["naming_basis"] == "provisional"
-    assert drafts[0]["requires_visual_confirmation"] is True
-
-    cards = EffectLibrary(data)
-    assert cards.catalog(study_id)["card_count"] == 0
-    cards.annotate(
-        study_id,
-        [
-            {
-                "scheme_key": "silk_ribbon",
-                "scheme_name": "飘带发光合成",
-                "effect_key": "ribbon_glow",
-                "title": "飘带状发光能量线",
-                "effect_family": ["compositing"],
-                "effect_kind": "glow_ribbon",
-                "behaviors": ["flow"],
-                "naming_basis": "user",
-                "subject": "能量飘带",
-                "appearance": "丝滑亮带",
-                "motion": "柔顺流动",
-                "variant_notes": "标准版",
-                "scope": "frames 1-10",
-                "method": "多层指数 Glow",
-                "reuse_steps": ["连接 Read1 到 WriteOut"],
-                "limitations": "仅示例",
-                "evidence_note": "用户说明",
-                "modules": ["compositing"],
-                "node_paths": ["/Read1", "/WriteOut"],
-                "basis": "user",
-                "user_quote": "这是飘带发光",
-            }
-        ],
-    )
-
     mem = MemoryStore(data)
+    mem.submit(
+        project_id="p",
+        shot_id="s",
+        software="nuke",
+        modules=["compositing"],
+        kind="compositing",
+        title="飘带状发光能量线合成",
+        method="用多层指数 Glow 叠加并按亮度遮罩压制核心过曝",
+        reason="保留丝带柔顺层次而不丢失边缘衰减",
+        applies_when="能量飘带合成",
+        source_type="user",
+        source_ref="user",
+        project_dependent=False,
+    )
     mem.submit(
         project_id="p",
         shot_id="s",
@@ -337,7 +298,7 @@ def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
     )
 
     # Pure lexical query with zero shared terms returns empty.
-    assert cards.search("ethereal silk trail", software="nuke")["items"] == []
+    assert mem.search("p", "ethereal silk trail", software="nuke")["items"] == []
     assert mem.search("p", "shadow floor alignment", software="nuke")["items"] == []
 
     # Install an in-process embedder that maps semantically related concepts to matching vectors.
@@ -358,9 +319,9 @@ def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
 
     try:
         set_embedder(fake_embed, model="test-embed-v1")
-        effect_hits = cards.search("ethereal silk trail", software="nuke")
-        assert len(effect_hits["items"]) == 1
-        assert effect_hits["items"][0]["effect_key"] == "ribbon_glow"
+        silk_hits = mem.search("p", "ethereal silk trail", software="nuke")
+        assert len(silk_hits["items"]) == 1
+        assert "飘带" in silk_hits["items"][0]["title"]
 
         mem_hits = mem.search("p", "shadow floor alignment", software="nuke")
         assert len(mem_hits["items"]) == 1
@@ -368,7 +329,7 @@ def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
 
         # Second search hits SQLite vector cache and query LRU cache without re-embedding!
         calls_before = len(embed_calls)
-        assert len(cards.search("ethereal silk trail", software="nuke")["items"]) == 1
+        assert len(mem.search("p", "ethereal silk trail", software="nuke")["items"]) == 1
         assert len(embed_calls) == calls_before
 
         # Broken embedder degrades silently to lexical search without raising.
@@ -376,8 +337,8 @@ def test_phase5_hybrid_embeddings_and_graceful_fallback(tmp_path):
             raise RuntimeError("embedding server down")
 
         set_embedder(broken, model="broken-v1")
-        lex_card = cards.search("飘带", software="nuke")
-        assert len(lex_card["items"]) == 1
+        lex_silk = mem.search("p", "飘带", software="nuke")
+        assert len(lex_silk["items"]) == 1
         lex_mem = mem.search("p", "黑场", software="nuke")
         assert len(lex_mem["items"]) == 1
     finally:

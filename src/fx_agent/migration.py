@@ -1,14 +1,13 @@
 """Copy a verified local data snapshot without replacing existing destinations."""
 
-import json
 import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
 from pathlib import Path
 
-from fx_agent.archive import CaseArchive, copy_verified, publish_directory
 from fx_agent.baselines import validate_baselines
+from fx_agent.fs_utils import copy_verified, publish_directory
 
 
 def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = False) -> dict:
@@ -54,47 +53,6 @@ def migrate_data(source: Path, target: Path, *, exclude_import_history: bool = F
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 copy_verified(path, destination)
                 count += 1
-            archive = CaseArchive(stage)
-            verified_cases: set[tuple[str, str]] = set()
-            cases = stage / "cases"
-            for folder in cases.iterdir() if cases.exists() else []:
-                if folder.name == ".staging" and folder.is_dir() and not any(folder.iterdir()):
-                    continue
-                manifest = folder / "manifest.json"
-                case = json.loads(manifest.read_text(encoding="utf-8"))
-                if not archive.verify(folder.name, case["project_id"])["valid"]:
-                    raise ValueError("Migrated case failed checksum validation")
-                verified_cases.add((folder.name, case["project_id"]))
-
-            def _ensure_case_valid(cid: str, pid: str) -> None:
-                if (cid, pid) in verified_cases:
-                    return
-                if not archive.verify(cid, pid)["valid"]:
-                    raise ValueError("Database references an invalid case")
-                verified_cases.add((cid, pid))
-
-            with closing(sqlite3.connect(stage / database.name)) as snapshot:
-                tables = {
-                    row[0]
-                    for row in snapshot.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                }
-                for table in (
-                    "memories",
-                    "learning_feedback",
-                    "template_studies",
-                    "template_effects",
-                    "template_effect_reviews",
-                ):
-                    if table not in tables:
-                        continue
-                    for (payload,) in snapshot.execute(f"SELECT payload FROM {table}"):
-                        record = json.loads(payload)
-                        if record.get("case_id"):
-                            _ensure_case_valid(record["case_id"], record["project_id"])
-                        if table == "template_effects":
-                            for ev in record.get("visual_evidence", []):
-                                if ev.get("case_id"):
-                                    _ensure_case_valid(ev["case_id"], record["project_id"])
             baseline_check = validate_baselines(stage)
             if not baseline_check["valid"]:
                 raise ValueError("Migrated baseline failed validation: " + baseline_check["error"])
