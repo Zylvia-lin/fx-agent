@@ -12,10 +12,10 @@
 
 切换、任务目标检查和节点操作使用同一调用串行锁；当前连接发生通信超时后不再复用无请求ID的响应队列，需重新选择并建立连接。原任务绑定其他端口/工程时，切换不会让其自动获准修改新工程。
 
-本机已热更新两个运行中的窗口，并通过同一个真实 stdio MCP 往返选择：sc232（PID73436，8187，679节点）→ sc184（PID84904，8188，174节点）→ sc232（679节点）。验证只读，不保存或修改NK。可复验命令：
+多窗口往返切换验证（只读，不保存或修改 NK）可执行：
 
 ```powershell
-.venv\Scripts\python.exe scripts/check_nuke_sessions.py --final-script EP05_seq20_sc232_v02.nk
+.venv\Scripts\python.exe scripts/check_nuke_sessions.py --final-script <目标工程文件名>.nk
 ```
 
 运行中的旧MCP进程需重新连接一次，才能加载新增工具；更新 Nuke 端桥接后重启对应软件窗口以加载新版。
@@ -52,7 +52,7 @@ Houdini 默认保留用户指定的 `18186`，新 Nuke 桥接默认 `8187`。不
 首次准备：
 
 ```powershell
-Set-Location D:\MyScripts\fx-agent
+Set-Location <fx-agent 仓库目录>
 uv sync --frozen --group nuke
 .venv\Scripts\python.exe scripts/install_nuke.py --prepare
 ```

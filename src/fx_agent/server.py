@@ -9,7 +9,7 @@ from fx_agent.config import DEFAULT_HOUDINI_PORT, data_root
 from fx_agent.data_api import shared_functions
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.task_tools import install_task_gates
-from fx_agent.tool_profiles import apply_tool_profile
+from fx_agent.tool_profiles import apply_tool_profile, resolve_tool_profile
 from fx_agent.vfx_catalog import fx_search_published_templates
 
 HOST_WORKFLOW_INSTRUCTIONS = """【FX Agent 宿主执行约束：纯文本通用经验 + 外部模板库直连】
@@ -102,9 +102,11 @@ def get_server():
             },
             "production_rules_version": production_rules()["version"],
             "knowledge_mode": "text_only",
+            "tool_profile": resolve_tool_profile(),
             "template_library_tool": "fx_search_published_templates",
             "module_taxonomy_version": 1,
             "module_baseline_sync_tool": "fx_sync_module_baselines",
+            "maintenance_tools_require_profile": "full",
             "task_gate_version": 2,
             "task_gate_entry": "fx_begin_task",
         }

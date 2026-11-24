@@ -101,7 +101,7 @@ def module_catalog(software: str = "houdini") -> dict:
         "guidelines_are_learned_experience": False,
         "guide_tool": "get_workflow_guide" if software == "houdini" else None,
         "learned_guide_tool": "fx_get_module_knowledge",
-        "update_policy": "accepted_finalized_project_recipes_only",
+        "update_policy": "verified_global_text_experiences",
         "workflow_skill": {"houdini": "fx-workflow", "nuke": "nuke-workflow", "maya": "maya-workflow"}[software],
         "items": [
             {"module": key, "label": label, "guide_topic": topic}

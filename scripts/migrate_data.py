@@ -1,4 +1,4 @@
-"""Relocate FX state after stopping all clients that may write archive files."""
+"""Relocate FX pure-text data after stopping all clients that may write to SQLite."""
 
 import argparse
 import json

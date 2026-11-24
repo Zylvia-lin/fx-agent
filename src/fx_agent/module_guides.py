@@ -293,4 +293,5 @@ def refresh_guides(root: Path, project_id: str = "") -> dict:
             "state": "pending_rebuild",
             "error": str(error),
             "repair_tool": "fx_refresh_module_guides",
+            "repair_note": "Set FX_AGENT_TOOL_PROFILE=full to invoke fx_refresh_module_guides",
         }

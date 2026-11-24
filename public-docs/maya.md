@@ -1,17 +1,17 @@
 # Maya 接入
 
-正式工程为 `D:/MyScripts/fx-agent`。外部 Python 3.12 运行 `fx-maya` stdio MCP；`integrations/maya/py2`、`py3` 分别维护 Maya 端运行时代码，各自包含 scripts、plug-ins、fx_maya_bridge。当前制作优先使用 Maya 2020。
+外部 Python 3.12 运行 `fx-maya` stdio MCP；`integrations/maya/shared` 统一维护 Python 2 / 3 兼容的 Maya 端运行时代码，包含 `scripts`、`plug-ins` 与 `fx_maya_bridge`。
 
 ## 安装为共享 .mod
 
 ```powershell
-.venv/Scripts/python.exe scripts/install_maya.py --modules-dir C:/Users/admin/Documents/maya/modules
-.venv/Scripts/python.exe scripts/install_maya.py --modules-dir C:/Users/admin/Documents/maya/modules --apply
+.venv/Scripts/python.exe scripts/install_maya.py --modules-dir <你的Documents>/maya/modules
+.venv/Scripts/python.exe scripts/install_maya.py --modules-dir <你的Documents>/maya/modules --apply
 ```
 
-安装一次共享 .mod，参照用户 L_Tools.mod 的 MAYAVERSION/PLATFORM 分段配置：2017–2020 指向 py2，2022–2027 指向 py3。每个分支以 scripts: scripts 和 PYTHONPATH 注册自带 userSetup.py，GUI 启动后延迟加载 FX 插件并建立菜单。无需逐版本/语言修改 pluginPrefs.mel，不覆盖用户或其他插件的启动脚本。Maya 2020 原生 executeUserSetup 会遍历搜索路径执行各自的 userSetup.py。
+安装一次共享 `.mod`，按 `MAYAVERSION`/`PLATFORM` 分段指向统一的 `integrations/maya/shared`（覆盖 Maya 2017–2027）。通过 `scripts: scripts` 和 `PYTHONPATH` 注册自带 `userSetup.py`，GUI 启动后延迟加载 FX 插件并建立菜单。无需逐版本/语言修改 `pluginPrefs.mel`，不覆盖用户或其他插件的启动脚本。Maya 原生 `executeUserSetup` 会遍历搜索路径执行各自的 `userSetup.py`。
 
-默认先预览，`--apply` 注册 fx-maya MCP 和共享 fx_maya.mod，备份原文件并保留其他 DCC 配置。模块指向本工程独立 py2/py3 分支的绝对路径，搬迁工程后重新安装。不安装或替换 RS/MtoA。
+默认先预览，`--apply` 注册 `fx-maya` MCP 和共享 `fx_maya.mod`，备份原文件并保留其他 DCC 配置。模块指向本工程 `integrations/maya/shared` 的绝对路径，搬迁工程后重新安装。不安装或替换 RS/MtoA。
 
 正常启动 Maya 即由模块启动脚本加载 fx_maya_plugin.py，加载插件启动服务及菜单，卸载插件关闭服务。启动失败会在 Script Editor 输出 traceback 和警告，不静默隐藏错误。fxMayaBridgeStatus 返回当前身份。安装器同时链接 maya-workflow 技能。
 
@@ -27,7 +27,7 @@ GUI Maya 顶部新增 **FX Maya MCP** 菜单，打开菜单时读取实际运行
 
 ### 由 Agent 新开 Maya
 
-`start_maya(executable="C:/Program Files/Autodesk/Maya2020/bin/maya.exe")` 的参数列表只有 maya.exe，不传 -command、-script 等参数，不覆盖环境，不通过电脑界面操作。当前小屋制作选用 Maya 2020；插件由共享模块自带启动脚本加载。
+`start_maya(executable="C:/Program Files/Autodesk/Maya2020/bin/maya.exe")` 的参数列表只有 `maya.exe`，不传 `-command`、`-script` 等参数，不覆盖环境，不通过电脑界面操作；插件由共享模块自带启动脚本加载。
 
 此工具只启动一次，返回 status=launched、PID 和 bridge_ready=false，不宣称已经连接。随后 list_maya_sessions 并显式 connect_maya。会话身份附带 menu_exists 和 user_pref_dir，供只读检查菜单及实际语言目录。启动失败先检查错误，不自动重复启动。普通快捷方式与工具使用同一模块启动链路。模拟测试不启动软件；真实启动验收单独记录。
 
@@ -57,4 +57,4 @@ Arnold 使用 `arnoldRender(batch=True,seq=...)`；RS 在 batch Maya 使用 batc
 
 `integrations/maya/verify_runtime.py` 是明确创建独立空场景的 mayapy 验证器；只能在单独测试进程运行。它会显式加载已安装的两个渲染器，测试灯型、修改、HDRI、连接和64x64单帧，将真实结果写入调用者指定目录。不要在用户工程里运行它。
 
-版本分段是入口路由，不能证明所有版本兼容；未来版本需追加路由并验证。py2、py3 初始保留相同行为，后续可独立修复，不强制共享实现；Python 3.14+ 兼容性需实际测试。协议副本对照外部客户端分别测试。上游来源和许可证见 [THIRD_PARTY.md](../integrations/maya/THIRD_PARTY.md)。
+版本分段是入口路由，不能证明所有版本兼容；未来版本需追加路由并验证。`integrations/maya/shared` 采用统一 Python 2 / 3 兼容实现；Python 3.14+ 兼容性需实际测试。协议副本对照外部客户端分别测试。上游来源和许可证见 [THIRD_PARTY.md](../integrations/maya/THIRD_PARTY.md)。
