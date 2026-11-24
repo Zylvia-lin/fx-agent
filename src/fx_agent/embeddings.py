@@ -8,17 +8,25 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import math
 import os
 import struct
 import threading
+import urllib.error
+import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fx_agent.store import Store
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code, f"Redirects disabled ({msg})", headers, fp)
 
 LOG = logging.getLogger("fx_agent.embeddings")
 
@@ -91,18 +99,18 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
         if _CUSTOM_EMBEDDER is not None:
             raw_vectors = _CUSTOM_EMBEDDER(cleaned)
         else:
-            import httpx
-
             url = os.getenv("FX_AGENT_EMBEDDING_URL", "").strip()
             api_key = os.getenv("FX_AGENT_EMBEDDING_API_KEY", "").strip()
             headers = {"Content-Type": "application/json"}
             if api_key:
                 headers["Authorization"] = "Bearer " + api_key
-            payload = {"model": embedding_model(), "input": cleaned}
-            with httpx.Client(timeout=8.0, trust_env=False, follow_redirects=False) as client:
-                response = client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                body = response.json()
+            data = json.dumps({"model": embedding_model(), "input": cleaned}).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), _NoRedirectHandler()
+            )
+            with opener.open(req, timeout=8.0) as response:
+                body = json.loads(response.read().decode("utf-8"))
             if isinstance(body, dict) and isinstance(body.get("data"), list):
                 ordered = sorted(
                     body["data"],

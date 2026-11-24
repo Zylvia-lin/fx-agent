@@ -58,7 +58,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
   - `data/memory.sqlite3`：纯文本规范与通用经验数据库（`< 1 MB`）
   - `data/modules/global/`：按软件与功能模块自动编译的纯文本 Markdown 手册
   - `data/baselines/`：官方工作流与 Skills 基线
-- **默认工具面（`FX_AGENT_TOOL_PROFILE=text_only`）**：自动隐藏旧版重型工程归档与效果卡工具，减少宿主 Schema Token 消耗；提交经验时自动拦截本机/网络绝对路径，确保 `data/` 干净适合 Git 提交与团队共享。
+- **精简工具面（默认 `FX_AGENT_TOOL_PROFILE=text_only`）**：已彻底移除离线工程归档、效果卡和离线导包工具，默认同时隐藏低频维护工具（`fx_sync_module_baselines`、`fx_refresh_module_guides`、`fx_undo_dream`、`fx_get_dream_runs`），减少宿主 Schema Token 消耗；需要手动修复或回滚 Dream 时设为 `full`。提交规范或经验时自动拦截本机/网络绝对路径，确保 `data/` 干净适合 Git 提交与团队共享。
 - 本地会话注册文件（`data/nuke_sessions/`、`data/maya_sessions/`）、锁文件、临时 WAL 文件及任何工程/贴图均已由 `.gitignore` 排除，不会进入版本库。
 
 ## 本地开发与验证

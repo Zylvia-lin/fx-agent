@@ -14,7 +14,6 @@ dependencies = [
     # The upstream SDK adapter uses private registration internals. Validate
     # the 2.x transition separately rather than changing it during integration.
     "mcp>=1.14.0,<2",
-    "httpx>=0.28,<1",
 ]
 
 [project.scripts]

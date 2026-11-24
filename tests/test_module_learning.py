@@ -118,55 +118,60 @@ async def test_module_tools_publish_schemas_and_forward_filters(tmp_path, monkey
     from fx_agent.server import get_server
 
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    get_server.cache_clear()
     store = LearningStore(tmp_path)
     item = store.submit(**experience(modules=["sop"]))
-    server = get_server()
-    tools = {tool.name: tool for tool in await server.list_tools()}
-    assert "fx_status" in tools
-    assert "module" in tools["fx_search_memory"].inputSchema["properties"]
-    assert "module" in tools["fx_get_learning_history"].inputSchema["properties"]
-    assert "get_workflow_guide" in tools
+    try:
+        server = get_server()
+        tools = {tool.name: tool for tool in await server.list_tools()}
+        assert "fx_status" in tools
+        assert "module" in tools["fx_search_memory"].inputSchema["properties"]
+        assert "module" in tools["fx_get_learning_history"].inputSchema["properties"]
+        assert "get_workflow_guide" in tools
 
-    async def call(name, arguments):
-        result = await server.call_tool(name, arguments)
-        return json.loads(result[0].text)
+        async def call(name, arguments):
+            result = await server.call_tool(name, arguments)
+            return json.loads(result[0].text)
 
-    feedback = await call(
-        "fx_record_feedback",
-        {
-            "feedback": dict(
-                project_id="p",
-                shot_id="s",
-                effect_type="测试变形",
-                attempt_id="first",
-                modules=["sop"],
-                problem="范围错误",
-                change="待修改遮罩",
-                reason="限定区域",
-                result="待验证",
-                outcome="pending",
-                user_quote="其他区域不应变形",
-                source_ref="synthetic test",
-                expected_revision=0,
-            )
-        },
-    )
-    assert (await call("fx_status", {}))["module_taxonomy_version"] == 1
-    catalog = await call("fx_get_module_catalog", {"software": "nuke"})
-    assert "pyro" not in {entry["module"] for entry in catalog["items"]}
-    found = await call("fx_search_memory", {"project_id": "p", "query": "", "module": "sop"})
-    assert found["items"][0]["memory_id"] == item["memory_id"]
-    assert (await call("fx_search_memory", {"project_id": "p", "query": "", "module": "pyro"}))[
-        "items"
-    ] == []
-    assert (
-        await call("fx_get_learning_history", {"project_id": "p", "shot_id": "s", "module": "sop"})
-    )["items"][0]["feedback_id"] == feedback["feedback_id"]
-    assert (
-        await call("fx_get_learning_history", {"project_id": "p", "shot_id": "s", "module": "pyro"})
-    )["items"] == []
-    guide = await call("fx_get_module_knowledge", {"project_id": "p", "module": "sop"})
-    assert guide["guide_topic"] == "model"
-    assert guide["available"], "Admitted text-only experiences sync directly to module guides"
-    assert "先检查尺度再调整" in guide["content"]
-    assert (await call("fx_refresh_module_guides", {"project_id": "p"}))["state"] == "current"
+        feedback = await call(
+            "fx_record_feedback",
+            {
+                "feedback": dict(
+                    project_id="p",
+                    shot_id="s",
+                    effect_type="测试变形",
+                    attempt_id="first",
+                    modules=["sop"],
+                    problem="范围错误",
+                    change="待修改遮罩",
+                    reason="限定区域",
+                    result="待验证",
+                    outcome="pending",
+                    user_quote="其他区域不应变形",
+                    source_ref="synthetic test",
+                    expected_revision=0,
+                )
+            },
+        )
+        assert (await call("fx_status", {}))["module_taxonomy_version"] == 1
+        catalog = await call("fx_get_module_catalog", {"software": "nuke"})
+        assert "pyro" not in {entry["module"] for entry in catalog["items"]}
+        found = await call("fx_search_memory", {"project_id": "p", "query": "", "module": "sop"})
+        assert found["items"][0]["memory_id"] == item["memory_id"]
+        assert (await call("fx_search_memory", {"project_id": "p", "query": "", "module": "pyro"}))[
+            "items"
+        ] == []
+        assert (
+            await call("fx_get_learning_history", {"project_id": "p", "shot_id": "s", "module": "sop"})
+        )["items"][0]["feedback_id"] == feedback["feedback_id"]
+        assert (
+            await call("fx_get_learning_history", {"project_id": "p", "shot_id": "s", "module": "pyro"})
+        )["items"] == []
+        guide = await call("fx_get_module_knowledge", {"project_id": "p", "module": "sop"})
+        assert guide["guide_topic"] == "model"
+        assert guide["available"], "Admitted text-only experiences sync directly to module guides"
+        assert "先检查尺度再调整" in guide["content"]
+        assert (await call("fx_refresh_module_guides", {"project_id": "p"}))["state"] == "current"
+    finally:
+        get_server.cache_clear()

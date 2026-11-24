@@ -467,12 +467,11 @@ class MemoryStore(Store):
 def usable_sql(alias: str) -> str:
     """A derived recipe is usable only while every recorded source is unchanged."""
     return (
-        f"NOT EXISTS (SELECT 1 FROM memory_conflicts blocked WHERE blocked.memory_id={alias}.memory_id) AND "
-        + feedback_current_sql(alias)
+        feedback_current_sql(alias)
         + " AND "
         + (
             f"NOT EXISTS (SELECT 1 FROM knowledge_sources dep LEFT JOIN memories src ON src.memory_id=dep.source_id "
-            f"WHERE dep.memory_id={alias}.memory_id AND (src.memory_id IS NULL OR src.status!='active' OR src.payload!=dep.source_payload OR NOT ({feedback_current_sql('src')}) OR EXISTS (SELECT 1 FROM memory_conflicts blocked_source WHERE blocked_source.memory_id=src.memory_id)))"
+            f"WHERE dep.memory_id={alias}.memory_id AND (src.memory_id IS NULL OR src.status!='active' OR src.payload!=dep.source_payload OR NOT ({feedback_current_sql('src')})))"
         )
     )
 

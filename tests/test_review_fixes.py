@@ -11,7 +11,6 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from fx_agent.baselines import sync_baselines
-from fx_agent.data_import import TABLES, import_data
 from fx_agent.install_config import mcp_servers_json
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store
@@ -229,18 +228,14 @@ async def test_render_view_start_requires_task_gate(tmp_path):
         await mcp.call_tool("fx_render_view_start", {"rop_path": "/out/mantra1"})
 
 
-def test_data_import_tables_and_baselines_stale_lock_recovery(tmp_path):
-    assert "dream_runs" in TABLES
-    assert "memory_aliases" in TABLES
+def test_baselines_stale_lock_recovery(tmp_path):
     source = tmp_path / "src_data"
-    target = tmp_path / "dst_data"
     Store(source)
     # Place a stale .baseline.lock file before syncing; OS flock should succeed without error.
     (source / ".baseline.lock").write_text("stale", encoding="utf-8")
-    sync_baselines(source)
+    result = sync_baselines(source)
     assert not (source / ".baseline.lock").exists()
-    result = import_data(source, target, apply=True)
-    assert result["baseline_snapshots"]["added"] == 2
+    assert len(result["snapshots"]) == 2
 
 
 def test_houdini_startup_csrf_guard_and_fail_closed_bind(monkeypatch):

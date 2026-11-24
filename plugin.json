@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "fx-agent",
   "version": "0.1.0",
-  "description": "Codex 操作的 Houdini FX 制作工作台，逐步接入制作记忆与案例归档。",
+  "description": "面向 Houdini / Nuke / Maya 的 FX 制作工作台，沉淀纯文本通用经验并直连外部特效模板库。",
   "author": {"name": "Zylvia-lin"},
   "repository": "https://github.com/Zylvia-lin/fx-agent"
 }

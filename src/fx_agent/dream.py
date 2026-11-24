@@ -362,12 +362,6 @@ def _guard(db, ids, aliases):
                 "SELECT * FROM knowledge_sources WHERE memory_id=? ORDER BY source_id", (memory_id,)
             )
         )
-        records.extend(
-            list(row)
-            for row in db.execute(
-                "SELECT * FROM memory_conflicts WHERE memory_id=? ORDER BY import_id", (memory_id,)
-            )
-        )
     for duplicate in aliases:
         row = db.execute(
             "SELECT * FROM memory_aliases WHERE duplicate_id=?", (duplicate,)

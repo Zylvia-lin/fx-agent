@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from fx_agent.memory import MemoryStore
+from fx_agent.memory import MemoryStore, validate_text_only_hygiene
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.production_rules import production_rules
@@ -60,6 +60,7 @@ class LearningStore(MemoryStore):
 
     def record_rule(self, **values) -> dict:
         request = UserRule(**values)
+        validate_text_only_hygiene(request.title, request.statement)
         if request.scope == "project":
             project = scope_id.validate_python(request.project_id)
             scope = "project:" + project
@@ -372,14 +373,3 @@ class LearningStore(MemoryStore):
         from fx_agent.dream import undo
 
         return undo(self, run_id)
-
-
-def feedback_attempt_key(attempt_id: str, device_id: str) -> str:
-    """Keep attempt revision chains local to their author; knowledge stays shared."""
-    import hashlib
-
-    return (
-        "\x00device:" + hashlib.sha256(json.dumps([device_id, attempt_id]).encode()).hexdigest()
-        if device_id
-        else attempt_id
-    )

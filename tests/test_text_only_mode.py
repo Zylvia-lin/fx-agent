@@ -31,6 +31,9 @@ REMOVED_LEGACY_PROJECT_TOOLS = (
     "fx_search_effects",
     "fx_get_effect",
     "fx_review_template_effects",
+    "fx_import_data",
+    "fx_get_import_records",
+    "fx_resolve_import_memory",
 )
 
 
@@ -221,3 +224,144 @@ async def test_text_only_production_task_and_learning_without_case_archive(tmp_p
     status = json.loads(status_resp[0].text)
     assert status["knowledge_mode"] == "text_only"
     assert status["template_library_tool"] == "fx_search_published_templates"
+
+
+@pytest.mark.asyncio
+async def test_prepare_task_brief_small_budget_four_modules_and_content_trimming(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    store = MemoryStore(tmp_path)
+    for mod in ("sop", "particles", "pyro", "materials"):
+        store.submit(
+            software="houdini",
+            modules=[mod],
+            kind="workflow",
+            title=f"{mod} 长篇通用经验",
+            method="通用工艺步骤说明。" * 80,
+            reason="保持结构清晰并验证多模块预算裁剪逻辑。",
+            applies_when="通用多模块特效制作",
+            source_type="observed",
+            source_ref="live verification",
+        )
+
+    gates = TaskGates(tmp_path)
+    task = gates.begin(
+        TaskSpec(
+            project_id="proj_b",
+            shot_id="sh020",
+            software="houdini",
+            kind="production",
+            scene_path=str(tmp_path / "multi.hip"),
+            endpoint="127.0.0.1:18186",
+            goal="多模块火焰粒子联合测试",
+            acceptance=["无报错且画面达标"],
+            budget="低预算验证",
+            modules=["sop", "particles", "pyro", "materials"],
+        )
+    )
+    # Previously crashed with ValueError for max_chars < 6144 and for 4 modules (1000 < 1024).
+    brief = await fx_prepare_task_brief(task_id=task["task_id"], max_chars=2048)
+    assert set(brief["module_knowledge"]) == {"sop", "particles", "pyro", "materials"}
+    assert any(
+        entry.get("brief_trimmed") and len(entry["content"]) <= 400
+        for entry in brief["module_knowledge"].values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_maya_mcp_exposes_published_template_search(tmp_path, monkeypatch):
+    from fx_agent.maya.server import build_server
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    monkeypatch.delenv("FX_AGENT_TOOL_PROFILE", raising=False)
+    server = build_server()
+    names = {tool.name for tool in await server.list_tools()}
+    assert "fx_search_published_templates" in names
+    assert not (set(REMOVED_LEGACY_PROJECT_TOOLS) & names)
+
+
+def test_store_v11_uses_delete_journal_mode_and_drops_legacy_tables(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    from fx_agent.store import Store
+
+    db_path = tmp_path / "memory.sqlite3"
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE template_studies (study_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE template_effects (card_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE template_effect_reviews (review_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE import_runs (import_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE memory_conflicts (memory_id TEXT, import_id TEXT)")
+        db.execute("PRAGMA user_version=10")
+
+    Store(tmp_path)
+    with closing(sqlite3.connect(db_path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert not (
+            {
+                "template_studies",
+                "template_effects",
+                "template_effect_reviews",
+                "import_runs",
+                "memory_conflicts",
+            }
+            & tables
+        )
+
+
+def test_user_rule_rejects_local_drive_and_unc_paths(tmp_path):
+    store = LearningStore(tmp_path)
+    for bad in (r"输出统一放到 D:\Project\cache", r"从 \\NAS-01\share\assets 读取"):
+        with pytest.raises(ValueError, match="absolute paths"):
+            store.record_rule(
+                rule_key="bad-path-rule",
+                title="错误路径规范",
+                statement=bad,
+                user_quote="test",
+                source_ref="test",
+                scope="global",
+                expected_revision=0,
+            )
+
+
+def test_production_rules_have_no_legacy_archive_requirements():
+    from fx_agent.production_rules import production_rules
+
+    for software in ("houdini", "nuke", "maya"):
+        text = json.dumps(production_rules(software), ensure_ascii=False).lower()
+        assert "independent archive" not in text
+
+
+def test_embeddings_stdlib_http_client_parses_openai_response(monkeypatch):
+    import io
+    import urllib.request
+
+    from fx_agent.embeddings import embed_texts, set_embedder
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    class FakeOpener:
+        def open(self, req, timeout=8.0):
+            assert req.get_method() == "POST"
+            assert req.headers.get("Authorization") == "Bearer test-key"
+            body = json.dumps(
+                {"data": [{"index": 1, "embedding": [0.0, 2.0]}, {"index": 0, "embedding": [3.0, 0.0]}]}
+            ).encode("utf-8")
+            return FakeResp(body)
+
+    set_embedder(None)
+    monkeypatch.setenv("FX_AGENT_EMBEDDING_URL", "http://127.0.0.1:9999/v1/embeddings")
+    monkeypatch.setenv("FX_AGENT_EMBEDDING_API_KEY", "test-key")
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: FakeOpener())
+    vectors = embed_texts(["first", "second"])
+    assert vectors == [[1.0, 0.0], [0.0, 1.0]]

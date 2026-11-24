@@ -19,7 +19,7 @@ class TaskSpec(BaseModel):
     project_id: Identifier
     shot_id: Identifier
     software: Literal["houdini", "nuke", "maya"]
-    kind: Literal["production", "quick_tweak", "learning"] = "production"
+    kind: Literal["production", "quick_tweak"] = "production"
     scene_path: str = Field(min_length=1, max_length=4096)
     endpoint: str = Field(pattern=r"^127\.0\.0\.1:[0-9]{1,5}$")
     goal: str = Field(min_length=1, max_length=2000)
@@ -58,7 +58,7 @@ class SourceAdaptation(BaseModel):
     """Host-authored application record, not proof of visual correctness."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    source: str = Field(pattern=r"^(effect_card|memory|template_study):[a-f0-9]{32}$")
+    source: str = Field(pattern=r"^memory:[a-f0-9]{32}$")
     source_method: str = Field(min_length=1, max_length=1500)
     application: str = Field(min_length=1, max_length=1500)
     verification: str = Field(min_length=1, max_length=1500)
@@ -167,9 +167,6 @@ def endpoint_lock(root, endpoint):
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-KNOWLEDGE_WRITES: frozenset[str] = frozenset()
 
 
 class TaskGates:
@@ -864,54 +861,40 @@ def check_knowledge_gate(
     arguments: dict,
     feedback_loader=None,
 ) -> None:
-    """Shared admission check for knowledge writes, accepted feedback, and finalization."""
+    """Shared admission check for accepted feedback and finalization."""
     acceptance = (
         tool_name == "fx_record_feedback"
         and isinstance(arguments.get("feedback"), dict)
         and arguments["feedback"].get("outcome") == "accepted"
     )
-    knowledge_write = (
-        tool_name in KNOWLEDGE_WRITES
-        or tool_name == "fx_review_template_effects"
-        and arguments.get("reviewed_node_paths") is not None
-    )
-    if not (knowledge_write or tool_name == "fx_finalize_learning" or acceptance):
+    if not (tool_name == "fx_finalize_learning" or acceptance):
         return
     if not task_id:
         raise ValueError(
             "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
         )
     task = gates.get(task_id, True)
-    if knowledge_write:
-        if not task["plan"] or gates.get(task_id)["missing"]:
-            raise ValueError(
-                "Learning task needs current knowledge and a plan before writing studies"
-            )
-        if task["kind"] == "learning":
-            gates.invalidate(task_id, verified=True)
-    if tool_name == "fx_finalize_learning" or acceptance:
-        task = gates.get(task_id, True)
-        if task["state"] != "verified" or task["kind"] != "production":
-            raise ValueError(
-                "Successful learning requires a verified production task and user acceptance"
-            )
-        if any(not q.get("answer") for q in task["questions"]):
-            raise ValueError("Unresolved task questions; ask the user before finalizing")
-        if acceptance:
-            feedback = arguments["feedback"]
-        elif feedback_loader is not None:
-            feedback = feedback_loader(arguments["feedback_id"], arguments["project_id"])
-        else:
-            from fx_agent.learning import LearningStore
+    if task["state"] != "verified" or task["kind"] != "production":
+        raise ValueError(
+            "Successful learning requires a verified production task and user acceptance"
+        )
+    if any(not q.get("answer") for q in task["questions"]):
+        raise ValueError("Unresolved task questions; ask the user before finalizing")
+    if acceptance:
+        feedback = arguments["feedback"]
+    elif feedback_loader is not None:
+        feedback = feedback_loader(arguments["feedback_id"], arguments["project_id"])
+    else:
+        from fx_agent.learning import LearningStore
 
-            feedback = LearningStore(gates.root).get_feedback(
-                arguments["feedback_id"], arguments["project_id"]
-            )
-        if any(
-            feedback.get(k, "houdini" if k == "software" else "") != task[k]
-            for k in ("project_id", "shot_id", "software", "case_id")
-        ):
-            raise ValueError("Accepted feedback/archive must belong to the verified task")
+        feedback = LearningStore(gates.root).get_feedback(
+            arguments["feedback_id"], arguments["project_id"]
+        )
+    if any(
+        feedback.get(k, "houdini" if k == "software" else "") != task[k]
+        for k in ("project_id", "shot_id", "software", "case_id")
+    ):
+        raise ValueError("Accepted feedback must belong to the verified task")
 
 
 def install_task_gates(*args, **kwargs):

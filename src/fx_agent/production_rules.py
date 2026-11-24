@@ -15,7 +15,7 @@ def production_rules(software: str = "houdini") -> dict:
             "paths": "Use an explicit named .ma/.mb task target and existing absolute HDRI paths",
             "renderers": "Inspect loaded plugin versions and actual node attributes; no automatic install or replacement",
             "timeout": "Inspect actual scene after timeout; never automatically replay writes or renders",
-            "verification": "Saved scene, structural check, actual rendered image and independent archive; user acceptance remains separate",
+            "verification": "Saved scene, structural check and actual rendered image inspection; user acceptance remains separate (no binary project/image archiving into data)",
         }
     if software == "nuke":
         return {
@@ -26,7 +26,7 @@ def production_rules(software: str = "houdini") -> dict:
             "scene_api": "Nuke main thread only; arbitrary execute_python is disabled on both MCP and bridge",
             "paths": "Keep Read/Write and .nk paths explicitly verified; do not overwrite unconfirmed outputs",
             "graph": "Inspect selection and existing node graph before creating, connecting, or routing nodes",
-            "verification": "Confirmed save_script, find_broken_reads check, actual viewer capture inspection, and independent archive; user acceptance remains separate",
+            "verification": "Confirmed save_script, find_broken_reads check and actual viewer capture inspection; user acceptance remains separate (no binary project/image archiving into data)",
         }
     return {
         "version": 1,

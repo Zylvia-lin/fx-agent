@@ -14,6 +14,7 @@ from fx_agent.maya.client import DEFAULT_PORTS, MayaConnection, discover, valida
 from fx_agent.maya.launcher import start_maya as launch_maya
 from fx_agent.task_tools import GATE_TOOLS, install_task_gates
 from fx_agent.tool_profiles import apply_tool_profile
+from fx_agent.vfx_catalog import fx_search_published_templates
 
 Renderer = Literal["arnold", "redshift"]
 
@@ -35,6 +36,7 @@ def register_shared_tools(mcp):
     for function in shared_functions():
         if function.__name__ not in excluded and not function.__name__.startswith("fx_render_view_"):
             mcp.tool()(function)
+    mcp.tool()(fx_search_published_templates)
 
 
 def build_server(connection=None, ports=DEFAULT_PORTS):

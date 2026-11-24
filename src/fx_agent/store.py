@@ -42,7 +42,7 @@ class CheckpointInput(BaseModel):
 class Store:
     """Open connections per operation, allowing tools to run in worker threads."""
 
-    SCHEMA_VERSION = 10
+    SCHEMA_VERSION = 11
     _verified_paths: set[tuple] = set()
 
     def _schema_cache_key(self) -> tuple | None:
@@ -52,13 +52,7 @@ class Store:
             return None
         if stat.st_size == 0:
             return None
-        wal = Path(str(self.path) + "-wal")
-        try:
-            wstat = wal.stat()
-            wal_sig = (wstat.st_mtime_ns, wstat.st_size)
-        except OSError:
-            wal_sig = (0, 0)
-        return (str(self.path), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size, wal_sig)
+        return (str(self.path), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
     def __init__(self, root: Path):
         from fx_agent.config import database_path
@@ -77,7 +71,7 @@ class Store:
                 if key:
                     self._verified_paths.add(key)
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            if schema not in tuple(range(self.SCHEMA_VERSION)):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute("BEGIN IMMEDIATE")
             # A concurrent initializer may have upgraded while we waited for the lock.
@@ -87,7 +81,7 @@ class Store:
                 if key:
                     self._verified_paths.add(key)
                 return
-            if schema not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            if schema not in tuple(range(self.SCHEMA_VERSION)):
                 raise ValueError(f"Unsupported database schema {schema}; refusing to overwrite")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS checkpoints ("
@@ -120,32 +114,26 @@ class Store:
                 "CREATE TABLE IF NOT EXISTS knowledge_sources (memory_id TEXT NOT NULL,source_id TEXT NOT NULL,source_payload TEXT NOT NULL,PRIMARY KEY(memory_id,source_id))"
             )
             db.execute(
-                "CREATE TABLE IF NOT EXISTS import_runs (import_id TEXT PRIMARY KEY,payload TEXT NOT NULL)"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS memory_conflicts (memory_id TEXT NOT NULL,import_id TEXT NOT NULL,PRIMARY KEY(memory_id,import_id))"
-            )
-            db.execute(
                 "CREATE TABLE IF NOT EXISTS render_issues (issue_id TEXT,project_id TEXT,shot_id TEXT,revision INTEGER,payload TEXT NOT NULL,PRIMARY KEY(issue_id,revision))"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS template_studies (study_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,fingerprint TEXT NOT NULL,project_id TEXT NOT NULL,payload TEXT NOT NULL,search_text TEXT NOT NULL)"
-            )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS template_studies_source ON template_studies(source_id,fingerprint)"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS template_effects (card_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,effect_key TEXT NOT NULL,payload TEXT NOT NULL,search_text TEXT NOT NULL)"
-            )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS template_effects_study ON template_effects(study_id,effect_key)"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS template_effect_reviews (review_id TEXT PRIMARY KEY,study_id TEXT NOT NULL,payload TEXT NOT NULL)"
             )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS task_gates (task_id TEXT PRIMARY KEY,payload TEXT NOT NULL)"
             )
+            # Remove obsolete project-learning and offline-import tables on upgrade.
+            for legacy_trigger in (
+                "knowledge_memory_conflicts_insert",
+                "knowledge_memory_conflicts_update",
+                "knowledge_memory_conflicts_delete",
+            ):
+                db.execute(f"DROP TRIGGER IF EXISTS {legacy_trigger}")
+            for legacy_table in (
+                "template_studies",
+                "template_effects",
+                "template_effect_reviews",
+                "import_runs",
+                "memory_conflicts",
+            ):
+                db.execute(f"DROP TABLE IF EXISTS {legacy_table}")
             for table, columns, definition in (
                 (
                     "checkpoints",
@@ -177,7 +165,6 @@ class Store:
                 "memories",
                 "memory_aliases",
                 "knowledge_sources",
-                "memory_conflicts",
                 "learning_feedback",
                 "learning_results",
             ):
@@ -210,10 +197,11 @@ class Store:
                 "CREATE INDEX IF NOT EXISTS embeddings_scope ON embeddings(item_type,software,model)"
             )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+        # Keep single-file DELETE journal mode so Git commits of data/memory.sqlite3
+        # never miss uncommitted WAL sidecar pages.
         try:
-            with closing(sqlite3.connect(self.path, timeout=10)) as wal_db:
-                wal_db.execute("PRAGMA journal_mode=WAL")
-                wal_db.execute("PRAGMA synchronous=NORMAL")
+            with closing(sqlite3.connect(self.path, timeout=10)) as mode_db:
+                mode_db.execute("PRAGMA journal_mode=DELETE")
         except sqlite3.OperationalError:
             pass
         key = self._schema_cache_key()

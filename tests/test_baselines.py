@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from fx_agent.baselines import baseline_lock, baseline_status, sync_baselines, validate_baselines
-from fx_agent.data_import import import_data
 from fx_agent.migration import migrate_data
 from fx_agent.store import Store
 
@@ -34,21 +33,15 @@ def test_rules_are_copied_to_data_with_version_hashes_and_licenses(tmp_path):
     assert sync_baselines(root)["snapshots"] == snapshots
 
 
-def test_baselines_migrate_and_merge_without_regenerating_from_venv(tmp_path):
-    source, target = tmp_path / "source", tmp_path / "target"
+def test_baselines_migrate_without_regenerating_from_venv(tmp_path):
+    source = tmp_path / "source"
     Store(source)
     sync_baselines(source)
     moved = tmp_path / "moved"
     migrate_data(source, moved)
     assert validate_baselines(moved)["valid"]
-    preview = import_data(moved, target)
-    assert preview["baseline_snapshots"]["added"] == 2
-    assert not target.exists()
-    merged = import_data(moved, target, apply=True)
-    assert merged["baseline_snapshots"]["added"] == 2
-    assert len(baseline_status(target)["snapshots"]) == 2
-    assert (target / "modules/global/nuke/README.md").is_file()
-    assert import_data(moved, target, apply=True)["baseline_snapshots"]["skipped"] == 2
+    assert len(baseline_status(moved)["snapshots"]) == 2
+    assert (moved / "modules/global/nuke/README.md").is_file()
 
 
 def test_corrupt_baseline_prevents_migration_and_is_not_overwritten(tmp_path):
@@ -80,33 +73,6 @@ def test_legacy_hash_paths_are_renamed_and_links_are_short(tmp_path):
     assert validate_baselines(root)["valid"]
 
 
-def test_import_updates_current_baseline_without_numbered_copies(tmp_path):
-    import hashlib
-
-    from fx_agent.store import compact
-
-    a, b = tmp_path / "A", tmp_path / "B"
-    for root in (a, b):
-        Store(root)
-        sync_baselines(root)
-    folder = b / "baselines/houdini"
-    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-    path = folder / manifest["files"][0]["path"]
-    path.write_text("a different valid rule revision", encoding="utf-8")
-    manifest["files"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest["files"][0]["size_bytes"] = path.stat().st_size
-    manifest["version"] = "fixture-version"
-    manifest.pop("snapshot_id")
-    manifest["snapshot_id"] = hashlib.sha256(compact(manifest).encode()).hexdigest()
-    (folder / "manifest.json").write_text(compact(manifest), encoding="utf-8")
-    assert validate_baselines(b)["valid"]
-    result = import_data(b, a, apply=True)
-    assert result["baseline_snapshots"] == {"added": 1, "skipped": 1}
-    assert not (a / "baselines/houdini-2").exists()
-    assert json.loads((a / "baselines/houdini/manifest.json").read_text())["version"] == "fixture-version"
-    assert import_data(b, a, apply=True)["baseline_snapshots"]["skipped"] == 2
-
-
 def test_concurrent_sync_is_serialized_without_false_corruption(tmp_path):
     root = tmp_path / "data"
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -127,12 +93,17 @@ def test_runtime_lock_is_not_carried_to_another_device(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_baseline_sync_tool_is_available(tmp_path, monkeypatch):
+async def test_baseline_sync_tool_is_available_in_full_profile(tmp_path, monkeypatch):
     from fx_agent.server import get_server
 
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
-    result = await get_server().call_tool("fx_sync_module_baselines", {})
-    assert json.loads(result[0].text)["snapshots"]
+    monkeypatch.setenv("FX_AGENT_TOOL_PROFILE", "full")
+    get_server.cache_clear()
+    try:
+        result = await get_server().call_tool("fx_sync_module_baselines", {})
+        assert json.loads(result[0].text)["snapshots"]
+    finally:
+        get_server.cache_clear()
 
 
 def test_sync_updates_adds_and_removes_documents_in_same_directory(tmp_path, monkeypatch):
@@ -237,49 +208,6 @@ def test_failed_rollback_preserves_recoverable_previous_copy(tmp_path, monkeypat
     retained = list((root / "baselines/.staging").glob("*/previous/manifest.json"))
     assert len(retained) == 1
     assert retained[0].read_bytes() == before
-
-
-def test_import_selects_highest_legacy_number_then_consolidates(tmp_path):
-    import hashlib
-    import shutil
-
-    from fx_agent.store import compact
-
-    source, target = tmp_path / "source", tmp_path / "target"
-    Store(source)
-    sync_baselines(source)
-    current = source / "baselines/project"
-    shutil.copytree(current, source / "baselines/project-2")
-    shutil.copytree(current, source / "baselines/project-10")
-    for folder in source.glob("baselines/project*"):
-        manifest = json.loads((folder / "manifest.json").read_text())
-        manifest.pop("storage_mode", None)
-        manifest.pop("snapshot_id")
-        if folder.name == "project-2":
-            manifest["version"] = "intermediate"
-        manifest["snapshot_id"] = hashlib.sha256(compact(manifest).encode()).hexdigest()
-        (folder / "manifest.json").write_text(compact(manifest), encoding="utf-8")
-    assert validate_baselines(source)["valid"]
-    result = import_data(source, target, apply=True)
-    assert result["baseline_snapshots"] == {"added": 2, "skipped": 0}
-    assert {p.name for p in (target / "baselines").iterdir()} == {"houdini", "project", ".staging"}
-    assert json.loads((target / "baselines/project/manifest.json").read_text())["version"] != "intermediate"
-    assert import_data(source, target, apply=True)["baseline_snapshots"]["skipped"] == 2
-
-
-def test_internal_directory_link_is_rejected_before_import_changes_target(tmp_path, monkeypatch):
-    source, target = tmp_path / "source", tmp_path / "target"
-    for root in (source, target):
-        Store(root)
-        sync_baselines(root)
-    houdini = target / "baselines/houdini"
-    project = target / "baselines/project"
-    original = (project / "manifest.json").read_bytes()
-    original_is_junction = Path.is_junction
-    monkeypatch.setattr(Path, "is_junction", lambda p: p == houdini or original_is_junction(p))
-    with pytest.raises(ValueError, match="baseline|Baseline"):
-        import_data(source, target, apply=True)
-    assert (project / "manifest.json").read_bytes() == original
 
 
 def test_resolved_destination_cannot_redirect_to_another_source(tmp_path, monkeypatch):

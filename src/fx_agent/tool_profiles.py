@@ -4,7 +4,7 @@ import os
 
 from fx_agent.task_tools import BRIEF_TOOLS, GATE_TOOLS
 
-TOOL_PROFILES = frozenset({"text_only", "full", "production", "learning"})
+TOOL_PROFILES = frozenset({"text_only", "production", "full"})
 
 # Tools never removed regardless of profile so gating, status, and briefs always work.
 PROTECTED_TOOLS = frozenset(
@@ -18,38 +18,19 @@ PROTECTED_TOOLS = frozenset(
     }
 )
 
-# Legacy tools kept empty in text_only after physical removal from data_api.
-TEXT_ONLY_HIDDEN_FX_TOOLS: frozenset[str] = frozenset()
-
-# Low-frequency maintenance tools hidden in `production` profile.
-PRODUCTION_HIDDEN_FX_TOOLS = frozenset(
+# Low-frequency maintenance tools hidden in the default `text_only` profile;
+# switch to FX_AGENT_TOOL_PROFILE=full when running manual repairs or Dream rollbacks.
+TEXT_ONLY_HIDDEN_FX_TOOLS = frozenset(
     {
         "fx_sync_module_baselines",
         "fx_refresh_module_guides",
-        "fx_dream_memory",
         "fx_undo_dream",
         "fx_get_dream_runs",
-        "fx_import_data",
-        "fx_get_import_records",
-        "fx_resolve_import_memory",
     }
 )
 
-# Live render/handoff tools hidden in `learning` profile.
-LEARNING_HIDDEN_FX_TOOLS = frozenset(
-    {
-        "fx_render_view_start",
-        "fx_render_view_status",
-        "fx_render_view_save",
-        "fx_render_view_stop",
-        "fx_report_render_issue",
-        "fx_get_render_issue",
-        "fx_list_render_issues",
-        "fx_update_render_issue",
-        "fx_save_checkpoint",
-        "fx_get_checkpoint",
-    }
-)
+# Extra maintenance tools hidden in `production` profile to minimize schema token overhead.
+PRODUCTION_HIDDEN_FX_TOOLS = TEXT_ONLY_HIDDEN_FX_TOOLS | frozenset({"fx_dream_memory"})
 
 # Optional upstream Houdini sub-domain groups hideable via FX_AGENT_HOUDINI_HIDE_GROUPS.
 HOUDINI_TOOL_GROUPS: dict[str, frozenset[str]] = {
@@ -183,8 +164,6 @@ def apply_tool_profile(
         hidden.update(TEXT_ONLY_HIDDEN_FX_TOOLS)
     elif active_profile == "production":
         hidden.update(PRODUCTION_HIDDEN_FX_TOOLS)
-    elif active_profile == "learning":
-        hidden.update(LEARNING_HIDDEN_FX_TOOLS)
     if software == "houdini":
         for group in parse_hidden_groups(hide_groups):
             hidden.update(HOUDINI_TOOL_GROUPS[group])

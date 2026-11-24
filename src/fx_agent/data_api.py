@@ -1,14 +1,12 @@
 """Shared knowledge operations. No DCC connections or MCP server initialization."""
 
 import asyncio
-from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field
 
 from fx_agent.baselines import sync_baselines
 from fx_agent.config import data_root, database_path
-from fx_agent.data_import import import_data, import_records, resolve_memory
 from fx_agent.dream import DreamAction
 from fx_agent.handoff import RenderIssue, RenderIssues
 from fx_agent.learning import Feedback, LearningStore, UserRule
@@ -211,7 +209,7 @@ async def fx_search_memory(
 
 
 async def fx_get_memory(memory_id: str, project_id: str = "") -> dict:
-    """Expand one global memory's method, conditions, provenance and case reference."""
+    """Expand one global text-only memory's method, conditions and provenance."""
     return await asyncio.to_thread(lambda: MemoryStore(data_root()).get(memory_id, project_id))
 
 
@@ -287,11 +285,12 @@ async def fx_finalize_learning(
     applies_when: str,
     reuse_scope: str = "global",
 ) -> dict:
-    """Distill the actually used method from the current accepted final-result record.
+    """Distill a reusable text-only method from the current accepted final-result record.
 
-    Codex writes the method and conditions after inspecting the correction
-    trace. The service checks acceptance, archive and scope atomically.
-    Global reuse is default; choose shot only for shot-specific methods. Acceptance of an image is not proof of every causal explanation.
+    The host writes the desensitized method and conditions after inspecting the
+    correction trace. The service checks acceptance and scope atomically, then
+    refreshes global module Markdown guides. Global reuse is default; choose shot
+    only for shot-specific methods.
     """
     return await asyncio.to_thread(
         lambda: LearningStore(data_root()).finalize(
@@ -383,40 +382,6 @@ async def fx_get_dream_runs(run_id: str = "", offset: int = 0, limit: int = 10) 
     return await asyncio.to_thread(read)
 
 
-async def fx_import_data(source: str, apply: bool = False) -> dict:
-    """Preview or append another data directory into the configured root.
-
-    Stop archive writers first. Preserve conflicts and snapshot; never overwrite
-    local records. Run host-authored Dream after import to consolidate knowledge.
-    """
-    return await asyncio.to_thread(lambda: import_data(Path(source), data_root(), apply=apply))
-
-
-async def fx_get_import_records(
-    import_id: str = "", table: str = "", offset: int = 0, limit: int = 20
-) -> dict:
-    """List import batches or expand divergent incoming/local rows for host review."""
-    return await asyncio.to_thread(
-        lambda: import_records(data_root(), import_id, table=table, offset=offset, limit=limit)
-    )
-
-
-async def fx_resolve_import_memory(
-    import_id: str, memory_id: str, decision: str, expected_snapshot: str, rationale: str
-) -> dict:
-    """Resolve memory divergence after reading both full versions and their evidence.
-
-    keep_local retains the current record. keep_incoming/keep_both create a
-    traceable separate incoming branch; source text is never replaced. Resolve
-    case/feedback provenance first. Use a current Dream preview snapshot.
-    """
-    return await asyncio.to_thread(
-        lambda: resolve_memory(
-            data_root(), import_id, memory_id, decision, expected_snapshot, rationale
-        )
-    )
-
-
 async def fx_report_render_issue(issue: RenderIssue) -> dict:
     """Record Nuke-observed render input problems; does not launch Houdini or render."""
     return await asyncio.to_thread(lambda: RenderIssues(data_root()).report(**issue.model_dump()))
@@ -467,7 +432,7 @@ async def fx_prepare_task_brief(
     include_candidates: bool = False,
     max_chars: int = 16000,
 ) -> dict:
-    """Aggregate scoped rules, context, module guides, effects and memories in one read.
+    """Aggregate scoped rules, context, module guides and memories in one read.
 
     Automatically records verified task-gate receipts for every component fetched
     so production or quick_tweak tasks avoid 6+ serial preflight tool calls.
@@ -524,7 +489,7 @@ async def fx_prepare_task_brief(
                 )
                 expanded_rules.append(full_rule)
 
-        context_budget = min(2000, max(512, max_chars // 8))
+        context_budget = min(2000, max(768, max_chars // 8))
         context = Store(root).get_context(project_id, shot_id, "", context_budget, software)
 
         brief: dict = {
@@ -540,7 +505,7 @@ async def fx_prepare_task_brief(
             brief["expanded_user_rules"] = expanded_rules
 
         if kind != "quick_tweak":
-            per_mod_budget = min(3600, max(1000, (max_chars // 4) // max(1, len(modules))))
+            per_mod_budget = min(3600, max(1024, (max_chars // 4) // max(1, len(modules))))
             module_knowledge: dict[str, dict] = {}
             truncated_modules: list[str] = []
             guides = ModuleGuides(root)
@@ -557,7 +522,7 @@ async def fx_prepare_task_brief(
                     truncated_modules.append(mod)
             brief["module_knowledge"] = module_knowledge
 
-            mem_budget = min(4000, max(1000, max_chars // 3))
+            mem_budget = min(4000, max(512, max_chars // 3))
             mem_store = MemoryStore(root)
             primary_mod = modules[0] if len(modules) == 1 else ""
             memories = mem_store.search(
@@ -631,9 +596,9 @@ async def fx_prepare_task_brief(
                     brief[key] = {"truncated": True, "omitted_for_budget": True}
             if "module_knowledge" in brief and len(compact(brief)) > max_chars:
                 for mod, entry in brief["module_knowledge"].items():
-                    if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                    if isinstance(entry, dict) and isinstance(entry.get("content"), str):
                         entry = dict(entry)
-                        entry["text"] = entry["text"][:400]
+                        entry["content"] = entry["content"][:400]
                         entry["brief_trimmed"] = True
                         brief["module_knowledge"][mod] = entry
                         if len(compact(brief)) <= max_chars:

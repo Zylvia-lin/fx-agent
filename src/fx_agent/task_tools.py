@@ -7,7 +7,6 @@ from contextlib import nullcontext
 from fx_agent.modules import HOUDINI
 from fx_agent.task_gates import (
     HEAVY_BUILD_TOOLS,
-    KNOWLEDGE_WRITES,
     QUICK_TWEAK_MAX_EDITS,
     SourceAdaptation,
     TaskGates,
@@ -221,11 +220,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
             "type": "string",
             "description": "Task evidence scope (use fx_task_id here; task management tools use task_id).",
         }
-        if (
-            is_scene_write(tool.name)
-            or tool.name in KNOWLEDGE_WRITES
-            or tool.name == "fx_finalize_learning"
-        ):
+        if is_scene_write(tool.name) or tool.name == "fx_finalize_learning":
             tool.parameters.setdefault("required", []).append("fx_task_id")
 
     async def guarded(name, arguments, context=None, convert_result=False):
@@ -281,13 +276,8 @@ def install_task_gates(mcp, software, root_provider, live_target):
             and isinstance(arguments.get("feedback"), dict)
             and arguments["feedback"].get("outcome") == "accepted"
         )
-        knowledge_write = (
-            name in KNOWLEDGE_WRITES
-            or name == "fx_review_template_effects"
-            and arguments.get("reviewed_node_paths") is not None
-        )
         scene_write = is_scene_write(name)
-        required = scene_write or knowledge_write or name == "fx_finalize_learning" or acceptance
+        required = scene_write or name == "fx_finalize_learning" or acceptance
         if required and not task_id:
             raise ValueError(
                 "Task gate requires fx_task_id (note: fx_begin_task/fx_get_task/fx_prepare_task_brief "
@@ -365,7 +355,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     raise ValueError(
                         "Verification target differs from task; omit fx_task_id for unrelated read-only investigation"
                     )
-            elif knowledge_write or name == "fx_finalize_learning" or acceptance:
+            elif name == "fx_finalize_learning" or acceptance:
                 await asyncio.to_thread(
                     check_knowledge_gate,
                     gates,

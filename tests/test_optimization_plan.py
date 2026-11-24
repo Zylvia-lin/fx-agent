@@ -14,9 +14,9 @@ from fx_agent.store import Store
 from fx_agent.task_gates import QUICK_TWEAK_MAX_EDITS, TaskGates, TaskSpec, install_task_gates
 from fx_agent.tool_profiles import (
     HOUDINI_TOOL_GROUPS,
-    LEARNING_HIDDEN_FX_TOOLS,
     PRODUCTION_HIDDEN_FX_TOOLS,
     PROTECTED_TOOLS,
+    TEXT_ONLY_HIDDEN_FX_TOOLS,
     apply_tool_profile,
 )
 
@@ -217,8 +217,7 @@ def test_phase4_tool_profile_filtering():
     mcp = FastMCP("profile-test")
     sample_tools = (
         list(PROTECTED_TOOLS)
-        + list(PRODUCTION_HIDDEN_FX_TOOLS)[:5]
-        + list(LEARNING_HIDDEN_FX_TOOLS)[:4]
+        + list(PRODUCTION_HIDDEN_FX_TOOLS)
         + list(HOUDINI_TOOL_GROUPS["chop"])
         + list(HOUDINI_TOOL_GROUPS["hda"])[:3]
         + ["set_parameter", "fx_search_memory"]
@@ -230,7 +229,14 @@ def test_phase4_tool_profile_filtering():
     full = apply_tool_profile(mcp, software="houdini", profile="full")
     assert full["removed"] == []
 
-    # Production profile + hidden Houdini groups prunes low-frequency tools while keeping protected ones.
+    # Default text_only hides low-frequency maintenance tools while retaining fx_dream_memory.
+    apply_tool_profile(mcp, software="houdini", profile="text_only")
+    rem_text = set(mcp._tool_manager._tools)
+    assert rem_text >= PROTECTED_TOOLS
+    assert "fx_dream_memory" in rem_text
+    assert not (TEXT_ONLY_HIDDEN_FX_TOOLS & rem_text)
+
+    # Production profile + hidden Houdini groups prunes maintenance & selected sub-domains.
     prod = apply_tool_profile(
         mcp, software="houdini", profile="production", hide_groups="chop,hda"
     )
@@ -241,19 +247,15 @@ def test_phase4_tool_profile_filtering():
     assert not (HOUDINI_TOOL_GROUPS["chop"] & remaining)
     assert len(prod["removed"]) >= 8
 
-    # Learning profile hides live render/handoff tools.
-    mcp2 = FastMCP("learning-profile-test")
-    for name in dict.fromkeys(sample_tools):
-        mcp2.tool(name=name)(lambda: {"ok": True})
-    apply_tool_profile(mcp2, software="houdini", profile="learning")
-    rem2 = set(mcp2._tool_manager._tools)
-    assert rem2 >= PROTECTED_TOOLS
-    assert not (LEARNING_HIDDEN_FX_TOOLS & rem2)
+    # Switching back to full restores stashed tools cleanly.
+    restored = apply_tool_profile(mcp, software="houdini", profile="full")
+    assert restored["removed"] == []
+    assert set(mcp._tool_manager._tools) >= PRODUCTION_HIDDEN_FX_TOOLS
 
     with pytest.raises(ValueError, match="Unsupported FX_AGENT_TOOL_PROFILE"):
-        apply_tool_profile(mcp2, software="houdini", profile="unknown_profile")
+        apply_tool_profile(mcp, software="houdini", profile="unknown_profile")
     with pytest.raises(ValueError, match="Unknown FX_AGENT_HOUDINI_HIDE_GROUPS"):
-        apply_tool_profile(mcp2, software="houdini", profile="full", hide_groups="bogus")
+        apply_tool_profile(mcp, software="houdini", profile="full", hide_groups="bogus")
 
 
 # --- Phase 5: Hybrid semantic retrieval ---
