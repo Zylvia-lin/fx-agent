@@ -20,7 +20,10 @@ dist/
 .fx-data-*/
 integrations/nuke/vendor/
 *.sqlite3
-!data/memory.sqlite3
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
 *.sqlite3-*
 *.hip
 *.hiplc
@@ -29,7 +32,7 @@ integrations/nuke/vendor/
 *.vdb
 *.exr
 
-# Track pure-text knowledge under data/ (data/memory.sqlite3, data/baselines/, data/modules/)
+# Track only plain-text knowledge and baselines under data/.
 # while excluding local runtime sessions, locks, sync metadata and legacy binary folders
 data/nuke_sessions/
 data/maya_sessions/
