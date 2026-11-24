@@ -58,12 +58,15 @@ def test_migration_rejects_overlapping_roots_and_links(tmp_path):
         migrate_data(source, source.parent)
 
 
-def test_checkout_default_is_portable_and_not_cwd(tmp_path, monkeypatch):
-    from fx_agent.config import data_root
+def test_cache_default_is_under_user_profile_and_redirects_old_checkout(tmp_path, monkeypatch):
+    from fx_agent.config import CHECKOUT_DATA, data_root
 
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.delenv("FX_AGENT_DATA_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
-    assert data_root() == Path(__file__).resolve().parents[1] / "data"
+    assert data_root() == tmp_path / ".fx-agent/cache"
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(CHECKOUT_DATA))
+    assert data_root() == tmp_path / ".fx-agent/cache"
 
 
 @pytest.mark.parametrize("damage", ["corrupt_file", "missing_manifest"])

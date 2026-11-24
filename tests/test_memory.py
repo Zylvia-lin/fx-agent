@@ -261,7 +261,7 @@ async def test_memory_tools_return_summary_then_expand_on_request(tmp_path, monk
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
     server = importlib.import_module("fx_agent.server").get_server()
     result = await server.call_tool(
-        "fx_submit_experience", {"experience": experience(source_type="user")}
+        "fx_submit_experience", {"experience": experience(source_type="user", modules=["lighting"])}
     )
     memory_id = json.loads(result[0].text)["memory_id"]
     result = await server.call_tool("fx_search_memory", {"project_id": "广告A", "query": "逆光"})

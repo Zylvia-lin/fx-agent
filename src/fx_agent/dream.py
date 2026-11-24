@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fx_agent.memory import Experience, usable_sql
 from fx_agent.module_guides import refresh_guides
-from fx_agent.modules import normalize_modules
+from fx_agent.modules import normalize_modules, require_classified_modules
 from fx_agent.store import compact
 
 
@@ -206,13 +206,16 @@ def dream(store, mode, expected_snapshot, actions, cursor, limit, software, modu
                     raise ValueError("Cannot mix software")
                 touched.update(source_ids)
                 if action.modules:
-                    modules = action.modules
+                    modules = normalize_modules(action.modules, records[0]["software"])
+                    require_classified_modules(modules)
                 else:
                     counts: dict[str, int] = {}
                     for r in records:
                         for m in r["modules"]:
                             counts[m] = counts.get(m, 0) + 1
                     known_mods = {m: c for m, c in counts.items() if m != "unclassified"}
+                    if len(known_mods) > 1:
+                        known_mods.pop("general", None)
                     ranked = sorted(
                         (known_mods or counts).items(),
                         key=lambda item: (-item[1], item[0]),

@@ -114,6 +114,24 @@ def test_package_preserves_existing_limits_and_custom_environment(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction installer")
+def test_failed_junction_creation_does_not_leave_the_skill_path(tmp_path, monkeypatch):
+    import _winapi
+
+    from fx_agent.install_config import install_junction
+
+    link = tmp_path / "skills" / "fx-workflow"
+
+    def partial_create(_target, stage):
+        Path(stage).mkdir()
+        raise PermissionError("simulated partial junction creation")
+
+    monkeypatch.setattr(_winapi, "CreateJunction", partial_create)
+    with pytest.raises(PermissionError, match="partial"):
+        install_junction(link, tmp_path)
+    assert list(link.parent.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction installer")
 @pytest.mark.parametrize("fail_write", [False, True, "rollback"])
 def test_install_and_failure_restore_original_files(tmp_path, monkeypatch, fail_write):
     home = tmp_path / "home"

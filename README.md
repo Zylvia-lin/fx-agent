@@ -55,6 +55,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 ## 本地开发
 
+运行数据库与生成的模块手册默认位于 `~/.fx-agent/cache/`。Git 共享经审阅的工艺摘要和基础规范。安装或启动时会把共享摘要载入本机缓存。[数据与共享说明](public-docs/使用指南.md)
+
 ```powershell
 uv sync --frozen
 uv run fx-agent --version

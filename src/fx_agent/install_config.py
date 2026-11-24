@@ -1,7 +1,9 @@
 """Minimal, verified TOML/JSON server registration shared by local installers."""
 
 import json
+import os
 import re
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -15,7 +17,23 @@ DATA_ENVIRONMENT = (
     "FX_AGENT_EMBEDDING_URL",
     "FX_AGENT_EMBEDDING_MODEL",
     "FX_AGENT_EMBEDDING_API_KEY",
+    "FX_MAYA_ENABLE_PYTHON",
 )
+
+
+def install_junction(link: Path, target: Path) -> None:
+    """Publish a junction only after Windows fully creates it."""
+    import _winapi
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".fx-junction-", dir=link.parent) as work:
+        staged = Path(work) / "link"
+        try:
+            _winapi.CreateJunction(str(target), str(staged))
+            staged.rename(link)
+        finally:
+            if os.path.lexists(staged):
+                os.rmdir(staged)
 
 
 def forward_data_environment(original: str, previous: dict | None = None) -> str:

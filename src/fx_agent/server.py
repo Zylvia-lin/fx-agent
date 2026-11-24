@@ -7,6 +7,7 @@ from importlib.metadata import version
 from fx_agent import __version__
 from fx_agent.config import DEFAULT_HOUDINI_PORT, data_root
 from fx_agent.data_api import shared_functions
+from fx_agent.modules import TAXONOMY_VERSION
 from fx_agent.production import ProductionBridge, check_path, production_rules
 from fx_agent.task_tools import install_task_gates
 from fx_agent.tool_profiles import apply_tool_profile, resolve_tool_profile
@@ -24,9 +25,10 @@ HOST_WORKFLOW_INSTRUCTIONS = """【FX Agent 宿主执行约束：纯文本通用
 4. 放行后携带同一 fx_task_id 制作；优先专用工具，不用 Python、shell、其他 MCP 或切换宿主绕过门禁。需求、输入、工程路径、端口等条件改变，先 fx_update_task，再补读受影响证据并重新保存方案。报错后读 fx_get_task 按缺项恢复，不删除任务 ID、伪造来源或盲目重试。
 5. 修改后 verify_network；保存真实工程，实际查看截图/预览，动态效果检查多个时间点。fx_save_checkpoint 只记阶段进度；无需归档工程文件，直接调用 fx_finish_task 提交当前 revision 和真实 verification_note（须包含实际画面观察结论）。新修改或校验失败使旧验证失效。无画面证据不得宣称视觉验收通过。
 6. 纯文本通用经验回写（按 fx-learning）：
+   - 由当前助手按实际技巧为每条经验选具体模块，分别刷新对应手册。general 只用于软件级通用经验。
    - 用户提出长期规范 → 及时 fx_record_user_rule；
    - 纠错/排错解决并提炼出跨项目通用方法 → 直接 fx_submit_experience（默认 project_dependent=False，脱敏去除本机盘符路径、项目名、镜头号与单镜头写死数值，不保存工程或贴图）；
-   - 仅当用户明确认可且当前任务已通过 fx_finish_task 后，才提交 accepted 反馈与 fx_finalize_learning，自动刷新 data/modules 纯文本模块手册；未确认保持 pending/improved/failed；无新通用经验则不凑数入库。
+   - 仅当用户明确认可且当前任务已通过 fx_finish_task 后，才提交 accepted 反馈与 fx_finalize_learning，自动刷新本机纯文本模块手册；未确认保持 pending/improved/failed；无新通用经验则不凑数入库。
 
 缺少工具或无法读取必要内容时，明确报告缺项及阻塞原因，保留只读调查，不能自行跳关或宣告完成。查证后仍不理解时，fx_task_question 登记具体问题并向用户提问，仅用真实答复解除。续作先核对现场并更新任务，不沿用旧验收结论。
 阶段汇报列出 task_id/revision、已读规范/模块/来源 ID、方案放行状态、工程保存与网络/视觉验证证据、规范/反馈/纯文本经验写入结果及未完成项；没有真实返回的项写“未执行/待处理”及原因。批量制作复用同一任务的有效证据，不要求每次调用重复读库。
@@ -104,7 +106,7 @@ def get_server():
             "knowledge_mode": "text_only",
             "tool_profile": resolve_tool_profile(),
             "template_library_tool": "fx_search_published_templates",
-            "module_taxonomy_version": 1,
+            "module_taxonomy_version": TAXONOMY_VERSION,
             "module_baseline_sync_tool": "fx_sync_module_baselines",
             "maintenance_tools_require_profile": "full",
             "task_gate_version": 2,

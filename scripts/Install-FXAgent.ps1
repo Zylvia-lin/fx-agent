@@ -115,7 +115,7 @@ function Invoke-FxInstall {
         if (-not (Test-Path -LiteralPath $NukeExe -PathType Leaf)) { throw 'NukeExe 必须是已有程序文件。' }
         if ($NukePort -in @(8100, 8186, 18186, 54321) -or $NukePort -eq $HoudiniPort) { throw 'Nuke 端口必须与 Houdini、原版 8100 和 54321 不同。' }
     }
-    Write-Host "工程：$AgentRoot`n组件：$Components`n记忆：$(Join-Path $AgentRoot 'data')"
+    Write-Host "工程：$AgentRoot`n组件：$Components`n本机缓存：$(Join-Path $UserProfileRoot '.fx-agent/cache')"
     if ($withHoudini) { Write-Host "Houdini 偏好：$HoudiniPrefDir；端口：$HoudiniPort" }
     if ($withNuke) { Write-Host "Nuke：$NukeExe；端口：$NukePort" }
     if ($withMaya) { Write-Host "Maya 模块：$MayaModulesDir；默认端口：18770-18789" }
@@ -147,15 +147,7 @@ function Invoke-FxInstall {
     if ($withNuke) {
         Invoke-FxChecked -Executable $python -Arguments ($nukeArgs + @('--prepare')) -Label '准备Nuke桥接'
     }
-    $data = Join-Path $AgentRoot 'data'
-    $legacy = Join-Path $UserProfileRoot '.fx-agent'
-    if ((Test-Path -LiteralPath (Join-Path $legacy 'memory.sqlite3') -PathType Leaf) -and
-        (Test-Path -LiteralPath $data) -and -not (Test-Path -LiteralPath (Join-Path $data 'memory.sqlite3') -PathType Leaf)) {
-        throw '工程 data 目录已存在但没有数据库；检测到旧记忆，停止自动合并。请先核对数据并使用 migrate_data.py。'
-    }
-    if (-not (Test-Path -LiteralPath $data) -and (Test-Path -LiteralPath (Join-Path $legacy 'memory.sqlite3') -PathType Leaf)) {
-        Invoke-FxChecked -Executable $python -Arguments @((Join-Path $AgentRoot 'scripts/migrate_data.py'), $legacy, $data) -Label '迁移旧记忆'
-    }
+    Invoke-FxChecked -Executable $python -Arguments @('-m', 'fx_agent.shared_knowledge') -Label '初始化本机缓存'
     if ($withHoudini) { Invoke-FxChecked -Executable $python -Arguments ($houArgs + @('--apply')) -Label '安装Houdini插件' }
     if ($withNuke) { Invoke-FxChecked -Executable $python -Arguments ($nukeArgs + @('--apply')) -Label '安装Nuke插件' }
     if ($withMaya) { Invoke-FxChecked -Executable $python -Arguments ($mayaArgs + @('--apply')) -Label '安装Maya模块' }

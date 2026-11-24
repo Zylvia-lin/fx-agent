@@ -113,7 +113,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
         )
     mcp = FastMCP(
         "FXNuke",
-        instructions="由当前宿主助手操作。先读真实工程，制作经验使用FX Agent纯文本共享记忆工具并指定software=nuke，不保存工程或贴图；素材问题通过渲染问题单反馈Houdini。",
+        instructions="由当前宿主助手操作。先读真实工程，制作经验使用FX Agent纯文本共享记忆工具并指定software=nuke，不保存工程或贴图；素材问题通过渲染问题单反馈Houdini。用 fx_get_module_catalog 识别补光、分层、色彩等实际模块，按条写入对应经验手册。",
     )
     state = SimpleNamespace(mcp=mcp, connection=connection, version=version, event_log=None)
     for module in (graph, script, comp, render, batch):
@@ -213,10 +213,13 @@ def _select_advertised_session(connection: SerializedConnection, target: dict) -
 def main() -> None:
     from nukemcp.connection import NukeConnectionError
 
+    from fx_agent.shared_knowledge import prepare_local_data
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8187)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    prepare_local_data()
     connection = SerializedConnection(args.port)
     try:
         sessions = list_sessions(session_root())

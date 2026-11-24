@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from fx_agent.memory import MemoryStore, validate_text_only_hygiene
 from fx_agent.module_guides import refresh_guides
-from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
+from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules, require_classified_modules
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Identifier, compact, scope_id
 
@@ -288,6 +288,8 @@ class LearningStore(MemoryStore):
         reason: str,
         applies_when: str,
         reuse_scope: str = "global",
+        *,
+        modules: list[str] | None = None,
     ) -> dict:
         project_id = scope_id.validate_python(project_id)
         if reuse_scope not in ("global", "project", "shot"):
@@ -321,13 +323,17 @@ class LearningStore(MemoryStore):
                 raise ValueError("Feedback is not the current revision")
             if feedback["outcome"] != "accepted":
                 raise ValueError("Only accepted final results can become reusable workflows")
+            software = feedback.get("software", "houdini")
+            if modules is not None:
+                modules = normalize_modules(modules, software)
+                require_classified_modules(modules)
             has_case = bool(feedback.get("case_id"))
             result = self.submit(
                 _db=db,
                 _origin_feedback_id=feedback_id,
                 project_id=project_id,
-                software=feedback.get("software", "houdini"),
-                modules=feedback.get("modules", ["unclassified"]),
+                software=software,
+                modules=modules if modules is not None else feedback.get("modules", ["unclassified"]),
                 shot_id=feedback["shot_id"] if reuse_scope == "shot" else "",
                 reuse_scope="shot" if reuse_scope == "shot" else "global",
                 kind="workflow",

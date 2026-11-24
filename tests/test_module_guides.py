@@ -1,11 +1,13 @@
 """Accepted lessons update module workflow MDs without overwriting user notes."""
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from fx_agent.learning import LearningStore
-from fx_agent.module_guides import ModuleGuides
+from fx_agent.module_guides import END, START, ModuleGuides
 from fx_agent.store import compact
 
 
@@ -153,3 +155,25 @@ def test_concurrent_finalization_keeps_both_distilled_methods(tmp_path):
     content = path.read_text(encoding="utf-8")
     assert "方法a" in content and "方法b" in content
     assert all(item["module_guides"]["state"] != "pending_rebuild" for item in results)
+
+
+def test_guide_publication_holds_snapshot_lock_until_file_and_state_agree(tmp_path, monkeypatch):
+    store, feedback = accepted(tmp_path)
+    guides = ModuleGuides(store.root)
+    path = guides._path("p", "houdini", "sop")
+    path.parent.mkdir(parents=True)
+    path.write_text(START + "\n" + END, encoding="utf-8")
+    write = guides._write
+
+    def verify_locked(*args):
+        with (
+            closing(sqlite3.connect(store.path, timeout=0)) as competing,
+            pytest.raises(sqlite3.OperationalError, match="locked"),
+        ):
+            competing.execute("BEGIN IMMEDIATE")
+        return write(*args)
+
+    monkeypatch.setattr(guides, "_write", verify_locked)
+    guides.refresh(module="sop")
+    store.finalize(feedback["feedback_id"], "p", "New method", "Reason", "Condition")
+    assert "New method" in path.read_text(encoding="utf-8")

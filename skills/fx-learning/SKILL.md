@@ -8,7 +8,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 用户不需要额外说“记住”。当前宿主助手在看到明确的长期要求、排错解决、纠错或最终确认时，直接按本流程提纯**纯文本通用经验**。
 
 > **核心边界**：**资产归外部特效模板库（FX Template），经验归 FX Agent。**
-> 绝不把 `.hip` / `.nk` / `.ma`、贴图、渲染序列、预览视频、截图或客户绝对路径写入 `data/`；只沉淀跨项目可迁移的规范、工艺配方、节点骨架与排错避坑。
+> 工程、贴图、渲染序列和预览归制作目录管理。提炼时使用可迁移的规范、工艺、节点骨架和排错方法。用户原话与来源留在本机缓存，Git 只共享审阅过的通用经验摘要。
 
 ## 入库质量红线（脱敏与高信噪比）
 
@@ -27,11 +27,21 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 ## 2. 排错解决或现场验证出通用工艺（Recipe / Pitfall）
 
+当前助手先读 `fx_get_module_catalog(software=...)`，按实际操作和方法的复用场景选择模块。任务可以涉及多个模块，每条经验只标它真正适用的模块。独立方法分别提炼。只有整个软件通用的经验才单独使用 `general`，`unclassified` 留给旧记录。
+
+| 软件 | 按实际工作归类 |
+| --- | --- |
+| Houdini | 几何与属性处理 `sop`，VOP 节点编程 `vop`，DOP 求解网络 `dop`，粒子 `particles`，烟火 `pyro` |
+| Nuke | 补光与重打光 `lighting`，通道与 AOV 分层 `layers`，调色与色彩管理 `color`，一般合成 `compositing` |
+| Maya | 建模与拓扑 `modeling`，动画与关键帧 `animation`，绑定与蒙皮 `rigging`，灯光 `lighting` |
+
+每个模块写入本机 `modules/global/<software>/<module>.md`。例如 Pyro 烟火造型进入 `houdini/pyro.md`，只有方法也涉及可复用的 DOP 求解设计时才同时选择 `dop`。
+
 当在当前 DCC 会话中定位并解决了一个通用问题，或验证了一套可迁移的制作思路时：
 1. 调用 `fx_submit_experience`（默认 `project_dependent=False`、`project_id="__global__"`、`case_id=""`、`reuse_scope="global"`）：
    - 明确填写 `software`（`houdini` / `nuke` / `maya`）与 `modules`（从 `fx_get_module_catalog` 选择 1–4 个，不用 `unclassified`）。
    - 选对 `kind`：`workflow`（通用工艺配方）、`troubleshooting`（排错避坑）、`compositing` / `lighting` / `render`（视觉平衡与管线策略）、`preference`（操作偏好）。
-   - 如实标注 `source_type`：用户明确提出用 `user`，现场实测验证用 `observed`（直接进入 `active` 并自动刷新 `data/modules/global/<software>/<module>.md`），未经实测的推测用 `inferred`（保持 `candidate`，不直接污染正式召回）。
+   - 如实标注 `source_type`：用户明确提出用 `user`，现场实测验证用 `observed`（直接进入 `active` 并刷新本机模块手册），未经实测的推测用 `inferred`（保持 `candidate`，供待验证时查阅）。
 2. 检查返回的 `module_guides.state`，如出现 `pending_rebuild` 须报告并调用 `fx_refresh_module_guides` 修复。
 
 ## 3. 制作过程中的纠错轨迹与最终确认
@@ -40,7 +50,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 2. **用户明确认可**：
    - 确认当前任务已通过 `fx_finish_task`（纯文本模式无需归档工程，直接凭保存、结构检查与真实画面观察完成验收）。
    - 携带同一 `fx_task_id` 将反馈更新为 `outcome="accepted"`（`case_id` 留空，不保存工程或截图）。
-   - 调用 `fx_finalize_learning` 提纯跨项目通用的 `method`、`reason`、`applies_when`，自动写入全局经验并刷新对应纯文本模块手册。
+   - 调用 `fx_finalize_learning` 提纯跨项目通用的 `method`、`reason`、`applies_when`。如果提炼出的技巧适用范围比反馈更窄，传入该条经验的 `modules`，由工具刷新对应手册。
 3. 修改旧反馈会自动停用由旧版本派生的经验，防止重复旧错。
 
 ## 4. 再次制作时召回知识与检索模板
@@ -52,5 +62,5 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 有新经验积累或发现重复/冲突条目时执行纯文本整理：
 1. `fx_dream_memory(mode="preview", software=..., module=..., cursor=...)` 分页预览；用 `fx_get_memory` 核对全文与冲突。
-2. 提交 `merge` / `refine` / `split` / `conflict` / `supersede` 动作（带当前 `snapshot` 与 `mode="apply"`），保持每条经验精炼无冗余、无盘符路径残留。
+2. 提交 `merge` / `refine` / `split` / `conflict` / `supersede` 动作（带当前 `snapshot` 与 `mode="apply"`）。为每个新产出的经验填写该方法对应的 `modules`。
 3. 确认返回的 `module_guides.state` 同步完成；必要时可用 `fx_undo_dream(run_id)` 回滚。

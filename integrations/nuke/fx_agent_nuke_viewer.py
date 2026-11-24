@@ -168,7 +168,7 @@ def fit_viewer(params):
 
 def _capture_directory():
     root = os.getenv("FX_AGENT_LOCAL_ROOT") or os.getenv("FX_AGENT_DATA_ROOT")
-    return (Path(root) if root else Path(__file__).resolve().parents[2] / "data") / "screenshots" / "nuke"
+    return (Path(root) if root else Path.home() / ".fx-agent" / "cache") / "screenshots" / "nuke"
 
 
 def _image_size(path):

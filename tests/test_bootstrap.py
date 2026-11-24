@@ -53,6 +53,7 @@ def test_cli_dispatches_only_stdio(monkeypatch):
 
     server = Mock()
     monkeypatch.setattr("fx_agent.server.get_server", lambda: server)
+    monkeypatch.setattr("fx_agent.shared_knowledge.prepare_local_data", lambda: None)
     monkeypatch.setattr(sys, "argv", ["fx-agent"])
     main()
     server.run.assert_called_once_with(transport="stdio")

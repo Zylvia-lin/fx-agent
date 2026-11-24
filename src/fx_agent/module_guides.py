@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from fx_agent.fs_utils import contained, file_hash
-from fx_agent.modules import CATALOGS, normalize_modules
+from fx_agent.modules import CATALOGS, WORKFLOW_SKILLS, normalize_modules
 from fx_agent.store import Store, compact, scope_id
 
 START = "<!-- FX MODULE LEARNING START -->"
@@ -115,8 +115,9 @@ class ModuleGuides(Store):
         selected = (software, module) if module else None
         base = self._base(project_id)
         updated, counts, view_conflicts = [], {}, {}
-        # Phase 1: Read DB snapshot without holding a write lock across file I/O.
+        # Serialize the snapshot, Markdown publication and cache state across MCP processes.
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
             from fx_agent.memory import usable_sql
 
             token = db.execute("SELECT token FROM knowledge_state WHERE id=1").fetchone()[0]
@@ -136,66 +137,63 @@ class ModuleGuides(Store):
                 + (" AND tags.value=? AND COALESCE(json_extract(m.payload,'$.software'),'houdini')=?" if module else ""),
                 (module, software) if module else (),
             ).fetchall()
-            groups, conflicts_by_memory = {}, {}
+            conflicts_by_memory = {}
+            for target_id, conflict_id in db.execute(
+                "SELECT cf.source_id, cf.memory_id FROM knowledge_sources cf "
+                "JOIN memories note ON note.memory_id=cf.memory_id AND note.status='disputed' "
+                "UNION "
+                "SELECT edge.memory_id, cf.memory_id FROM knowledge_sources cf "
+                "JOIN memories note ON note.memory_id=cf.memory_id AND note.status='disputed' "
+                "JOIN knowledge_sources edge ON edge.source_id=cf.source_id ORDER BY 2"
+            ):
+                conflicts_by_memory.setdefault(target_id, []).append(conflict_id)
+            groups = {}
             for row in rows:
                 record = json.loads(row["payload"])
                 record["origin_feedback_id"] = row["feedback_id"] or ""
                 record_software = record.get("software", "houdini")
                 modules = normalize_modules(record.get("modules", ["unclassified"]), record_software)
-                if row["memory_id"] not in conflicts_by_memory:
-                    conflicts = db.execute(
-                        "SELECT DISTINCT note.memory_id FROM knowledge_sources cf JOIN memories note ON note.memory_id=cf.memory_id "
-                        "WHERE note.status='disputed' AND (cf.source_id=? OR cf.source_id IN (SELECT source_id FROM knowledge_sources WHERE memory_id=?)) ORDER BY note.memory_id",
-                        (row["memory_id"], row["memory_id"]),
-                    ).fetchall()
-                    conflicts_by_memory[row["memory_id"]] = [conflict[0] for conflict in conflicts]
-                record["conflict_memory_ids"] = conflicts_by_memory[row["memory_id"]]
+                record["conflict_memory_ids"] = conflicts_by_memory.get(row["memory_id"], [])
                 if row["module"] in modules and row["module"] != "unclassified":
                     groups.setdefault((record_software, row["module"]), []).append(record)
-        known = set(groups)
-        if base.exists():
-            for path in base.glob("*/*.md"):
-                sw, mod = path.parent.name, path.stem
-                catalog = CATALOGS.get(sw, {})
-                if mod in catalog and mod != "unclassified":
-                    known.add((sw, mod))
-        if selected:
-            known &= {selected}
-        # Phase 2: Render and atomically write Markdown files outside the SQLite write lock.
-        state_updates = []
-        for sw, mod in sorted(known):
-            label, topic = CATALOGS[sw][mod]
-            section, count = self._section(groups.get((sw, mod), []))
-            header = (
-                f"# {label}：全局工作流补充\n\n上游准则：get_workflow_guide({topic!r})\n\n"
-                if topic
-                else f"# {label}：全局工作流补充\n\n基础工作流：{sw}-workflow\n\n"
-            )
-            header += "跨项目纯文本通用经验，按适用条件与边界复用；具体镜头尺度、材质和参数须结合当前现场核验。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
-            path = self._path(project_id, sw, mod)
-            if self._write(path, section, header):
-                updated.append(str(path.relative_to(self.root)))
-            counts[f"{sw}/{mod}"] = count
-            conflicts = sorted(
-                {cid for record in groups.get((sw, mod), []) for cid in record["conflict_memory_ids"]}
-            )
-            view_conflicts[f"{sw}/{mod}"] = conflicts
-            state_updates.append((sw, mod, token, file_hash(path), count, compact(conflicts)))
-        # Phase 3: Commit state rows only if knowledge_state.token still matches our snapshot.
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            current_token = db.execute("SELECT token FROM knowledge_state WHERE id=1").fetchone()[0]
-            if current_token == token:
-                for row_data in state_updates:
-                    db.execute(
-                        "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
-                        row_data,
-                    )
-                if selected and selected not in known:
-                    db.execute(
-                        "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
-                        (*selected, token, "", 0, "[]"),
-                    )
+            known = set(groups)
+            if base.exists():
+                for path in base.glob("*/*.md"):
+                    sw, mod = path.parent.name, path.stem
+                    catalog = CATALOGS.get(sw, {})
+                    if mod in catalog and mod != "unclassified":
+                        known.add((sw, mod))
+            if selected:
+                known &= {selected}
+            state_updates = []
+            for sw, mod in sorted(known):
+                label, topic = CATALOGS[sw][mod]
+                section, count = self._section(groups.get((sw, mod), []))
+                header = (
+                    f"# {label}：全局工作流补充\n\n上游准则：get_workflow_guide({topic!r})\n\n"
+                    if topic
+                    else f"# {label}：全局工作流补充\n\n基础工作流：{WORKFLOW_SKILLS[sw]}\n\n"
+                )
+                header += "跨项目纯文本通用经验，按适用条件与边界复用；具体镜头尺度、材质和参数须结合当前现场核验。\n\n自动区块内不要手改；手写补充放在区块外，其内容需另行核实。\n\n"
+                path = self._path(project_id, sw, mod)
+                if self._write(path, section, header):
+                    updated.append(str(path.relative_to(self.root)))
+                counts[f"{sw}/{mod}"] = count
+                conflicts = sorted(
+                    {cid for record in groups.get((sw, mod), []) for cid in record["conflict_memory_ids"]}
+                )
+                view_conflicts[f"{sw}/{mod}"] = conflicts
+                state_updates.append((sw, mod, token, file_hash(path), count, compact(conflicts)))
+            for row_data in state_updates:
+                db.execute(
+                    "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
+                    row_data,
+                )
+            if selected and selected not in known:
+                db.execute(
+                    "INSERT OR REPLACE INTO module_guide_state VALUES (?,?,?,?,?,?)",
+                    (*selected, token, "", 0, "[]"),
+                )
         return {
             "state": "updated" if updated else "current",
             "updated_paths": updated[:8],

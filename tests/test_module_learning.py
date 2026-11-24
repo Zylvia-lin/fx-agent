@@ -1,11 +1,12 @@
 """Module-specific recipes remain separate from immutable upstream guidelines."""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from fx_agent.learning import LearningStore
-from fx_agent.modules import module_catalog
+from fx_agent.modules import TAXONOMY_VERSION, module_catalog
 
 
 def experience(**changes):
@@ -107,6 +108,8 @@ def test_module_guides_are_available_without_live_houdini():
         "rbd": "destruction",
     }.items():
         assert entries[key]["guide_topic"] == topic
+    assert entries["dop"]["guide_topic"] == "dyno"
+    assert "vop" in entries
     for item in catalog["items"]:
         if item["guide_topic"]:
             assert workflow_guide_text(item["guide_topic"]).strip()
@@ -154,7 +157,7 @@ async def test_module_tools_publish_schemas_and_forward_filters(tmp_path, monkey
                 )
             },
         )
-        assert (await call("fx_status", {}))["module_taxonomy_version"] == 1
+        assert (await call("fx_status", {}))["module_taxonomy_version"] == TAXONOMY_VERSION
         catalog = await call("fx_get_module_catalog", {"software": "nuke"})
         assert "pyro" not in {entry["module"] for entry in catalog["items"]}
         found = await call("fx_search_memory", {"project_id": "p", "query": "", "module": "sop"})
@@ -175,3 +178,38 @@ async def test_module_tools_publish_schemas_and_forward_filters(tmp_path, monkey
         assert (await call("fx_refresh_module_guides", {"project_id": "p"}))["state"] == "current"
     finally:
         get_server.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("software", "label", "module"), [
+    ("houdini", "VOPs", "vop"), ("houdini", "DOPs", "dop"),
+    ("houdini", "粒子", "particles"), ("houdini", "烟火", "pyro"),
+    ("nuke", "灯光", "lighting"), ("nuke", "分层", "layers"), ("nuke", "色彩", "color"),
+    ("maya", "建模", "modeling"), ("maya", "动画", "animation"), ("maya", "绑定", "rigging"),
+])
+async def test_classified_experience_writes_only_its_module_guide(tmp_path, monkeypatch, software, label, module):
+    from fx_agent.data_api import fx_submit_experience
+    from fx_agent.memory import Experience
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    lesson = experience(software=software, modules=[label])
+    result = await fx_submit_experience(Experience(**lesson))
+    relative = f"modules/global/{software}/{module}.md"
+    assert [Path(path).as_posix() for path in result["module_guides"]["updated_paths"]] == [relative]
+    content = (tmp_path / relative).read_text(encoding="utf-8")
+    assert lesson["method"] in content
+    if module == "vop":
+        assert "fx-workflow" in content
+    assert not (tmp_path / f"modules/global/{software}/general.md").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modules", [["unclassified"], ["general", "sop"]])
+async def test_new_experience_requires_specific_classification(tmp_path, monkeypatch, modules):
+    from fx_agent.data_api import fx_submit_experience
+    from fx_agent.memory import Experience
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="module|general"):
+        await fx_submit_experience(Experience(**experience(modules=modules)))
+    assert not (tmp_path / "memory.sqlite3").exists()

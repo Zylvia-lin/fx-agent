@@ -54,6 +54,16 @@ def test_narrower_synthesis_keeps_other_module_guides(tmp_path):
     assert "统一场景单位" not in sop["content"]
 
 
+def test_dream_saves_host_classified_method_in_nuke_layer_guide(tmp_path):
+    store = LearningStore(tmp_path)
+    original = store.submit(**experience(software="nuke", modules=["compositing"]))
+    revise(store, [original["memory_id"]], modules=["分层"])
+    guides = ModuleGuides(store.root)
+    assert "统一场景单位" in guides.get(software="nuke", module="layers")["content"]
+    assert "统一场景单位" not in guides.get(software="nuke", module="compositing")["content"]
+    assert not guides.get(software="nuke", module="general")["available"]
+
+
 def test_conflicts_are_visible_in_guides_and_removed_on_undo(tmp_path):
     store, feedback = accepted(tmp_path)
     source = store.finalize(feedback["feedback_id"], "p", "原始卷浪方法", "原因", "条件")

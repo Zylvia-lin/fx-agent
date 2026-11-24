@@ -7,7 +7,7 @@ description: 使用 FX Agent 操作 Houdini，读取纯文本规范与模块经�
 
 由当前宿主助手规划和判断，调用 FX Agent 提供的 Houdini 工具。全程使用中文沟通。
 
-> **架构分工**：`fx-agent/data` 仅沉淀**纯文本通用规范与经验**，不保存 `.hip`、贴图、渲染序列或截图；需要查找现成工程模板时，直接调用 `fx_search_published_templates` 检索外部特效模板库。
+> **架构分工**：制作记录与派生手册写入本机缓存，Git 共享经审阅的通用经验摘要和基础规范。需要现成工程模板时，调用 `fx_search_published_templates` 检索外部特效模板库。
 
 ## 任务门禁顺序
 
@@ -15,6 +15,7 @@ description: 使用 FX Agent 操作 Houdini，读取纯文本规范与模块经�
 
 1. **只读核对与登记任务（`fx_begin_task`）**
    - 明确目标外观、运动、输入/参考、验收标准与预算；只读核对 `fx_status`、真实会话/工程（多会话不猜目标）与 `fx_get_module_catalog`。
+   - 由助手按工作内容选模块，例如 SOP 属性处理 `sop`、VOP 节点编程 `vop`、DOP 求解 `dop`、粒子 `particles`、烟火 `pyro`。总结时按每条方法重新核对分类。
    - 调用 `fx_begin_task(spec)` 登记：`software="houdini"`、`project_id`、`shot_id`、真实 `scene_path`、`endpoint`（`127.0.0.1:实际端口`）、`goal`、`acceptance`、`budget`、`modules` 及 `input_paths`：
      - **正式制作 / 新建系统**：`kind="production"`；
      - **同场景局部调参 / 排查**：`kind="quick_tweak"`（保留端口锁、场景路径锁与 `$HIP`/File Cache 护栏，禁重型构建且上限 15 次编辑；需扩展时用 `fx_update_task` 升级 `production`）。
@@ -41,7 +42,7 @@ description: 使用 FX Agent 操作 Houdini，读取纯文本规范与模块经�
 6. **纯文本经验回写（配套 `fx-learning`）**
    - 用户提出长期要求 → 及时 `fx_record_user_rule`；
    - 排错解决或提炼出跨项目通用工艺 → 调用 `fx_submit_experience` 写入脱敏后的纯文本经验（无盘符路径、无单镜头死参数、不存工程）；
-   - 用户明确认可且已完成 `fx_finish_task` 后，如提炼出新的通用方法，再携带同一 `fx_task_id` 提交 `accepted` 反馈与 `fx_finalize_learning`，自动更新 `data/modules` 纯文本手册。
+   - 用户明确认可且已完成 `fx_finish_task` 后，如提炼出新的通用方法，再携带同一 `fx_task_id` 提交 `accepted` 反馈与 `fx_finalize_learning`，自动更新本机纯文本手册。
 
 ## Houdini 制作与路径规范
 

@@ -9,9 +9,9 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from fx_agent.config import DEFAULT_HOUDINI_PORT
+from fx_agent.config import DEFAULT_HOUDINI_PORT, configured_data_root, data_root
 from fx_agent.houdini_runtime import prepare_runtime, runtime_path, upstream_plugin
-from fx_agent.install_config import replace_servers
+from fx_agent.install_config import install_junction, replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -81,7 +81,7 @@ def houdini_package(port: int, existing: Path | None = None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--houdini-pref", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, default=ROOT / "data")
+    parser.add_argument("--data-root", type=Path, default=data_root())
     parser.add_argument("--port", type=int, default=DEFAULT_HOUDINI_PORT)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
@@ -95,6 +95,7 @@ def main() -> None:
     python = ROOT / ".venv/Scripts/python.exe"
     if Path(sys.executable).resolve() != python.resolve():
         parser.error("请使用当前工程 .venv/Scripts/python.exe 执行安装器。")
+    args.data_root = configured_data_root(str(args.data_root))
     config = Path.home() / ".codex/config.toml"
     old_package = pref / "packages/fxhoudinimcp.json"
     package = pref / "packages/fx-agent.json"
@@ -156,11 +157,8 @@ def main() -> None:
     )
     created = []
     try:
-        import _winapi
-
         for link, target in links.items():
-            link.parent.mkdir(parents=True, exist_ok=True)
-            _winapi.CreateJunction(str(target), str(link))
+            install_junction(link, target)
             created.append(link)
         for path, content in writes.items():
             path.parent.mkdir(parents=True, exist_ok=True)

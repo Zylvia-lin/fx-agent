@@ -21,7 +21,7 @@ description: 使用 fx-maya 在指定 Maya 会话中完成 Arnold/Redshift 灯�
    - 调用 `list_maya_sessions` 展示版本、PID、`session_id`、端口、场景与插件状态；无法唯一确定时向用户确认。
    - 用完整身份字段调用 `connect_maya`，再读取 `get_maya_scene_info` 与 `get_maya_renderer_status`。渲染器插件未加载时明确报告并请用户启用，不静默加载。
 2. **登记任务与收集纯文本证据**
-   - 调用 `fx_begin_task` 登记 `software="maya"`、真实 `endpoint`、`scene_path`、`modules`（从 `lighting` / `rendering` / `materials` / `io` / `troubleshooting` / `general` 选择）与 `input_paths`（正式布光渲染用 `kind="production"`；单灯微调用 `kind="quick_tweak"`）。
+   - 调用 `fx_begin_task` 登记 `software="maya"`、真实 `endpoint`、`scene_path`、`modules` 与 `input_paths`（正式布光渲染用 `kind="production"`；单灯微调用 `kind="quick_tweak"`）。由助手从 `fx_get_module_catalog` 按制作内容选择，例如建模 `modeling`、动画 `animation`、绑定 `rigging`、灯光 `lighting`。总结时按每条方法写入相应手册。
    - **优先调用 `fx_prepare_task_brief(task_id=...)`** 一次读取 `production_rules(software="maya")`、`context`、纯文本模块手册与记忆，自动记齐门禁凭据；需要展开全文时再带 `fx_task_id` 调用 `fx_get_memory` / `fx_get_user_rule`。
    - `production` 调用 `fx_set_task_plan` 保存 `method`、`applies_when`、`changes`、`selected_sources`（`memory:` IDs）及 `source_adaptations`（无适用记录写清 `no_match_reason`）；`quick_tweak` 读完简报后即可微调。
 3. **场景加载、灯光与渲染操作（全部携带 `fx_task_id`）**

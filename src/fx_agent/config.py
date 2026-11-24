@@ -4,19 +4,27 @@ import os
 from pathlib import Path
 
 DEFAULT_HOUDINI_PORT = 18186
+CHECKOUT_DATA = Path(__file__).resolve().parents[2] / "data"
+
+
+def local_data_root() -> Path:
+    return (Path.home() / ".fx-agent" / "cache").resolve()
 
 
 def data_root() -> Path:
     """Read the configured absolute data path without creating any files."""
-    configured = os.getenv("FX_AGENT_DATA_ROOT")
+    return configured_data_root(os.getenv("FX_AGENT_DATA_ROOT"))
+
+
+def configured_data_root(configured: str | None) -> Path:
     if configured:
         path = Path(configured).expanduser()
         if not path.is_absolute():
             raise ValueError("FX_AGENT_DATA_ROOT must be an absolute path")
-        return path.resolve()
-    # Source checkout installation: keep runtime state beside code for migration.
-    # Packaged distributions should pin FX_AGENT_DATA_ROOT during installation.
-    return Path(__file__).resolve().parents[2] / "data"
+        resolved = path.resolve()
+        if not resolved.is_relative_to(CHECKOUT_DATA.resolve()):
+            return resolved
+    return local_data_root()
 
 
 def database_path(root: Path) -> Path:
@@ -31,5 +39,7 @@ def session_root() -> Path:
         path = Path(configured).expanduser()
         if not path.is_absolute():
             raise ValueError("FX_AGENT_LOCAL_ROOT must be absolute")
-        return path.resolve()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(CHECKOUT_DATA.resolve()):
+            return resolved
     return data_root()

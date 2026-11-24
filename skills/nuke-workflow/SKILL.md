@@ -14,6 +14,7 @@ description: 由当前宿主助手通过 FX Agent 操作 Nuke 15.2 合成，读�
 > 参数名区分：任务管理工具使用 `task_id`；受门禁的读取、修改、校验、保存与渲染工具使用 `fx_task_id`。
 
 1. **只读核对与建任务**：明确目标画面、动态、素材/参考、验收和预算；只读调用 `fx_status`、`list_nuke_sessions` / `get_nuke_connection_status`、`get_script_info`、`fx_get_module_catalog(software="nuke")`，再用 `fx_begin_task` 登记 `software="nuke"`、真实 `scene_path`、`endpoint`、`modules` 与 `input_paths`（正式合成用 `kind="production"`；局部调色/参数微调用 `kind="quick_tweak"`，保留端口与场景锁，上限 15 次编辑，可随时 `fx_update_task` 升级 `production`）。
+   - 由助手按操作选择模块。重打光用 `lighting`，AOV 或通道分层用 `layers`，调色用 `color`。总结时只写到该条方法对应的手册。
 2. **收集纯文本证据（优先 `fx_prepare_task_brief`）**：
    - 调用 `fx_prepare_task_brief(task_id=...)` 一次聚合读取 `production_rules(software="nuke")`（软件专属规范，切勿把 Houdini `$HIP` 写进 Nuke 旋钮）、`context`、纯文本模块手册与历史合成经验，并自动记齐门禁凭据；需要展开全文时再携带 `fx_task_id` 调用 `fx_get_memory` / `fx_get_user_rule`。
 3. **保存方案（`production` 必做：`fx_set_task_plan`）**：`quick_tweak` 读完简报后即可局部微调；`production` 填写 `method`、`applies_when`、`changes`、实际读过的 `selected_sources`（`memory:` IDs）及逐来源 `source_adaptations`，或真实 `no_match_reason`。

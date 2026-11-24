@@ -2,6 +2,7 @@
 
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -193,6 +194,7 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
             "feedback": feedback(
                 outcome="accepted",
                 user_quote="这个版本可以，保存该方案",
+                modules=["lighting", "pyro"],
             ),
             "fx_task_id": task["task_id"],
         },
@@ -212,10 +214,15 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
             "method": "调整逆光",
             "reason": "保留层次",
             "applies_when": "逆光烟尘",
+            "modules": ["lighting"],
             "fx_task_id": task["task_id"],
         },
     )
-    assert json.loads(result[0].text)["decision"] == "admitted"
+    learned = json.loads(result[0].text)
+    assert learned["decision"] == "admitted"
+    assert [Path(path).as_posix() for path in learned["module_guides"]["updated_paths"]] == [
+        "modules/global/houdini/lighting.md"
+    ]
     result = await server.call_tool("fx_dream_memory", {"project_id": "p"})
     assert json.loads(result[0].text)["active_memories"] == 1
 

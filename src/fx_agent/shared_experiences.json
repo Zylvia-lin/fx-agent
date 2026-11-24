@@ -1,0 +1,241 @@
+[
+  {
+    "software": "houdini",
+    "modules": [
+      "materials",
+      "rendering"
+    ],
+    "kind": "workflow",
+    "title": "Mantra边缘光由法线视角衰减和属性组合形成",
+    "method": "核心思路：用视角法线衰减（normalfalloff，设置 invert=on 与合适指数如 exp=4）形成边缘遮罩，与 Alpha 及可选的 Cd、glowColor、emission 相乘输出自发光。独立渲染对象绑定边缘光材质并单独出层（如 raytrace ROP 按需开关运动模糊）。注意区分轮廓视角遮罩、材质自发光、几何灯和后期 Glow，不要用盲目打灯代替角度遮罩；Gallery Glow 发射模式可能产生 RGB 有值而 Alpha 为 0，合成端须核对加色（Plus/Screen）而非依赖 Alpha 预乘；普通 Glow（invert=off）不可与边缘反转模式混用。",
+    "reason": "明确区分边缘光材质原理与后期发光，避免引擎不兼容或 Alpha 通道丢失导致合成异常。",
+    "applies_when": "使用 Mantra/VEX 材质制作带法线及 Cd/Alpha 属性的几何边缘发光；不可直接套用到 Karma XPU。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "materials",
+      "rendering",
+      "solaris"
+    ],
+    "kind": "workflow",
+    "title": "Karma XPU粒子自发光使用MaterialX和USD遮挡设置",
+    "method": "材质搭建：使用 mtlxgeomcolor（color3）读取点颜色 primvar 接入 mtlxstandard_surface 的 emission_color，将 base 与 specular 设为 0、按需调节 emission 强度，通过 Material Library 绑定目标粒子 USD Prim。遮挡与模糊：使用 Render Geometry Settings 为场景/角色遮挡对象写入 Matte，为粒子写入 Velocity Blur / Instance Velocity Blur。渲染前务必核对颜色与速度 primvars 是否正确导入 USD、相机路径是否指向当前镜头、以及渲染输出路径是否有效。",
+    "reason": "Karma XPU 不兼容旧 Mantra VEX 边缘光/发光着色器，须采用 MaterialX 与 USD 原生渲染几何属性。",
+    "applies_when": "Solaris/USD 流程中使用 Karma XPU 渲染带颜色和速度属性的粒子自发光。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "particles",
+      "rendering"
+    ],
+    "kind": "workflow",
+    "title": "Mantra分层粒子与能量渲染按层匹配引擎采样与运动模糊",
+    "method": "不要对所有粒子/能量层套用单一全局渲染预设。按层的几何形态与运动特征分别配置：几何边缘光/网格层可用 raytrace 较低采样且按需关闭模糊；高密度细粒或需要拉丝动态的层使用 micropolygon 配合较高采样及运动模糊。逐层核对 forceobject、matte_objects、对象级 geo_velocityblur 与 ROP 级 allowmotionblur 的组合，先用少量关键帧识别噪点来源再逐步拉高采样。",
+    "reason": "统一高采样会显著拖慢渲染，而模糊开关错配会导致拖尾缺失或多余涂抹。",
+    "applies_when": "Mantra 多层特效（轮廓光、细粒、高速尾迹等）分层渲染优化画质与速度。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "io",
+      "particles",
+      "sop"
+    ],
+    "kind": "workflow",
+    "title": "角色局部粒子效果将模拟与随动变形分阶段缓存",
+    "method": "将解算与随动变形拆成两个独立缓存阶段：第一阶段在相对静止或参考空间完成 POP 模拟并写基础模拟缓存；第二阶段用 Point Deform（三输入分别为模拟点、Timeshift 固定参考帧几何、当前帧动画几何）完成随动变形，再单独写变形后缓存。复用前务必先核对参考帧与当前帧拓扑一致性，避免变形炸点。",
+    "reason": "分阶段缓存把解算迭代和随动绑定解耦，调整变形或局部动画时无需重算粒子模拟。",
+    "applies_when": "粒子效果需要贴附或跟随角色局部动画，且角色输入网格拓扑稳定、参考帧关系明确时。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "io",
+      "particles",
+      "sop"
+    ],
+    "kind": "workflow",
+    "title": "沿路径流动能量带分阶段保留基础粒子与路径变形缓存",
+    "method": "将流程拆分为：路径/发射源缓存 → 基础粒子模拟缓存 → Path Deform（可结合 For-Each 多条曲线）变形缓存。多组不同色彩或层次的能量噪声分支保持各自独立输出和 ROP，不要强行合并为一个渲染层。调整速度时核对路径方向、curveu 范围、时间映射与 Retime 顺序。",
+    "reason": "先算基础形态再沿路径映射，轨迹可控性强且便于单独微调路径曲线和节奏。",
+    "applies_when": "制作沿指定曲线路径流动、缠绕或分叉的粒子与细丝能量带。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "rendering",
+      "solaris",
+      "troubleshooting"
+    ],
+    "kind": "troubleshooting",
+    "title": "复用模板或旧工程残留Karma网络时先核对镜头相机与有效输出",
+    "method": "不要默认场景中存在的 /stage Karma 网络就是当前有效渲染通路。优先检查输出 ROP 的实际引用对象、绑定相机路径（常残留其他旧镜头相机名）和磁盘输出路径，确认哪些分支真正启用、哪些属于历史模板残留，再决定更新相机还是新建独立渲染链。",
+    "reason": "复用工程常遗留旧镜头相机或未启用的 Solaris 分支，未核对直接渲染会导致视角错乱或输出错层。",
+    "applies_when": "打开历史工程或复用模板网络，发现 /stage 下存在多个 Karma/Solaris 渲染分支时。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "hda",
+      "io",
+      "pyro"
+    ],
+    "kind": "troubleshooting",
+    "title": "自建SOP HDA视口正常而ROP写出原始缓存：同时核对Display与Render旗标",
+    "method": "不要只凭视口显示或无报错就判断写盘生效。先对比 live 节点与磁盘缓存的几何类型、体素大小和属性统计；重点查询 HDA 内部的 displayNode 与 renderNode，常见根因是 Display 指向最终 output 节点而 Render 仍留在上游输入节点。将最终输出节点同时设为 Display 与 Render 旗标，保存 HDA 定义和 HIP，再用短帧段实际写盘读回验证与 live 一致后再跑全段缓存。",
+    "reason": "Houdini ROP/File Cache 默认读取 Render 旗标而非 Display 旗标，旗标分离会导致看似参数/K帧失效。",
+    "applies_when": "SOP HDA 或子网在视口中显示正确（如变速/后处理生效），但 File Cache / ROP 写盘读回却仍是未处理的原始输入。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "io",
+      "materials"
+    ],
+    "kind": "troubleshooting",
+    "title": "不同首帧贴图序列映射至统一时间线起点的表达式写法",
+    "method": "先读取实际磁盘目录确认每个序列的真实首帧 source_start 与末帧 source_end，定位材质暴露的贴图文件参数；在 $HIP 相对路径中将 $F4 替换为 `padzero(4, clamp($F - target + source_start, source_start, source_end))`，保留原有通道引用。修改后逐帧 evalAtFrame 并验证目标帧段内所有解析路径在磁盘上真实存在。",
+    "reason": "直接使用 $F4 会按全局时间线帧号读取，无法适配起始帧不统一的多组序列贴图。",
+    "applies_when": "多个材质或节点读取不同起始帧号的连续四位帧序列（原速播放、范围外保持首末帧），需统一对齐到指定目标起始帧；此方法不控制显隐。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "materials",
+      "rendering",
+      "sop"
+    ],
+    "kind": "workflow",
+    "title": "程序化力场光丝效果：管面双尺度各向异性噪声与独立Alpha分层控制",
+    "method": "核心骨架：高细分管面/曲面 → Mountain 做小幅轮廓扰动 → 细分/多副本形成空间层次。纹理与动态：用各向异性拉伸的高低频两套噪声（如 onoise × snoise）相乘写入 Cd，制造细长断续与疏密变化；通过对噪声采样坐标 offset 沿轴向做时间偏移驱动流动。透明度与分层：用相对包围盒配合 Ramp 独立计算 Alpha 轮廓（与明暗纹理分离，便于收束边缘）；按职责拆出细密主光丝、粗亮束、暗部/柔化层分别出层，并把角色/场景加入 matte_objects 提供遮挡。具体尺寸、频率与强度按当前镜头尺度重新调节，不照搬单镜头绝对数值。",
+    "reason": "纯 SOP + 属性着色方案无解算开销、迭代极快，且纹理、流动与透明轮廓完全解耦。",
+    "applies_when": "制作能量力场、气浪光丝、条带光幕等需要高可控性且无需流体/粒子解算器的程序化光效。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "sop"
+    ],
+    "kind": "workflow",
+    "title": "曲线驱动造型变形效果优先主曲线+curveu Ramp+VEX精简网络",
+    "method": "使用主引导曲线的位置驱动效果空间随动；沿曲线用 Resample 生成 curveu，将幅度/卷曲度/高度等核心造型参数暴露为独立命名参数，沿线渐变使用可编辑 curveu Ramp 控制（禁止硬编码数组或散落常量）。数学变形与截面计算优先用简洁的 Attribute Wrangle（VEX）完成，只保留必要的控制曲线、重采样、成面等节点，避免冗余堆砌节点。",
+    "reason": "VEX + curveu Ramp + 集中暴露参数兼顾网络清爽度与美术可控性，方便后续任意微调。",
+    "applies_when": "制作沿主引导线推进的卷浪、弧形冲击波、可控丝带等需要艺术化调节的 SOP 造型动画。"
+  },
+  {
+    "software": "houdini",
+    "modules": [
+      "general",
+      "io"
+    ],
+    "kind": "preference",
+    "title": "工程保留用户主版本号，追加两位助手迭代序号",
+    "method": "保留用户原有主版本号及完整扩展名（.hip/.hiplc/.hipnc），不擅自升主版本号；在原版本段后追加两位助手迭代序号：例如 v02.hip → v02_01.hip → v02_02.hip。不叠加多层序号，不覆盖已有迭代文件，也不为规范而擅自重命名未修改的工程。",
+    "reason": "保持用户原有的主版本管理体系清晰不被打乱。",
+    "applies_when": "助手修改并另存 Houdini 工程文件时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "compositing"
+    ],
+    "kind": "workflow",
+    "title": "Nuke指定效果块的向下树状排版与总线引用规范",
+    "method": "范围：只整理用户指定的效果块，不擅自重排整图。先识别块的输入素材、并行处理列、汇合输出与跨块共享引用。\n块内：素材 Read 置顶，分流从素材下方通过横向 Dot 分配行取出（严禁绕回素材上方）；各处理列自上向下流动，多路子效果先在块内依次 Merge 汇合成单一清晰输出，再接入总线。\n总线与分区：角色与场景背景在中央总线最上方总成，总线垂直向下直通 Viewer；各完整效果块错层布置在总线左右两侧从侧面合入，块边界包含节点、标签和缩略图，互不重叠。\n线路与保持：公共引用沿块边界用少量必要 Dot 做直角转角，同源可共享前缀、异源不可叠放，禁止超远斜线、回绕或迷宫式逐线避障。排版只动位置与等价 Dot，绝不改变图像参数、混合模式、A/B 顺序或封装内部。",
+    "reason": "确保合成工程可读、美观、易维护，避免数学正交算法制造的迷宫飞线和误改图像语义。",
+    "applies_when": "Nuke 中整理用户明确指定的效果节点块、新增效果分支及跨块引用；不得用于未经授权的全工程自动重排。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "compositing"
+    ],
+    "kind": "workflow",
+    "title": "封装节点仅调暴露参数，区分展开显示与拆解（show_group_view核查）",
+    "method": "使用边界：RealGlow 及所有已封装节点保持封装，只调整外部暴露参数，绝不展开、拆解或修改内部网络。\n展开排查：节点仍是 Group 类不代表它在节点图中处于收起状态。在支持该属性的 Nuke 版本（如 Nuke 15.2）中，若 Group 的 show_group_view 为 True 会在图中展开内部网络。恢复收起时只将已确认存在的 show_group_view 置为 False 并逐一回读确认，不要重建 Group、重置暴露参数或改动内部节点；其他版本先查证属性是否存在，不盲写参数名。",
+    "reason": "避免破坏团队封装资产，同时精准修复封装展开遮挡画布的问题。",
+    "applies_when": "在 Nuke 中使用 RealGlow 等已封装 Group/Gizmo 节点，或用户要求恢复封装节点收起显示时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "color",
+      "compositing"
+    ],
+    "kind": "workflow",
+    "title": "Nuke局部配色：遵守用户当前网络并核对完整有效分支",
+    "method": "适用边界：以用户最新现场或最终保存文件为唯一基线，严格保留用户的删减与整理结构。严禁从早期版本恢复被用户删掉的效果，也不要因为磁盘目录还有其他渲染层就擅自加回。\n实施：先核对有效 Read 身份及通往 Write 的完整上下游，识别同一主体的核心、细节、光点等所有并行配色分支；记录修改前基线和允许改动的参数白名单，确保同一主体所有有效分支同步改色，防止旧色漏出；保持连接、动画、混合、布局与封装内部不变。\n验收：用实际节点参数/脚本差异核对白名单外有无意外改动；动态镜头除检查前中后三帧外，还须排查短暂能量峰值帧与完整序列。",
+    "reason": "尊重用户接手后的结构决策，避免越权修改和并行分支漏调导致的串色。",
+    "applies_when": "用户已自行删减或调整 Nuke 网络，仅授权局部配色或局部微调时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "compositing"
+    ],
+    "kind": "preference",
+    "title": "Nuke Viewer默认单A并保留用户参考",
+    "method": "默认只使用 Viewer A 通道查看。不要自动设置或更换 B 输入参考，不要自动开启 wipe 或其他 A/B 对照模式；用户手动挂载的参考保持原样，仅在用户明确要求对比时再切换。视窗操作优先走原生 MCP 工具，不干扰用户桌面鼠标键盘。",
+    "reason": "避免打断用户自己设置的参考对照环境，减少桌面干扰。",
+    "applies_when": "Nuke 视窗检查、截图、切通道与多帧核对时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "compositing"
+    ],
+    "kind": "troubleshooting",
+    "title": "多层EXR合成接线验证必须对照素材身份，前后相等不代表正确",
+    "method": "操作前先建立逐路素材对应表（Read 绝对路径/层名/通道 → 目标处理节点）。修改或排版后，逐路回读实际输入来源并与最初对应表核对；去除透传 Dot 比较“改动前后一致”只能作为辅助，不能作为唯一正确性证据（若改动前已错连，前后一致仍会掩盖多路误指同一 Read 的错误）。比对带动画参数时必须在同一帧或直接比对动画曲线/表达式文本；用户并行编辑时保留用户新增节点和位置，不盲目回滚覆盖。",
+    "reason": "防止批量连线或整理过程中出现多路 Shuffle/分支静默串接到同一素材的隐蔽事故。",
+    "applies_when": "多层 EXR 合成、批量接线、节点块排版整理或与用户并行编辑 Nuke 工程时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "color",
+      "compositing"
+    ],
+    "kind": "compositing",
+    "title": "粒子与发光合成过曝排查：平衡混合模式与发光组合并核对有效通路",
+    "method": "排查过曝时不要机械地把所有 Plus 都改成 Screen 或一刀切压低所有亮度，应组合评估各层的混合模式（如主高亮层 Plus 改 Screen、辅助细层保留 Plus）与 L_RealGlow 暴露参数（tint、brightness、falloff、size、saturation）的协同平衡，必要时在发光前加 Grade 控制输入白点。\n核对参数时必须确认该节点确实位于通往最终 Write/Viewer 的有效通路上（排除悬空试调节点），并区分内存实时值与磁盘已保存脚本值，结合当前素材动态范围、色彩管理和前中后三帧实际画面调整。",
+    "reason": "避免将单镜头数值当成固定预设，或误把未接入输出的废弃节点当作生效调色方法。",
+    "applies_when": "多层高亮度粒子、能量环绕与 RealGlow 叠加导致画面高光截断或过曝需要降爆时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "general",
+      "io"
+    ],
+    "kind": "preference",
+    "title": "工程保留用户主版本号，追加两位助手迭代序号",
+    "method": "保留用户原有主版本号及扩展名，不擅自升主版本号；在原版本段后追加两位助手迭代序号：例如 v02.nk → v02_01.nk → v02_02.nk。不叠加多层序号，不覆盖已有迭代，也不为规范而擅自重命名未修改的工程。",
+    "reason": "与用户的版本流转习惯保持一致，便于清晰区分用户正式版与助手迭代稿。",
+    "applies_when": "助手修改并另存 Nuke 工程脚本（.nk）时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "general"
+    ],
+    "kind": "troubleshooting",
+    "title": "Windows Nuke多实例固定端口冲突排查（独占绑定与真实PID核验）",
+    "method": "不要只看菜单栏的 Running 提示，先比对实际监听端口的 PID 与目标 Nuke 窗口工程路径。端口冲突时停止非目标实例桥接并重启目标实例，通过握手 PID 与 get_script_info 绝对路径双重确认。Windows 侧桥接 socket 应使用 SO_EXCLUSIVEADDRUSE 并在绑定失败时清理 socket，让冲突实例明确报错，禁止静默改端口或猜测目标。",
+    "reason": "Windows 下 SO_REUSEADDR 允许多个 Nuke 进程绑定同一端口，极易导致命令静默发往错误工程。",
+    "applies_when": "Windows 同时打开多个 Nuke 窗口，桥接报 Running 但连错镜头或连接失败时。"
+  },
+  {
+    "software": "nuke",
+    "modules": [
+      "general"
+    ],
+    "kind": "troubleshooting",
+    "title": "Nuke多窗口本地登记发现与切换真实身份核验",
+    "method": "每个 Nuke 实例绑定独占端口并原子发布含 PID、端口、随机会话 ID 和工程路径的心跳登记；列出会话时只读登记快照，不主动探测占用命令通道。切换目标时重新校验握手 PID、会话 ID 与 get_script_info 路径；新目标核验通过前保留原健康连接，将切换与工具派发放在同一串行锁内，连接超时立即断开并丢弃旧队列。",
+    "reason": "防止多窗口并发切换时把节点操作误发到另一个打开的镜头工程。",
+    "applies_when": "同一工作站运行多个 Nuke 实例，通过统一 MCP 列出并安全切换目标工程时。"
+  }
+]

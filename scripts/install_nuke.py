@@ -14,6 +14,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from fx_agent.config import configured_data_root
+from fx_agent.config import data_root as default_data_root
 from fx_agent.install_config import DEFAULT_NUKE_PORT, RESERVED_DCC_PORTS, replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +45,7 @@ def port_available(port: int) -> bool:
 def nuke_config(
     original: str, root: Path, port: int, enabled: bool = True, data_root: Path | None = None
 ) -> str:
-    data = data_root or (root / "data")
+    data = data_root or default_data_root()
     block = f'''[mcp_servers.fx-nuke]
 command = {json.dumps(str(root / ".venv/Scripts/python.exe"))}
 args = ["-m", "fx_agent.nuke_server", "--port", "{port}"]
@@ -76,7 +78,7 @@ def menu_content(
         lines = original.splitlines(keepends=True)
         original = "".join(lines[: markers[0][1] - 1] + lines[markers[1][2] :])
     env_lines = [
-        f"    _fx_os.environ.setdefault('FX_AGENT_DATA_ROOT', {str(data_root or (root / 'data'))!r})",
+        f"    _fx_os.environ.setdefault('FX_AGENT_DATA_ROOT', {str(data_root or default_data_root())!r})",
     ]
     if local_root is not None:
         env_lines.append(
@@ -170,7 +172,7 @@ def main() -> None:
         if (
             not configured
             or not Path(configured).is_absolute()
-            or Path(configured).resolve() != (ROOT / "data").resolve()
+            or configured_data_root(configured) != (args.data_root or default_data_root()).resolve()
             or shared.get("enabled", True) is not True
             or not Path(shared.get("command", "")).is_absolute()
             or Path(shared.get("command", "")).resolve()
@@ -184,9 +186,10 @@ def main() -> None:
     if not port_available(args.port):
         parser.error("端口已占用；请选择其他端口或先停止已有桥接，不会自动切换。")
     configured_data = shared_env.get("FX_AGENT_DATA_ROOT", "")
-    data = args.data_root or (Path(configured_data) if configured_data else ROOT / "data")
-    if not data.is_absolute():
+    configured_data = str(args.data_root) if args.data_root else shared_env.get("FX_AGENT_DATA_ROOT")
+    if configured_data and not Path(configured_data).is_absolute():
         parser.error("数据目录必须为绝对路径。")
+    data = configured_data_root(configured_data) if configured_data else default_data_root()
     configured_local = shared_env.get("FX_AGENT_LOCAL_ROOT", "")
     local_root = Path(configured_local) if configured_local else None
     writes = {

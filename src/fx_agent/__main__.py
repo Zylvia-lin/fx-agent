@@ -13,7 +13,9 @@ def main() -> None:
     parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     from fx_agent.server import get_server
+    from fx_agent.shared_knowledge import prepare_local_data
 
+    prepare_local_data()
     get_server().run(transport="stdio")
 
 

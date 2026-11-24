@@ -4,7 +4,7 @@ import asyncio
 import copy
 from contextlib import nullcontext
 
-from fx_agent.modules import HOUDINI
+from fx_agent.modules import HOUDINI, require_classified_modules
 from fx_agent.task_gates import (
     HEAVY_BUILD_TOOLS,
     QUICK_TWEAK_MAX_EDITS,
@@ -110,7 +110,8 @@ def install_task_gates(mcp, software, root_provider, live_target):
 
     @mcp.tool()
     async def fx_begin_task(spec: TaskSpec) -> dict:
-        """Record requirements, target, acceptance and budget before production/learning."""
+        """Record target and requirements. Classify the actual work using fx_get_module_catalog."""
+        require_classified_modules(spec.modules)
         return await asyncio.to_thread(TaskGates(root_provider()).begin, spec)
 
     @mcp.tool()
@@ -123,6 +124,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
     @mcp.tool()
     async def fx_update_task(task_id: str, expected_revision: int, spec: TaskSpec) -> dict:
         """Revise changed requirements/inputs/target; invalidate affected plan and evidence."""
+        require_classified_modules(spec.modules)
         return await asyncio.to_thread(
             TaskGates(root_provider()).update, task_id, expected_revision, spec
         )

@@ -7,8 +7,8 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from fx_agent.config import data_root
-from fx_agent.install_config import replace_servers
+from fx_agent.config import configured_data_root, data_root
+from fx_agent.install_config import install_junction, replace_servers
 from fx_agent.maya.client import DEFAULT_PORTS, validate_port
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,9 +73,10 @@ def main():
     config = Path.home() / ".codex/config.toml"
     original = config.read_text(encoding="utf-8") if config.exists() else ""
     shared = tomllib.loads(original).get("mcp_servers", {}).get("fx-agent", {}).get("env", {}).get("FX_AGENT_DATA_ROOT")
-    data = args.data_root or (Path(shared) if shared else data_root())
-    if not data.is_absolute() or not args.modules_dir.is_absolute():
+    configured = str(args.data_root) if args.data_root else shared
+    if (configured and not Path(configured).is_absolute()) or not args.modules_dir.is_absolute():
         parser.error("data root and modules directory must be absolute")
+    data = configured_data_root(configured) if configured else data_root()
     if args.bridge_port is not None and args.bridge_port not in args.ports:
         parser.error("Fixed bridge port must be included in discovery ports")
     module = args.modules_dir / "fx_maya.mod"
@@ -105,10 +106,7 @@ def main():
     created_skill = False
     try:
         if not os.path.lexists(skill):
-            import _winapi
-
-            skill.parent.mkdir(parents=True, exist_ok=True)
-            _winapi.CreateJunction(str(skill_target), str(skill))
+            install_junction(skill, skill_target)
             created_skill = True
         for path, content in writes.items():
             path.parent.mkdir(parents=True, exist_ok=True)

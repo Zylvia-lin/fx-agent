@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Literal
@@ -41,7 +42,7 @@ def register_shared_tools(mcp):
 
 def build_server(connection=None, ports=DEFAULT_PORTS):
     connection = connection or MayaConnection()
-    mcp = FastMCP("fx-maya", instructions="由当前宿主操作。显式选择Maya会话；读取真实灯光与渲染器状态。共用FX纯文本知识库，指定software=maya，只沉淀可复用的纯文本经验，不保存工程或贴图。修改前完成任务登记、知识读取与计划；超时后检查场景，不自动重试。")
+    mcp = FastMCP("fx-maya", instructions="由当前宿主操作。显式选择Maya会话；读取真实灯光与渲染器状态。共用FX纯文本知识库，指定software=maya，只沉淀可复用的纯文本经验，不保存工程或贴图。修改前完成任务登记、知识读取与计划；超时后检查场景，不自动重试。用 fx_get_module_catalog 识别建模、动画、绑定、灯光等实际模块，按条写入对应经验手册。")
     register_shared_tools(mcp)
 
     @mcp.tool()
@@ -154,10 +155,12 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         """List bounded existing jobs, or inspect one after explicit reconnection; never starts another render. Native completion restores settings and image decoding verifies output."""
         return connection.send("render_status", {"job_id": job_id})
 
-    @mcp.tool()
     def execute_maya_python(code: str, timeout: float = 30) -> dict:
         """Last resort, scene-write gated. Set result to a JSON value. Return stdout/stderr even for code errors. Uses target Maya's Python dialect."""
         return connection.send("execute_python", {"code": code}, timeout)
+
+    if os.getenv("FX_MAYA_ENABLE_PYTHON") == "1":
+        mcp.tool()(execute_maya_python)
 
     @mcp.tool()
     def save_scene(path: str) -> dict:
@@ -198,11 +201,14 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
 
 
 def main():
+    from fx_agent.shared_knowledge import prepare_local_data
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ports", type=int, nargs="+", default=list(DEFAULT_PORTS))
     args = parser.parse_args()
     for port in args.ports:
         validate_port(port)
+    prepare_local_data()
     build_server(ports=tuple(args.ports)).run(transport="stdio")
 
 

@@ -92,7 +92,8 @@ def test_bridge_conflict_identity_deadline_duplicate_and_main_thread(bridge_modu
     info = module.identity(bridge.port)
     def request(**changes):
         return {"id": uuid.uuid4().hex, "command": "create_light", "target": info,
-                "deadline": time.time() + 5, "params": {}} | changes
+                "deadline": time.time() + 5, "params": {},
+                "token": bridge.token.decode("ascii")} | changes
     try:
         with pytest.raises(OSError):
             module.Bridge(bridge.port, str(tmp_path))
@@ -100,6 +101,12 @@ def test_bridge_conflict_identity_deadline_duplicate_and_main_thread(bridge_modu
             bridge.dispatch(request(target=info | {"pid": 2}))
         with pytest.raises(RuntimeError, match="expired"):
             bridge.dispatch(request(deadline=time.time() - 1))
+        with pytest.raises(ValueError, match="authentication"):
+            bridge.dispatch(request(token="invalid"))
+        assert "token" not in bridge.dispatch(request(command="identity"))
+        bridge.allow_python = False
+        with pytest.raises(ValueError, match="disabled"):
+            bridge.dispatch(request(command="execute_python"))
         lighting.dispatch.assert_not_called()
         value = request()
         assert bridge.dispatch(value)["success"]

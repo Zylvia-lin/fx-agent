@@ -5,6 +5,8 @@ Python 2.7/3, stdlib plus Maya only. No plugin installation or autoloading.
 """
 from __future__ import print_function
 
+import binascii
+import hmac
 import json
 import os
 import socket
@@ -53,9 +55,18 @@ class Bridge(object):
         self.lock = threading.Lock()
         self.worker_slots = threading.BoundedSemaphore(16)
         self.seen = set()
+        self.token = binascii.hexlify(os.urandom(32))
+        self.allow_python = os.environ.get("FX_MAYA_ENABLE_PYTHON") == "1"
         self.record = os.path.join(root, "maya_sessions", SESSION_ID + ".json")
         self.thread = threading.Thread(target=self.serve, name="fx-maya-listener")
         self.thread.daemon = True
+
+    def authenticate(self, request):
+        token = request.get("token")
+        if not isinstance(token, type(u"")) or not hmac.compare_digest(
+            token.encode("ascii", "replace"), self.token
+        ):
+            raise ValueError("Maya bridge authentication failed")
 
     def dispatch(self, request):
         """Called exclusively on Maya main thread, including identity validation."""
@@ -64,6 +75,7 @@ class Bridge(object):
             raise RuntimeError("Maya failed to schedule on main thread; batch requires a main-thread event pump")
         if not self.running:
             raise RuntimeError("Maya bridge stopped")
+        self.authenticate(request)
         request_id = request.get("id")
         if not isinstance(request_id, type(u"")) or not request_id:
             raise ValueError("Missing request ID")
@@ -78,6 +90,8 @@ class Bridge(object):
         command = request.get("command")
         if command == "identity":
             return info
+        if command == "execute_python" and not self.allow_python:
+            raise ValueError("Maya bridge Python execution is disabled")
         expected = request.get("target", {})
         for key in ("software", "service", "session_id", "pid", "port", "scene_path"):
             if expected.get(key) != info[key]:
@@ -93,6 +107,7 @@ class Bridge(object):
         try:
             peer.settimeout(10)
             request = receive(peer)
+            self.authenticate(request)
             # Serialize capture, main-thread execution and responses across clients.
             with self.lock:
                 response = utils.executeInMainThreadWithResult(lambda: self.run_request(request))
@@ -174,8 +189,8 @@ def start(port=None, data_root=None):
         return identity(_bridge.port)
     configured = os.environ.get("FX_MAYA_PORT") if port is None else port
     ports = [int(configured)] if configured is not None else range(18770, 18790)
-    root = data_root or os.environ.get("FX_AGENT_LOCAL_ROOT") or os.environ.get("FX_AGENT_DATA_ROOT") or os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "data"))
+    root = data_root or os.environ.get("FX_AGENT_LOCAL_ROOT") or os.environ.get("FX_AGENT_DATA_ROOT") or os.path.expanduser(
+        "~/.fx-agent/cache")
     if isinstance(root, bytes):
         root = root.decode(sys.getfilesystemencoding() or "utf-8")
     if not os.path.isabs(root):
@@ -197,12 +212,14 @@ def start(port=None, data_root=None):
         folder = os.path.dirname(candidate.record)
         if not os.path.isdir(folder):
             try:
-                os.makedirs(folder)
+                os.makedirs(folder, 0o700)
             except OSError:
                 if not os.path.isdir(folder):
                     raise
-        with open(candidate.record, "wb") as stream:
-            stream.write(json.dumps(info, ensure_ascii=True).encode("utf-8"))
+        record = dict(info, token=candidate.token.decode("ascii"))
+        fd = os.open(candidate.record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(json.dumps(record, ensure_ascii=True).encode("utf-8"))
         candidate.thread.start()
     except Exception:
         candidate.stop()

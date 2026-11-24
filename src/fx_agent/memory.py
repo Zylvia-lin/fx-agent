@@ -70,7 +70,8 @@ class MemoryStore(Store):
     """Share the versioned database while keeping admission separate from state."""
 
     def submit(
-        self, *, _db: Connection | None = None, _origin_feedback_id: str = "", **values
+        self, *, _db: Connection | None = None, _origin_feedback_id: str = "",
+        _shared: bool = False, **values
     ) -> dict:
         """Return an explainable admission decision and retain provenance."""
         request = Experience(**values)
@@ -81,7 +82,9 @@ class MemoryStore(Store):
         )
 
         status, evidence, reason = "candidate", "unverified", "inference_requires_evidence"
-        if request.source_type == "user":
+        if _shared:
+            status, evidence, reason = "active", "text_distilled_reference", "reviewed_shared_experience"
+        elif request.source_type == "user":
             status = "active"
             evidence = "user_reported"
             reason = "explicit_user_statement"

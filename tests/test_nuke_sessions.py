@@ -159,6 +159,7 @@ def test_unreachable_single_advertisement_does_not_prevent_mcp_start(monkeypatch
     conn.select.side_effect = NukeConnectionError("refused")
     monkeypatch.setattr(module, "SerializedConnection", lambda port: conn)
     monkeypatch.setattr(module, "build_server", lambda connection: server)
+    monkeypatch.setattr("fx_agent.shared_knowledge.prepare_local_data", lambda: None)
     monkeypatch.setattr(module, "list_sessions", lambda root: [
         dict(port=8187, pid=42, session_id="expired", script="A.nk")
     ])

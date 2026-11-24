@@ -28,7 +28,7 @@
 
 - `fx-agent`：原有 Houdini 操作及共同的纯文本记忆、规范、学习与渲染问题记录。
 - `fx-nuke`：独立 Nuke 操作入口，通过 stdio MCP 调用本机 Nuke 桥接。
-- 所有客户端连接同一工程，共用纯文本 `data/memory.sqlite3` 与 `data/modules/`（由 Git 跟踪共享，不保存任何 `.nk`、EXR 序列或截图文件；本地会话登记 `data/nuke_sessions/` 由 `.gitignore` 忽略）。
+- 同机客户端共用本机缓存的 SQLite 与模块手册。Nuke 会话登记默认位于 `~/.fx-agent/cache/nuke_sessions/`。跨机共享使用经审阅的纯文本摘要，工程、EXR 和截图由各自制作目录管理。
 - 经验、纠错与检查点指定 `software=houdini` 或 `nuke`，默认 Houdini；同项目、同镜头的两套进度和调整不会互相覆盖。Dream 不把不同软件的方案合并。
 - 共用用户规范保留真实来源，软件专属规范需明确写出软件。Houdini 的 `$HIP` 与 File Cache 约束不能直接用于 Nuke 文件旋钮。
 - 经验沉淀采用免工程归档的纯文本脱敏模式，仅提炼可跨项目复用的合成方法与避坑点；现成工程资产通过外部 FX Template 模板库管理与检索。

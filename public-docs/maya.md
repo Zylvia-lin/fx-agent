@@ -19,7 +19,7 @@ GUI Maya 顶部新增 **FX Maya MCP** 菜单，打开菜单时读取实际运行
 
 更新源码后，已有窗口各在 MEL 中执行一次 `unloadPlugin "fx_maya_plugin.py"; loadPlugin "fx_maya_plugin.py";`，刷新当前插件对象及菜单生命周期。随后日常启停直接使用菜单。
 
-`--data-root` 必须与现有 FX 服务共用同一绝对目录。未指定时继承已配置 fx-agent 的 data root，随后使用 `data_root()`。会话广告位于共享根的 `maya_sessions/`；它只是端口线索，发现与选择始终实时探测，注册文件不证明身份。
+`--data-root` 必须与现有 FX 服务共用同一本机绝对目录，默认使用 `~/.fx-agent/cache/`。每个 Maya 桥接在本机 `maya_sessions/` 下保存会话认证信息，宿主用它认证后再核对真实 Maya 会话与场景。更新后重启 Maya 桥接和 MCP 宿主。将 `FX_MAYA_ENABLE_PYTHON=1` 同时设到 Maya 与宿主进程环境，才会启用受门禁的 Python 工具。
 
 默认桥接绑定 loopback 的空闲 `18770..18789`；显式设置 `FX_MAYA_PORT` 或安装器 `--bridge-port` 时冲突直接失败。外部 MCP `--ports` 可配置发现端口。未启动 HTTP 服务。Houdini 18186 与 Nuke 8187 保持原样。
 

@@ -12,7 +12,7 @@ from fx_agent.handoff import RenderIssue, RenderIssues
 from fx_agent.learning import Feedback, LearningStore, UserRule
 from fx_agent.memory import Experience, MemoryStore
 from fx_agent.module_guides import ModuleGuides, refresh_guides
-from fx_agent.modules import module_catalog
+from fx_agent.modules import module_catalog, require_classified_modules
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Store, compact, scope_id
 from fx_agent.task_gates import TaskGates
@@ -167,8 +167,10 @@ async def fx_submit_experience(experience: Experience) -> dict:
     Do not include local/UNC paths or archive project files/textures. Explicit user
     statements and verified live text observations enter active recall directly and
     refresh global module Markdown guides; inferred hypotheses stay candidates.
+    Choose specific modules for this lesson from fx_get_module_catalog.
     To correct an old entry, submit a distinct explicit user statement with supersedes.
     """
+    require_classified_modules(experience.modules)
     return await asyncio.to_thread(
         lambda: MemoryStore(data_root()).submit(**experience.model_dump())
     )
@@ -243,7 +245,9 @@ async def fx_record_feedback(feedback: Feedback) -> dict:
     Pending/improved/failed attempts are not successful workflow memories.
     Accepted requires actual user confirmation (no project/file archiving needed).
     Revising feedback disables methods derived from its older revisions.
+    Choose modules based on the technique actually changed.
     """
+    require_classified_modules(feedback.modules)
     return await asyncio.to_thread(
         lambda: LearningStore(data_root()).record_feedback(**feedback.model_dump())
     )
@@ -284,17 +288,19 @@ async def fx_finalize_learning(
     reason: str,
     applies_when: str,
     reuse_scope: str = "global",
+    modules: list[str] | None = None,
 ) -> dict:
     """Distill a reusable text-only method from the current accepted final-result record.
 
     The host writes the desensitized method and conditions after inspecting the
     correction trace. The service checks acceptance and scope atomically, then
     refreshes global module Markdown guides. Global reuse is default; choose shot
-    only for shot-specific methods.
+    only for shot-specific methods. Supply modules specific to the distilled
+    method when they differ from the feedback tags.
     """
     return await asyncio.to_thread(
         lambda: LearningStore(data_root()).finalize(
-            feedback_id, project_id, method, reason, applies_when, reuse_scope
+            feedback_id, project_id, method, reason, applies_when, reuse_scope, modules=modules
         )
     )
 
@@ -313,7 +319,8 @@ async def fx_dream_memory(
 
     Preview pages use next_cursor. Apply must repeat cursor/filter/limit and snapshot.
     Omit actions to apply exact aliases; supply actions for semantic revisions.
-    Sources are retained. Conflict actions never become successful recipes.
+    Classify each semantic action by the technique it synthesizes. Sources are
+    retained. Conflict actions never become successful recipes.
     project_id is a deprecated compatibility argument, not a search boundary.
     """
     return await asyncio.to_thread(

@@ -76,6 +76,10 @@ async def test_maya_mcp_registers_shared_tools_and_blocks_ungated_writes(tmp_pat
         def send(self, *args):
             raise AssertionError("Ungated operation must not reach Maya")
 
+    monkeypatch.delenv("FX_MAYA_ENABLE_PYTHON", raising=False)
+    default_tools = await build_server(Connection()).list_tools()
+    assert "execute_maya_python" not in {tool.name for tool in default_tools}
+    monkeypatch.setenv("FX_MAYA_ENABLE_PYTHON", "1")
     server = build_server(Connection())
     tools = {tool.name: tool for tool in await server.list_tools()}
     for name in ("create_maya_light", "update_maya_light", "set_maya_hdri", "set_maya_light_link",

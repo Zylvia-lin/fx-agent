@@ -5,6 +5,7 @@ import socket
 import struct
 import threading
 import time
+import uuid
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,8 +16,10 @@ from fx_agent.maya.protocol import MAX_FRAME_BYTES, encode, receive
 
 
 @pytest.fixture
-def bridges():
+def bridges(tmp_path):
     listeners, threads, states = [], [], []
+    registry = tmp_path / "maya_sessions"
+    registry.mkdir()
 
     def create(**changes):
         listener = socket.socket()
@@ -29,6 +32,8 @@ def bridges():
                  "scene_path": "D:/工程/灯光.ma", "maya_version": "2020",
                  "python_version": "2.7", "renderers": {}, "edits": 0,
                  "delay": 0, "running": True} | changes
+        token = uuid.uuid4().hex + uuid.uuid4().hex
+        (registry / f"{port}.json").write_text(json.dumps(state | {"token": token}), encoding="utf-8")
         states.append(state)
         listeners.append(listener)
 
@@ -44,7 +49,9 @@ def bridges():
                     request = receive(peer)
                     result = dict(state)
                     error = ""
-                    if request["command"] != "identity":
+                    if request["token"] != token:
+                        error = "authentication failed"
+                    elif request["command"] != "identity":
                         if any(request["target"].get(k) != state[k] for k in (
                             "software", "service", "pid", "session_id", "port", "scene_path"
                         )):
@@ -80,7 +87,7 @@ def test_two_sessions_explicit_selection_isolated_per_client(bridges, tmp_path):
     first, second = bridges(), bridges()
     result = client.discover(tmp_path, (first["port"], second["port"]))
     assert len(result["sessions"]) == 2
-    a, b = client.MayaConnection(), client.MayaConnection()
+    a, b = client.MayaConnection(tmp_path), client.MayaConnection(tmp_path)
     with pytest.raises(RuntimeError, match="Explicitly"):
         a.send("edit")
     select(a, first)
@@ -95,13 +102,12 @@ def test_two_sessions_explicit_selection_isolated_per_client(bridges, tmp_path):
 def test_stale_registry_wrong_software_and_failed_switch(bridges, tmp_path):
     good, wrong = bridges(), bridges(software="nuke")
     folder = tmp_path / "maya_sessions"
-    folder.mkdir()
     (folder / "stale.json").write_text(json.dumps(good | {"session_id": "old"}), encoding="utf-8")
     (folder / "broken.json").write_text("broken", encoding="utf-8")
     result = client.discover(tmp_path, (wrong["port"],))
     assert [r["session_id"] for r in result["sessions"]] == [good["session_id"]]
     assert result["unavailable"][0]["port"] == wrong["port"]
-    connection = client.MayaConnection()
+    connection = client.MayaConnection(tmp_path)
     select(connection, good)
     old = connection.target
     with pytest.raises(ValueError, match="Not an FX Maya"):
@@ -113,9 +119,9 @@ def test_stale_registry_wrong_software_and_failed_switch(bridges, tmp_path):
 
 
 @pytest.mark.parametrize("changed", [{"pid": 4}, {"session_id": "replacement"}, {"scene_path": "other.ma"}])
-def test_replacement_or_scene_change_never_receives_edit(bridges, changed):
+def test_replacement_or_scene_change_never_receives_edit(bridges, changed, tmp_path):
     state = bridges()
-    connection = client.MayaConnection()
+    connection = client.MayaConnection(tmp_path)
     select(connection, state)
     state.update(changed)
     with pytest.raises(RuntimeError, match="target changed"):
@@ -123,9 +129,9 @@ def test_replacement_or_scene_change_never_receives_edit(bridges, changed):
     assert state["edits"] == 0
 
 
-def test_lost_reply_is_not_retried_and_connection_is_poisoned(bridges):
+def test_lost_reply_is_not_retried_and_connection_is_poisoned(bridges, tmp_path):
     state = bridges()
-    connection = client.MayaConnection()
+    connection = client.MayaConnection(tmp_path)
     select(connection, state)
     state["delay"] = 0.15
     with pytest.raises(OSError):

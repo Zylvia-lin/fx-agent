@@ -58,7 +58,7 @@ class Store:
         from fx_agent.config import database_path
 
         self.root = root.resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = database_path(self.root)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         cache_key = self._schema_cache_key()
@@ -197,8 +197,7 @@ class Store:
                 "CREATE INDEX IF NOT EXISTS embeddings_scope ON embeddings(item_type,software,model)"
             )
             db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
-        # Keep single-file DELETE journal mode so Git commits of data/memory.sqlite3
-        # never miss uncommitted WAL sidecar pages.
+        # Keep rollback-journal mode for compatibility with existing local stores.
         try:
             with closing(sqlite3.connect(self.path, timeout=10)) as mode_db:
                 mode_db.execute("PRAGMA journal_mode=DELETE")
