@@ -1,4 +1,4 @@
-# Nuke 15.2 接入与独立学习
+# Nuke 接入与独立学习
 
 ## 多窗口会话（2026-11-04）
 
@@ -20,7 +20,7 @@
 
 运行中的旧MCP进程需重新连接一次，才能加载新增工具；更新 Nuke 端桥接后重启对应软件窗口以加载新版。
 
-目标版本为用户已安装的 Nuke 15.2v1。本机已完成全局接入、真实握手和当前工程只读查询；真实建图、保存、渲染与视觉检查尚未完成。现有旧版本未配置为本项目操作目标。
+桥接允许 Nuke 11.0 及以上连接。Nuke 11–12 使用安装器生成的 Python 2.7 版本，Nuke 13 及以上使用 Python 3 版本。握手及工程读取验证只覆盖会话连接和只读操作。
 
 ## 结构和职责
 
@@ -59,18 +59,18 @@ uv sync --frozen --group nuke
 
 `--prepare` 只下载固定提交的桥接与 MIT 许可到 `integrations/nuke/vendor/`，验证 Git 原始文件的 SHA-256，不修改用户启动文件或运行 Nuke。该目录被 Git 忽略，完整工程包复制时可以一并带走；Git clone 后需重新准备。可选依赖组不改变普通 Houdini 安装的默认依赖；执行普通 `uv sync` 会移除未选的 Nuke 组，使用 Nuke 时需继续带 `--group nuke`。
 
-Nuke 15.2 尚未安装时，可以 `--register-disabled` 只预注册 `enabled=false` 的 Codex MCP 入口，保留旧软件启动配置不变。软件安装后先关闭相关桥接，再执行：
+尚未安装 Nuke 时，可以 `--register-disabled` 只预注册 `enabled=false` 的 Codex MCP 入口，保留旧软件启动配置不变。软件安装后先关闭相关桥接，再执行：
 
 ```powershell
 .venv\Scripts\python.exe scripts/install_nuke.py --port 8187
 .venv\Scripts\python.exe scripts/install_nuke.py --port 8187 --apply
 ```
 
-第一条只预览，第二条更新 `~/.codex/config.toml` 的 `fx-nuke` 与 `~/.nuke/menu.py` 内受管理区块，原配置备份在 `~/.fx-agent-install-backups/`。区块只在 Nuke 15.2+ 启动桥接，旧版本跳过。现有菜单代码保留；异常标记、无效 Python/TOML 会停止，不能安全迁移时不覆盖。
+第一条只预览，第二条更新 `~/.codex/config.toml` 的 `fx-nuke` 与 `~/.nuke/menu.py` 内受管理区块，原配置备份在 `~/.fx-agent-install-backups/`。区块在 Nuke 11.0 及以上启动桥接。Nuke 11–12 使用安装器生成的 Python 2.7 桥接。现有菜单代码保留；异常标记、无效 Python/TOML 会停止，不能安全迁移时不覆盖。
 
 安装时配置的基准端口须与 FX Houdini 配置不同；多窗口启动时按上述规则分配实际端口。可以统一用 `--port` 选择其他基准端口，安装器将同时更新桥接启动和客户端参数。不得猜测目标实例；使用会话列表和显式选择。桥接只监听 `127.0.0.1`；随机会话标识用于识别实例，不是身份认证，也没有开放远程连接。
 
-保存原工程后启动 Nuke 15.2，再新建 Codex 聊天；运行：
+保存原工程后启动目标版本的 Nuke，再新建 Codex 聊天；运行：
 
 ```powershell
 .venv\Scripts\python.exe scripts/check_nuke.py

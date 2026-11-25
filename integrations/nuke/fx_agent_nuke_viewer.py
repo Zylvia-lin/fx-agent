@@ -4,7 +4,7 @@ import math
 import os
 import uuid
 from importlib import import_module
-from pathlib import Path
+from fx_agent_nuke_compat import make_directory, remove_file, reserve_file
 
 
 def _viewer(name):
@@ -14,7 +14,7 @@ def _viewer(name):
         raise ValueError("Viewer operations require a GUI Nuke session")
     node = nuke.toNode(name)
     if node is None or node.Class() != "Viewer":
-        raise ValueError(f"Not a Viewer node: {name}")
+        raise ValueError('Not a Viewer node: {}'.format(name))
     return nuke, node
 
 
@@ -87,7 +87,7 @@ def set_viewer_state(params):
             if window is None:
                 raise ValueError("A/B activation requires this Viewer to be the active Viewer; no focus was changed")
             if index < 0 or viewer.input(index) is None:
-                raise ValueError(f"Viewer input is not connected: {index}")
+                raise ValueError('Viewer input is not connected: {}'.format(index))
     changes = {}
     channels = params.get("channels")
     if channels is not None:
@@ -102,15 +102,15 @@ def set_viewer_state(params):
             available = get_viewer_state(params)["result"]["available_channels"]
         layers = {channel.split(".")[0] for channel in available}
         if channels not in layers | set(available):
-            raise ValueError(f"Channel or layer is unavailable: {channels}")
+            raise ValueError('Channel or layer is unavailable: {}'.format(channels))
         changes["channels"] = channels
     exposure, gamma = params.get("exposure"), params.get("gamma")
     if exposure is not None:
-        if not math.isfinite(exposure) or not -20 <= exposure <= 20:
+        if not _isfinite(exposure) or not -20 <= exposure <= 20:
             raise ValueError("Exposure must be finite and between -20 and 20 stops")
         changes["gain"] = 2.0 ** exposure
     if gamma is not None:
-        if not math.isfinite(gamma) or gamma <= 0:
+        if not _isfinite(gamma) or gamma <= 0:
             raise ValueError("Gamma must be finite and positive")
         changes["gamma"] = gamma
     if params.get("frame") is not None:
@@ -166,16 +166,20 @@ def fit_viewer(params):
     return result
 
 
+def _isfinite(value):
+    return not (math.isnan(value) or math.isinf(value))
+
+
 def _capture_directory():
     root = os.getenv("FX_AGENT_LOCAL_ROOT") or os.getenv("FX_AGENT_DATA_ROOT")
-    return (Path(root) if root else Path.home() / ".fx-agent" / "cache") / "screenshots" / "nuke"
+    return os.path.join(root or os.path.expanduser('~/.fx-agent/cache'), 'screenshots', 'nuke')
 
 
 def _image_size(path):
     import fx_agent_nuke_addon as addon
 
     qt_gui = import_module(addon.QObject.__module__.split(".")[0] + ".QtGui")
-    image = qt_gui.QImage(str(path))
+    image = qt_gui.QImage(path)
     if image.isNull():
         raise RuntimeError("Nuke did not produce a readable Viewer capture")
     return [image.width(), image.height()]
@@ -184,21 +188,20 @@ def _image_size(path):
 def capture_viewer(params):
     _, viewer = _viewer(params["viewer_name"])
     value = params.get("output_path")
-    path = Path(value) if value else _capture_directory() / f"{os.getpid()}-{uuid.uuid4().hex}.jpg"
-    if not path.is_absolute() or path.suffix.lower() != ".jpg":
+    path = value or os.path.join(_capture_directory(), '{}-{}.jpg'.format(os.getpid(), uuid.uuid4().hex))
+    if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != ".jpg":
         raise ValueError("Viewer.capture requires an absolute .jpg output path")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directory(os.path.dirname(path))
     # Reserve a unique destination; never overwrite a user's existing image.
-    with path.open("xb"):
-        pass
+    reserve_file(path)
     try:
-        viewer.capture(str(path))
+        viewer.capture(path)
         dimensions = _image_size(path)
     except Exception:
-        path.unlink(missing_ok=True)
+        remove_file(path)
         raise
     result = get_viewer_state(params)["result"]
-    result.update({"path": str(path), "dimensions": dimensions,
+    result.update({"path": path, "dimensions": dimensions,
                    "capture_method": "nuke.Viewer.capture",
                    "render_complete": "not_guaranteed"})
     return {"status": "ok", "result": result}
@@ -220,21 +223,20 @@ def _main_window():
 def capture_interface(params):
     window = _main_window()
     value = params.get("output_path")
-    path = Path(value) if value else _capture_directory() / f"{os.getpid()}-{uuid.uuid4().hex}-ui.png"
-    if not path.is_absolute() or path.suffix.lower() != ".png":
+    path = value or os.path.join(_capture_directory(), '{}-{}-ui.png'.format(os.getpid(), uuid.uuid4().hex))
+    if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != ".png":
         raise ValueError("Interface capture requires an absolute .png path")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("xb"):
-        pass
+    make_directory(os.path.dirname(path))
+    reserve_file(path)
     try:
         pixmap = window.grab()
-        if pixmap.isNull() or not pixmap.save(str(path), "PNG"):
+        if pixmap.isNull() or not pixmap.save(path, "PNG"):
             raise RuntimeError("Nuke widget capture failed")
     except Exception:
-        path.unlink(missing_ok=True)
+        remove_file(path)
         raise
     return {"status": "ok", "result": {
-        "path": str(path), "dimensions": [pixmap.width(), pixmap.height()],
+        "path": path, "dimensions": [pixmap.width(), pixmap.height()],
         "capture_method": "Nuke QWidget.grab", "pid": os.getpid(),
     }}
 
@@ -243,7 +245,7 @@ def frame_graph(params):
     import nuke
 
     zoom = params.get("zoom", 0.2)
-    if not math.isfinite(zoom) or not 0.01 <= zoom <= 4:
+    if not _isfinite(zoom) or not 0.01 <= zoom <= 4:
         raise ValueError("Graph zoom must be finite and between 0.01 and 4")
     nodes = [nuke.toNode(name) for name in params["node_names"]]
     if not nodes or any(node is None for node in nodes):

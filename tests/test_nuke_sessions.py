@@ -52,8 +52,8 @@ def test_switch_rejects_changed_script_and_old_nuke(monkeypatch):
     monkeypatch.setattr(nukemcp.connection, "NukeConnection", lambda *args: candidate)
     with pytest.raises(ValueError, match="script"):
         conn.select(8188, 42, "new", "B.nk")
-    candidate.connect.return_value["nuke_version"] = "13.2v1"
-    with pytest.raises(ValueError, match="15.2"):
+    candidate.connect.return_value["nuke_version"] = "10.5v5"
+    with pytest.raises(ValueError, match="11.0"):
         conn.select(8188, 42, "new", "B.nk")
     assert conn.port == 8187
 

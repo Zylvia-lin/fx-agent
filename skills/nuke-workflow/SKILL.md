@@ -1,6 +1,6 @@
 ---
 name: nuke-workflow
-description: 由当前宿主助手通过 FX Agent 操作 Nuke 15.2 合成，读取纯文本规范与合成经验、完成多帧视觉审片，并沉淀纯文本通用经验与上游渲染问题反馈。
+description: 由当前宿主助手通过 FX Agent 操作 Nuke 合成，读取纯文本规范与合成经验、完成多帧视觉审片，并沉淀纯文本通用经验与上游渲染问题反馈。
 ---
 
 # Nuke 合成与纯文本学习
@@ -30,7 +30,7 @@ description: 由当前宿主助手通过 FX Agent 操作 Nuke 15.2 合成，读�
 
 1. **多会话连接（只读，不需任务放行）**：
    - 调用 `list_nuke_sessions` 获取各实例的 PID、端口、`session_id` 与工程路径，再完整传入 `connect_nuke(port, pid, session_id, expected_script)`。默认基准端口 `8187`，不自动猜选其他窗口。
-   - 无自动启动工具；无可用会话时请提示用户启动 Nuke 15.2 并打开目标工程后再连接。
+   - 无自动启动工具；无可用会话时请提示用户启动 Nuke 11.0 或更新版本并打开目标工程后再连接。
    - 桥接更新后可用 `reload_nuke_tools` 热重载 Nuke 端自定义工具模块。
 2. **只读核查与节点图工具**：
    - 核查节点与素材：`get_script_info`、`get_node_info`、`find_nodes_by_type`、`find_broken_reads`、`get_selected_nodes`。

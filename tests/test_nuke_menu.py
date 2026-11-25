@@ -90,7 +90,7 @@ def environment(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("fx_nuke_menu_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "reload", lambda value: value)
+    monkeypatch.setattr(module, "reload_module", lambda value: value)
     monkeypatch.setattr(module, "_session_directory", lambda: tmp_path / "nuke_sessions")
     return module, addon, host, root_menu, terminal
 

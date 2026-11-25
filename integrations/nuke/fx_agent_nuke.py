@@ -1,15 +1,18 @@
-"""Load the pinned bridge in Nuke 15.2. This module has no external dependencies."""
+"""Load the pinned bridge in Nuke. This module has no external dependencies."""
 
 import errno
+import io
 import json
 import os
 import socket
 import sys
 import time
 import uuid
-from contextlib import suppress
-from importlib import import_module, reload
-from pathlib import Path
+from importlib import import_module
+
+from fx_agent_nuke_compat import (
+    make_directory, reload_module, remove_file, replace_file, suppress, text_type,
+)
 
 
 def _dispatch_with_result(self, callback, *args):
@@ -24,9 +27,9 @@ def _dispatch_with_result(self, callback, *args):
             if not getattr(self, "_running", True):
                 raise RuntimeError("Nuke MCP server has stopped")
             value = callback(*args)
-            return {"ok": True, "value": json.loads(json.dumps(value, default=str))}
+            return {"ok": True, "value": json.loads(json.dumps(value, default=text_type))}
         except Exception as error:
-            return {"ok": False, "error": f"{type(error).__name__}: {error}"}
+            return {"ok": False, "error": '{}: {}'.format(type(error).__name__, error)}
 
     result = nuke.executeInMainThreadWithResult(invoke, args=())
     if not isinstance(result, dict) or "ok" not in result:
@@ -39,7 +42,8 @@ def _dispatch_with_result(self, callback, *args):
 def _write_console_log(message):
     stream = sys.__stdout__ or sys.__stderr__
     if stream is not None:
-        print(f"[FX Agent Nuke] {message}", file=stream, flush=True)
+        stream.write('[FX Agent Nuke] {}\n'.format(message))
+        stream.flush()
 
 
 def _install_dispatch(addon):
@@ -72,21 +76,21 @@ def _serve_exclusive(self):
             listener = _open_listener(port)
             self.port = port
             break
-        except OSError as error:
-            if error.errno not in (errno.EADDRINUSE, errno.EACCES):
+        except (OSError, socket.error) as error:
+            if error.errno not in (errno.EADDRINUSE, errno.EACCES, 10048, 10013):
                 raise
     else:
         raise OSError("No free Nuke session port in the configured 16-port range")
     self._server_sock = listener
-    self._emit_log(f"Listening exclusively on 127.0.0.1:{self.port}")
+    self._emit_log('Listening exclusively on 127.0.0.1:{}'.format(self.port))
     while self._running:
         try:
             client, addr = listener.accept()
-        except TimeoutError:
+        except socket.timeout:
             continue
-        except OSError:
+        except (OSError, socket.error):
             break
-        self._emit_log(f"Client connected from {addr[0]}:{addr[1]}")
+        self._emit_log('Client connected from {}:{}'.format(addr[0], addr[1]))
         self._handle_client(client)
         self._emit_log("Client disconnected")
 
@@ -97,12 +101,12 @@ def _serve_with_cleanup(self):
     except Exception as error:
         if self._running:
             self._fx_error = True
-            _write_console_log(f"Server error: {type(error).__name__}: {error}")
+            _write_console_log('Server error: {}: {}'.format(type(error).__name__, error))
     finally:
         self._running = False
         listener = self._server_sock
         if listener is not None:
-            with suppress(OSError):
+            with suppress(OSError, socket.error):
                 listener.close()
         self._server_sock = None
 
@@ -112,13 +116,13 @@ def _handle_client_with_cleanup(self, client):
 
     try:
         if self._running:
-            with suppress(OSError):
+            with suppress(OSError, socket.error):
                 client.settimeout(30.0)
             return self._fx_original_handle_client(client)
     finally:
-        with suppress(OSError):
+        with suppress(OSError, socket.error):
             client.shutdown(socket.SHUT_RDWR)
-        with suppress(OSError):
+        with suppress(OSError, socket.error):
             client.close()
         if getattr(addon, "_event_client_socket", None) is client:
             addon._event_client_socket = None
@@ -151,7 +155,7 @@ def _listener_state(server):
         return "Starting"
     try:
         return "Running" if listener.getsockname()[1] == server.port else "Starting"
-    except OSError:
+    except (OSError, socket.error):
         return "Error"
 
 
@@ -177,7 +181,7 @@ def _refresh_menu():
         return
     menu = addon._fx_agent_menu
     menu.clearMenu()
-    menu.addCommand(f"Status: {state} | 127.0.0.1:{port}", lambda: None).setEnabled(False)
+    menu.addCommand('Status: {} | 127.0.0.1:{}'.format(state, port), lambda: None).setEnabled(False)
     menu.addSeparator()
     base = getattr(server, "_fx_base_port", port)
     auto = getattr(server, "_fx_auto_port", True)
@@ -188,15 +192,15 @@ def _refresh_menu():
 
 def _session_directory():
     root = os.getenv("FX_AGENT_LOCAL_ROOT") or os.getenv("FX_AGENT_DATA_ROOT")
-    return (Path(root) if root else Path.home() / ".fx-agent" / "cache") / "nuke_sessions"
+    return os.path.join(root or os.path.expanduser('~/.fx-agent/cache'), 'nuke_sessions')
 
 
 def _publish_session(addon, server, state):
-    path = _session_directory() / f"{os.getpid()}.json"
+    path = os.path.join(_session_directory(), '{}.json'.format(os.getpid()))
     try:
         if state != "Running":
             addon._fx_last_session_pub = None
-            path.unlink(missing_ok=True)
+            remove_file(path)
             return
         nuke = addon._get_nuke()
         script = nuke.root().name()
@@ -204,7 +208,7 @@ def _publish_session(addon, server, state):
         last = getattr(addon, "_fx_last_session_pub", None)
         sig = (state, server.port, server._fx_session_id, script)
         # Avoid 1Hz disk churn: rewrite immediately on state/script change or every 5s heartbeat.
-        if last is not None and last[0] == sig and (now - last[1]) < 5.0 and path.is_file():
+        if last is not None and last[0] == sig and (now - last[1]) < 5.0 and os.path.isfile(path):
             return
         record = {
             "pid": os.getpid(),
@@ -214,13 +218,14 @@ def _publish_session(addon, server, state):
             "nuke_version": nuke.NUKE_VERSION_STRING,
             "updated_at": now,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(path)
+        make_directory(os.path.dirname(path))
+        temporary = os.path.splitext(path)[0] + '.tmp'
+        with io.open(temporary, 'w', encoding='utf-8') as stream:
+            stream.write(text_type(json.dumps(record, ensure_ascii=True)))
+        replace_file(temporary, path)
         addon._fx_last_session_pub = (sig, now)
-    except OSError as error:
-        _write_console_log(f"Cannot publish Nuke session: {error}")
+    except (OSError, socket.error) as error:
+        _write_console_log('Cannot publish Nuke session: {}'.format(error))
 
 
 def _session_handshake():
@@ -235,7 +240,7 @@ def _reload_tool_modules(params):
     import fx_agent_nuke_addon as addon
 
     for name in ("fx_agent_nuke_viewer", "fx_agent_nuke_graph"):
-        reload(import_module(name)).install(addon)
+        reload_module(import_module(name)).install(addon)
     return {"status": "ok", "result": {
         "reloaded": ["fx_agent_nuke_viewer", "fx_agent_nuke_graph"],
         "pid": os.getpid(), "session_id": addon._fx_agent_server._fx_session_id,
@@ -262,9 +267,9 @@ def _stop_bridge(addon, server):
         server._fx_error = False
     client = getattr(addon, "_event_client_socket", None)
     if client is not None:
-        with suppress(OSError):
+        with suppress(OSError, socket.error):
             client.shutdown(socket.SHUT_RDWR)
-        with suppress(OSError):
+        with suppress(OSError, socket.error):
             client.close()
         addon._event_client_socket = None
 
@@ -293,7 +298,9 @@ def start(port=8187, auto_port=True):
     """Auto-start the bridge, install menu controls, and never create a popup."""
     if not 1 <= port <= 65535 or port in (8100, 8186, 18186, 54321):
         raise ValueError("Choose a separate Nuke MCP port")
-    vendor = str(Path(__file__).resolve().parent / "vendor")
+    vendor = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'vendor')
+    if sys.version_info[0] == 2:
+        vendor = os.path.join(vendor, 'python27')
     if vendor not in sys.path:
         sys.path.insert(0, vendor)
     import fx_agent_nuke_addon as addon
@@ -301,8 +308,8 @@ def start(port=8187, auto_port=True):
     if not hasattr(addon, "_fx_original_handshake"):
         addon._fx_original_handshake = addon._handshake_data
     addon._handshake_data = _session_handshake
-    reload(import_module("fx_agent_nuke_viewer")).install(addon)
-    reload(import_module("fx_agent_nuke_graph")).install(addon)
+    reload_module(import_module("fx_agent_nuke_viewer")).install(addon)
+    reload_module(import_module("fx_agent_nuke_graph")).install(addon)
     # Remove disabled commands at the Nuke TCP bridge layer as well as MCP surface.
     addon.COMMANDS.pop("execute_python", None)
     addon.COMMANDS.pop("auto_layout", None)
@@ -342,7 +349,7 @@ def start(port=8187, auto_port=True):
         addon._fx_agent_server = server
         _attach_console(addon, server)
         server.start()
-        _write_console_log(f"Server starting on 127.0.0.1:{port}")
+        _write_console_log('Server starting on 127.0.0.1:{}'.format(port))
     elif server is not None:
         _attach_console(addon, server)
     _refresh_menu()

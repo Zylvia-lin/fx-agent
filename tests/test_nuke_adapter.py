@@ -95,10 +95,16 @@ async def test_curated_tools_work_without_second_memory_system(connection, tmp_p
     assert "0.5" in str(result)
 
 
+@pytest.mark.parametrize("version", ["11.0v1", "13.0v1", "15.0v1", "17.1v3"])
+def test_version_accepts_supported_nuke(connection, version):
+    conn, handshake = connection
+    build_server(conn, handshake | {"nuke_version": version})
+
+
 def test_version_rejects_older_nuke(connection):
     conn, handshake = connection
-    with pytest.raises(ValueError, match="15.2"):
-        build_server(conn, handshake | {"nuke_version": "13.2v1"})
+    with pytest.raises(ValueError, match="11.0"):
+        build_server(conn, handshake | {"nuke_version": "10.5v5"})
 
 
 def test_commands_are_serialized_and_timeout_requires_explicit_recovery():

@@ -51,7 +51,7 @@ function Find-FxNukeExecutable {
     $candidates = foreach ($directory in $Roots) {
         if (-not $directory -or -not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
         foreach ($folder in Get-ChildItem -LiteralPath $directory -Directory -Filter 'Nuke*') {
-            if ($folder.Name -match '^Nuke(\d+\.\d+)v(\d+)$' -and [version]$Matches[1] -ge [version]'15.2') {
+            if ($folder.Name -match '^Nuke(\d+\.\d+)v(\d+)$' -and [version]$Matches[1] -ge [version]'11.0') {
                 $version = [version]"$($Matches[1]).$($Matches[2])"
                 $exe = Join-Path $folder.FullName "Nuke$($Matches[1]).exe"
                 if (Test-Path -LiteralPath $exe -PathType Leaf) {
@@ -61,7 +61,7 @@ function Find-FxNukeExecutable {
         }
     }
     $selected = $candidates | Sort-Object Version, Folder -Descending | Select-Object -First 1
-    if (-not $selected) { throw '未找到 Nuke 15.2+。请先安装 Nuke，或用 -NukeExe 指定实际程序路径。' }
+    if (-not $selected) { throw '未找到 Nuke 11.0+。请先安装 Nuke，或用 -NukeExe 指定实际程序路径。' }
     return $selected.Path
 }
 

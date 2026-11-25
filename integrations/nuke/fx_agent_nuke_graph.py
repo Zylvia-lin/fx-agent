@@ -1,7 +1,8 @@
 """Explicit native-node layout and file-based copying; never drives the desktop."""
 
-import tempfile
-from pathlib import Path
+import os
+
+from fx_agent_nuke_compat import temporary_directory
 
 
 def _integer(value):
@@ -12,20 +13,21 @@ def _integer(value):
 
 def _toolset_path(nuke, node_class, explicit=None):
     if explicit:
-        path = Path(explicit).expanduser()
-        if not path.is_absolute() or path.suffix.lower() != ".nk" or not path.is_file():
+        path = os.path.expanduser(explicit)
+        if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != '.nk' or not os.path.isfile(path):
             raise ValueError("Toolset requires an existing absolute .nk path")
-        return path.resolve()
-    if not node_class or Path(node_class).name != node_class or any(c in node_class for c in "/\\:"):
+        return os.path.realpath(path)
+    if not node_class or os.path.basename(node_class) != node_class or any(c in node_class for c in "/\\:"):
         raise ValueError("Specify a class name, or an explicit toolset_path")
-    roots = {Path(p).expanduser() for p in nuke.pluginPath()}
-    roots.add(Path.home() / ".nuke" / "ToolSets")
-    matches = {p.resolve() for root in roots if root.is_dir()
-               for p in root.rglob("*.nk") if p.stem.casefold() == node_class.casefold()}
+    roots = {os.path.expanduser(path) for path in nuke.pluginPath()}
+    roots.add(os.path.expanduser('~/.nuke/ToolSets'))
+    matches = {os.path.realpath(os.path.join(directory, name))
+               for root in roots for directory, _, files in os.walk(root)
+               for name in files if os.path.splitext(name.lower()) == (node_class.lower(), '.nk')}
     if not matches:
-        raise ValueError(f"No .nk toolset found for {node_class}; specify toolset_path")
+        raise ValueError('No .nk toolset found for {}; specify toolset_path'.format(node_class))
     if len(matches) != 1:
-        raise ValueError(f"Ambiguous toolset {node_class}; specify toolset_path: {sorted(map(str, matches))}")
+        raise ValueError('Ambiguous toolset {}; specify toolset_path: {}'.format(node_class, sorted(map(str, matches))))
     return matches.pop()
 
 
@@ -38,7 +40,7 @@ def _configure(node, params):
     knobs = params.get("knobs") or {}
     missing = set(knobs) - set(node.knobs())
     if missing:
-        raise ValueError(f"Unknown knobs: {sorted(missing)}")
+        raise ValueError('Unknown knobs: {}'.format(sorted(missing)))
     if params.get("name"):
         node.setName(params["name"])
     for key, value in knobs.items():
@@ -86,7 +88,7 @@ def import_toolset(params):
                 if node not in before:
                     nuke.delete(node)
         except Exception as rollback_error:
-            raise RuntimeError(f"Import failed: {error}; rollback failed: {rollback_error}") from error
+            raise RuntimeError('Import failed: {}; rollback failed: {}'.format(error, rollback_error))
         raise
     finally:
         for node, selected in selection:
@@ -117,7 +119,7 @@ def create_node(params):
             for node in reversed(partial):
                 nuke.delete(node)
         except Exception as rollback_error:
-            raise RuntimeError(f"Creation failed: {error}; rollback failed: {rollback_error}") from error
+            raise RuntimeError('Creation failed: {}; rollback failed: {}'.format(error, rollback_error))
         finally:
             for prev_node, selected in selection:
                 prev_node.setSelected(selected)
@@ -127,7 +129,7 @@ def create_node(params):
         if not any(text in message for text in ("unknown command", "unknown node", "unknown class")):
             raise
         path = _toolset_path(nuke, params["node_class"], params.get("toolset_path"))
-        return import_toolset({**params, "path": str(path), "single": True})
+        return import_toolset(dict(params, path=path, single=True))
     try:
         _configure(node, params)
         if xy is not None:
@@ -139,13 +141,13 @@ def create_node(params):
     finally:
         for previous, selected in selection:
             previous.setSelected(selected)
-    return {"status": "ok", "result": {**_describe(node), "creation_method": "class"}}
+    return {"status": "ok", "result": dict(_describe(node), creation_method="class")}
 
 
 def _node(nuke, name):
     node = nuke.toNode(name)
     if node is None:
-        raise ValueError(f"Node not found: {name}")
+        raise ValueError('Node not found: {}'.format(name))
     return node
 
 
@@ -183,7 +185,7 @@ def layout_nodes(params):
         node = _node(nuke, item["node_name"])
         name = node.fullName()
         if name in placements:
-            raise ValueError(f"Duplicate position: {name}")
+            raise ValueError('Duplicate position: {}'.format(name))
         xy = [_integer(item["x"]), _integer(item["y"])]
         placements[name] = xy
         positions.append((node, xy, [node.xpos(), node.ypos()]))
@@ -230,9 +232,9 @@ def layout_nodes(params):
             predecessor = ("dot", key)
         start = _port(source, placements.get(source.fullName(), [source.xpos(), source.ypos()]))
         end = _port(target, placements.get(target.fullName(), [target.xpos(), target.ypos()]), index)
-        segments = list(zip([start, *points], [*points, end], strict=True))
+        segments = list(zip([start] + points, points + [end]))
         if any(a[0] != b[0] and a[1] != b[1] for a, b in segments):
-            raise ValueError(f"Diagonal route segment: {source.fullName()} -> {target.fullName()}")
+            raise ValueError('Diagonal route segment: {} -> {}'.format(source.fullName(), target.fullName()))
         routes.append((source, target, index, points, segments))
     result = {
         "dry_run": params.get("dry_run", True), "orthogonal": True,
@@ -284,7 +286,7 @@ def layout_nodes(params):
             actual_points = [_port(source, [source.xpos(), source.ypos()])]
             actual_points.extend(_port(dot, [dot.xpos(), dot.ypos()]) for dot in dots)
             actual_points.append(_port(target, [target.xpos(), target.ypos()], index))
-            segments = list(zip(actual_points[:-1], actual_points[1:], strict=True))
+            segments = list(zip(actual_points[:-1], actual_points[1:]))
             if any(a[0] != b[0] and a[1] != b[1] for a, b in segments):
                 raise RuntimeError("Nuke placement did not preserve planned orthogonal segments")
             actual_routes.append({"source_node": source.fullName(), "target_node": target.fullName(),
@@ -307,11 +309,11 @@ def layout_nodes(params):
             except Exception as rollback_error:
                 failures.append(str(rollback_error))
         if failures:
-            raise RuntimeError(f"Layout failed: {error}; rollback also failed: {failures}") from error
+            raise RuntimeError('Layout failed: {}; rollback also failed: {}'.format(error, failures))
         raise
     result["created_dots"] = [node.fullName() for node in created]
     result["routes"] = actual_routes
-    for item, (node, _, _) in zip(result["positions"], positions, strict=True):
+    for item, (node, _, _) in zip(result["positions"], positions):
         item.update(x=node.xpos(), y=node.ypos())
     return {"status": "ok", "result": result}
 
@@ -319,7 +321,7 @@ def layout_nodes(params):
 def _check_callbacks(node):
     for key in ("onCreate", "onDestroy", "knobChanged", "updateUI", "autolabel"):
         if key in node.knobs() and node[key].value():
-            raise ValueError(f"Cannot duplicate a node with a callback: {node.fullName()}.{key}")
+            raise ValueError('Cannot duplicate a node with a callback: {}.{}'.format(node.fullName(), key))
     if node.Class() == "Group" or hasattr(node, "nodes"):
         for child in node.nodes():
             _check_callbacks(child)
@@ -338,8 +340,8 @@ def duplicate_node(params):
     before = list(parent.nodes())
     selection = [(node, node.isSelected()) for node in before]
     try:
-        with parent, tempfile.TemporaryDirectory(prefix="fx-nuke-copy-") as directory:
-            path = str(Path(directory) / "node.nk")
+        with parent, temporary_directory(prefix="fx-nuke-copy-") as directory:
+            path = os.path.join(directory, "node.nk")
             for node in before:
                 node.setSelected(False)
             source.setSelected(True)
@@ -363,7 +365,7 @@ def duplicate_node(params):
                 except Exception as rollback_error:
                     failures.append(str(rollback_error))
         if failures:
-            raise RuntimeError(f"Copy failed: {error}; rollback also failed: {failures}") from error
+            raise RuntimeError('Copy failed: {}; rollback also failed: {}'.format(error, failures))
         raise
     finally:
         for node, selected in selection:

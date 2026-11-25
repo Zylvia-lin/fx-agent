@@ -1,6 +1,7 @@
 """Prepare the pinned Nuke bridge, then optionally register it in Windows Codex."""
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import io
@@ -87,7 +88,7 @@ def menu_content(
     env_block = "\n".join(env_lines)
     block = f"""{BEGIN}
 import nuke as _fx_host
-if (_fx_host.NUKE_VERSION_MAJOR, _fx_host.NUKE_VERSION_MINOR) >= (15, 2):
+if (_fx_host.NUKE_VERSION_MAJOR, _fx_host.NUKE_VERSION_MINOR) >= (11, 0):
     import os as _fx_os
     import sys as _fx_sys
 {env_block}
@@ -101,6 +102,51 @@ if (_fx_host.NUKE_VERSION_MAJOR, _fx_host.NUKE_VERSION_MINOR) >= (15, 2):
     result = original.rstrip() + "\n\n" + block
     compile(result, "menu.py", "exec")
     return result
+
+
+def python27_vendor(content: bytes) -> bytes:
+    """Lower the verified upstream add-on to the syntax of Nuke 11 and 12."""
+    class LegacySyntax(ast.NodeTransformer):
+        def visit_arg(self, node):
+            node.annotation = None
+            return node
+
+        def visit_FunctionDef(self, node):
+            node.returns = None
+            return self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            return ast.Assign(targets=[node.target], value=node.value)
+
+        def visit_JoinedStr(self, node):
+            template, arguments = [], []
+            for part in node.values:
+                if isinstance(part, ast.Constant):
+                    template.append(part.value.replace("{", "{{").replace("}", "}}"))
+                else:
+                    if part.conversion != -1 or part.format_spec is not None:
+                        raise ValueError("Unsupported format in pinned Nuke add-on")
+                    template.append("{}")
+                    arguments.append(part.value)
+            return ast.Call(
+                func=ast.Attribute(value=ast.Constant("".join(template)), attr="format", ctx=ast.Load()),
+                args=arguments, keywords=[],
+            )
+
+    source = content.decode("utf-8")
+    source = source.replace("import queue", "import Queue as queue")
+    source = source.replace("class NukeMCPServer:", "class NukeMCPServer(object):")
+    source = source.replace("super().__init__(parent)", "super(NukeMCPPanel, self).__init__(parent)")
+    source = source.replace(
+        "self._thread = threading.Thread(target=self._serve, daemon=True)",
+        "self._thread = threading.Thread(target=self._serve)\n        self._thread.daemon = True",
+    )
+    source = source.replace("except OSError:", "except (OSError, socket.error):")
+    source = source.replace("except json.JSONDecodeError", "except ValueError")
+    tree = LegacySyntax().visit(ast.parse(source))
+    return ("# -*- coding: utf-8 -*-\n"
+            "# Generated from the verified NukeMCP add-on; see ../LICENSE.nuke-mcp.\n"
+            + ast.unparse(ast.fix_missing_locations(tree)) + "\n").encode("utf-8")
 
 
 def prepare_vendor(destination: Path) -> None:
@@ -117,8 +163,11 @@ def prepare_vendor(destination: Path) -> None:
         if hashlib.sha256(content).hexdigest() != checksum:
             raise ValueError(f"Pinned bridge checksum mismatch: {name}")
         pending[path] = content
+    legacy = destination / "python27/fx_agent_nuke_addon.py"
+    pending[legacy] = python27_vendor(pending[destination / "fx_agent_nuke_addon.py"])
     destination.mkdir(parents=True, exist_ok=True)
     for path, content in pending.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
 
@@ -256,7 +305,7 @@ def main() -> None:
     if args.register_disabled:
         print(f"已预注册禁用的fx-nuke，未修改Nuke启动配置；备份：{backup}")
     else:
-        print(f"已注册fx-nuke，备份：{backup}。启动Nuke15.2并新建Codex聊天后验证。")
+        print(f"已注册fx-nuke，备份：{backup}。启动Nuke并新建Codex聊天后验证。")
 
 
 if __name__ == "__main__":

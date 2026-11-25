@@ -24,7 +24,7 @@
 | 软件 / 入口 | 默认桥接端口 | 说明 |
 | --- | --- | --- |
 | Houdini / `fx-agent` | `18186` | 需安装 Houdini 并至少启动一次（已验证 20.0.751 / 22.0.466） |
-| Nuke / `fx-nuke` | `8187` | 需 Nuke 15.2+，多窗口自动分配端口 |
+| Nuke / `fx-nuke` | `8187` | 需 Nuke 11.0+，多窗口自动分配端口 |
 | Maya / `fx-maya` | `18770..18789` | 独立可选安装，支持 Arnold / Redshift 与 Python 2 / 3，详见 [Maya 接入说明](public-docs/maya.md) |
 
 ## 快速开始

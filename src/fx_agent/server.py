@@ -94,7 +94,7 @@ def get_server():
             "houdini_status_tool": "get_houdini_connection_status",
             "nuke": {
                 "mcp_name": "fx-nuke",
-                "target_version": "15.2",
+                "target_version": "11.0",
                 "connection_status_tool": "get_nuke_connection_status",
             },
             "maya": {

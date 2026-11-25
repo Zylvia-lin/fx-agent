@@ -61,7 +61,7 @@ exclude = ["/integrations/nuke/vendor", "**/__pycache__", "**/*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "integrations/nuke"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["live: read-only verification against an explicitly enabled local Houdini session"]

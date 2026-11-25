@@ -1,6 +1,7 @@
 """Explicit orthogonal routing never rearranges unrelated production nodes."""
 
 import importlib.util
+import tempfile
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,7 +55,7 @@ def graph(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("graph_tool_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     parent = Parent()
     source = Node(parent, "Source", x=0, y=0)
     target = Node(parent, "Target", x=200, y=200)
@@ -152,7 +153,7 @@ def test_ambiguous_toolset_requires_explicit_path(graph, tmp_path):
     (tmp_path / "other" / path.name).write_text("Group {}")
     with pytest.raises(ValueError, match="Ambiguous"):
         module._toolset_path(host, "L_RealGlow")
-    assert module._toolset_path(host, "L_RealGlow", str(path)) == path.resolve()
+    assert module._toolset_path(host, "L_RealGlow", str(path)) == str(path.resolve())
 
 
 def test_import_multiple_nodes_and_rollback_single_requirement(graph, tmp_path):

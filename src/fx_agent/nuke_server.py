@@ -64,8 +64,8 @@ class SerializedConnection:
                 handshake = handshake or candidate.connect(retries=1)
                 if handshake.get("pid") != pid or handshake.get("session_id") != session_id:
                     raise ValueError("Nuke session identity changed; refresh list_nuke_sessions")
-                if not parse_version(handshake).at_least(15, 2):
-                    raise ValueError("FX Nuke adapter requires Nuke 15.2 or newer")
+                if not parse_version(handshake).at_least(11, 0):
+                    raise ValueError("FX Nuke adapter requires Nuke 11.0 or newer")
                 info = (
                     self.send_command("get_script_info")
                     if candidate is self._connection
@@ -106,10 +106,10 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
     from nukemcp.tools import batch, comp, graph, render, script
     from nukemcp.version import parse_version
 
-    version = parse_version(handshake or {"nuke_version": "15.2v1"})
-    if not version.at_least(15, 2):
+    version = parse_version(handshake or {"nuke_version": "11.0v1"})
+    if not version.at_least(11, 0):
         raise ValueError(
-            "FX Nuke adapter requires Nuke 15.2 or newer; this version was not validated"
+            "FX Nuke adapter requires Nuke 11.0 or newer"
         )
     mcp = FastMCP(
         "FXNuke",

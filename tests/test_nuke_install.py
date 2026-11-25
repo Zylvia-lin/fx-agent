@@ -28,7 +28,7 @@ def test_nuke_startup_keeps_user_code_and_gates_old_versions():
     original = '# 用户已有菜单\nprint("existing startup")\n'
     result = installer.menu_content(original, ROOT, 8187)
     assert result.startswith(original)
-    assert ">= (15, 2)" in result
+    assert ">= (11, 0)" in result
     assert installer.menu_content(result, ROOT, 8187) == result
     with pytest.raises(ValueError):
         installer.menu_content(original + installer.BEGIN, ROOT, 8187)
