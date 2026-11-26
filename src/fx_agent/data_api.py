@@ -161,18 +161,18 @@ async def fx_get_context(
     )
 
 
-async def fx_submit_experience(experience: Experience) -> dict:
+async def fx_submit_experience(experience: Experience, fx_task_id: str = "") -> dict:
     """Admit a project-agnostic, text-only reusable experience with explicit provenance.
 
     Do not include local/UNC paths or archive project files/textures. Explicit user
-    statements and verified live text observations enter active recall directly and
-    refresh global module Markdown guides; inferred hypotheses stay candidates.
+    statements and observations linked to a verified task enter active recall and
+    refresh module guides. Other observations and inferences stay candidates.
     Choose specific modules for this lesson from fx_get_module_catalog.
     To correct an old entry, submit a distinct explicit user statement with supersedes.
     """
     require_classified_modules(experience.modules)
     return await asyncio.to_thread(
-        lambda: MemoryStore(data_root()).submit(**experience.model_dump())
+        lambda: MemoryStore(data_root()).submit(_task_id=fx_task_id, **experience.model_dump())
     )
 
 
@@ -433,6 +433,29 @@ async def fx_update_render_issue(
     )
 
 
+async def fx_get_host_workflow(
+    software: Literal["houdini", "nuke", "maya"] = "houdini",
+) -> dict:
+    """Read the full FX Agent workflow for the selected DCC before production."""
+    from fx_agent.workflow import HOST_WORKFLOW_INSTRUCTIONS
+
+    result = {"software": software, "workflow": HOST_WORKFLOW_INSTRUCTIONS}
+    if software == "houdini":
+        from fxhoudinimcp._loader import load_markdown
+
+        result["upstream_instructions"] = load_markdown("instructions/server_instructions.md")
+    return result
+
+
+def brief_task_state(gates: TaskGates, task_id: str) -> dict:
+    state = gates.get(task_id)
+    missing = list(dict.fromkeys(state["missing"]))
+    return {key: state[key] for key in ("state", "revision", "open_questions")} | {
+        "missing": missing[:8],
+        "omitted_missing": max(0, len(missing) - 8),
+    }
+
+
 async def fx_prepare_task_brief(
     task_id: str,
     query: str = "",
@@ -457,180 +480,124 @@ async def fx_prepare_task_brief(
         software = task["software"]
         modules = list(task["modules"])
         kind = task["kind"]
-        search_query = query.strip() or task["goal"]
-
-        rules_budget = min(6000, max(1024, max_chars // 3))
-        expanded_rules: list[dict] = []
-        if not database_path(root).exists():
-            rules = production_rules(software) | {
-                "user_rules": [],
-                "omitted_rules": 0,
-                "next_offset": 0,
-            }
-            gates.observe(
-                task_id,
-                "fx_get_production_rules",
-                {"project_id": project_id, "offset": 0, "software": software},
-                rules,
-            )
-        else:
-            learning = LearningStore(root)
-            all_user_rules: list[dict] = []
-            offset = 0
-            rules = None
-            # Auto-paginate through all user rules so a single brief satisfies the rules gate.
-            for _ in range(20):
-                page = learning.get_rules(project_id, rules_budget, offset, software)
-                gates.observe(
-                    task_id,
-                    "fx_get_production_rules",
-                    {"project_id": project_id, "offset": offset, "software": software},
-                    page,
-                )
-                page_rules = page.get("user_rules", [])
-                all_user_rules.extend(page_rules)
-                for rule_card in page_rules:
-                    if rule_card.get("detail_required"):
-                        r_scope = rule_card.get("scope", "global")
-                        r_proj = project_id if r_scope == "project" else ""
-                        full_rule = learning.get_rule(
-                            rule_card["rule_key"], r_scope, r_proj, rule_card.get("revision", 0)
-                        )
-                        gates.observe(
-                            task_id,
-                            "fx_get_user_rule",
-                            {
-                                "rule_key": rule_card["rule_key"],
-                                "scope": r_scope,
-                                "project_id": r_proj,
-                                "revision": rule_card.get("revision", 0),
-                            },
-                            full_rule,
-                        )
-                        expanded_rules.append(full_rule)
-                rules = page
-                next_offset = page.get("next_offset", offset)
-                if page.get("omitted_rules", 0) == 0 or next_offset <= offset:
-                    break
-                offset = next_offset
-            assert rules is not None
-            rules = dict(rules)
-            rules["user_rules"] = all_user_rules
-
-        context_budget = min(2000, max(768, max_chars // 8))
-        context = Store(root).get_context(project_id, shot_id, "", context_budget, software)
-
-        brief: dict = {
+        search_query = (query.strip() or task["goal"])[:200]
+        search_query = " ".join(search_query.split()[:16])
+        brief = {
             "task_id": task_id,
             "kind": kind,
             "software": software,
             "modules": modules,
             "query": search_query,
-            "production_rules": rules,
-            "context": context,
+            "production_rules": production_rules(software),
         }
-        if expanded_rules:
-            brief["expanded_user_rules"] = expanded_rules
+        # Reserve room for the compact gate status and explicit continuation hints.
+        content_limit = max_chars - 700
+        deferred = []
+        receipts = []
+
+        def include(key, value):
+            if len(compact(brief | {key: value})) > content_limit:
+                return False
+            brief[key] = value
+            return True
+
+        def observe(tool, arguments, result):
+            receipts.append((tool, arguments, result))
+
+        learning = LearningStore(root)
+        rule_args = {"project_id": project_id, "software": software}
+        rules = None
+        offset = 0
+        for _ in range(20):
+            page = learning.get_rules(
+                project_id, min(6000, max(1024, max_chars // 3)), offset, software,
+                include_provenance=False,
+            )
+            if rules and rules["rules_hash"] != page["rules_hash"]:
+                break
+            merged = page | {"user_rules": (rules or {}).get("user_rules", []) + page["user_rules"]}
+            if not include("production_rules", merged):
+                break
+            rules = merged
+            observe("fx_get_production_rules", rule_args | {"offset": offset}, page)
+            if not page["omitted_rules"] or page["next_offset"] <= offset:
+                break
+            offset = page["next_offset"]
+        if rules is None or rules["omitted_rules"]:
+            deferred.append("fx_get_production_rules")
+        expanded = []
+        for rule in (rules or {}).get("user_rules", []):
+            if not rule.get("detail_required"):
+                continue
+            args = {
+                "rule_key": rule["rule_key"],
+                "scope": rule["scope"],
+                "revision": rule["revision"],
+                "project_id": project_id if rule["scope"] == "project" else "",
+            }
+            full = learning.get_rule(**args)
+            if include("expanded_user_rules", expanded + [full]):
+                expanded.append(full)
+                observe("fx_get_user_rule", args, full)
+            elif "fx_get_user_rule" not in deferred:
+                deferred.append("fx_get_user_rule")
 
         if kind != "quick_tweak":
-            per_mod_budget = min(3600, max(1024, (max_chars // 4) // max(1, len(modules))))
-            module_knowledge: dict[str, dict] = {}
-            truncated_modules: list[str] = []
             guides = ModuleGuides(root)
+            module_knowledge = {}
+            truncated_modules = []
+            per_module_budget = min(3600, max(1024, max_chars // (4 * len(modules))))
             for mod in modules:
-                mod_res = guides.get(project_id, mod, software, per_mod_budget, 0)
-                gates.observe(
-                    task_id,
-                    "fx_get_module_knowledge",
-                    {"project_id": project_id, "module": mod, "software": software, "offset": 0},
-                    mod_res,
-                )
-                module_knowledge[mod] = mod_res
-                if mod_res.get("truncated"):
+                guide = guides.get(project_id, mod, software, per_module_budget, 0)
+                if include("module_knowledge", module_knowledge | {mod: guide}):
+                    module_knowledge[mod] = guide
+                    observe("fx_get_module_knowledge", rule_args | {"module": mod, "offset": 0}, guide)
+                    if guide.get("truncated"):
+                        truncated_modules.append(mod)
+                else:
                     truncated_modules.append(mod)
-            brief["module_knowledge"] = module_knowledge
+            if truncated_modules:
+                deferred.append("fx_get_module_knowledge")
 
-            mem_budget = min(4000, max(512, max_chars // 3))
             mem_store = MemoryStore(root)
             primary_mod = modules[0] if len(modules) == 1 else ""
-            memories = mem_store.search(
-                project_id,
-                search_query,
-                shot_id,
-                include_candidates,
-                5,
-                mem_budget,
-                software,
-                primary_mod,
-            )
-            mem_args = {
-                "project_id": project_id,
-                "shot_id": shot_id,
-                "software": software,
-                "module": primary_mod,
-                "query": search_query,
-                "include_candidates": include_candidates,
-            }
-            gates.observe(task_id, "fx_search_memory", mem_args, memories)
-            brief["memory_matches"] = memories
-            brief["template_library_hint"] = (
-                "如需复用现成工程模板，请直接调用 fx_search_published_templates 检索外部特效模板库。"
-            )
+            mem_args = rule_args | {"shot_id": shot_id, "query": search_query}
+            mem_budget = min(4000, max(512, max_chars // 4))
 
-            if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
-                cand_res = mem_store.search(
-                    project_id,
-                    search_query,
-                    shot_id,
-                    True,
-                    5,
-                    min(2000, mem_budget),
-                    software,
-                    primary_mod,
-                )
-                gates.observe(
-                    task_id,
-                    "fx_search_memory",
-                    mem_args | {"include_candidates": True},
-                    cand_res,
-                )
-                brief["candidate_memories"] = cand_res
+            def search(module, candidates, limit=5):
+                args = mem_args | {"module": module, "include_candidates": candidates}
+                result = mem_store.search(**args, limit=limit, max_chars=mem_budget)
+                return args, result
 
-            extra_module_memories: dict[str, dict] = {}
+            args, memories = search(primary_mod, include_candidates)
+            if include("memory_matches", memories):
+                observe("fx_search_memory", args, memories)
+                if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
+                    args, candidates = search(primary_mod, True)
+                    if include("candidate_memories", candidates):
+                        observe("fx_search_memory", args, candidates)
+                    else:
+                        deferred.append("fx_search_memory")
+            else:
+                deferred.append("fx_search_memory")
+            module_matches = {}
             for mod in truncated_modules:
                 if mod == primary_mod:
                     continue
-                mod_mem = mem_store.search(
-                    project_id,
-                    search_query,
-                    shot_id,
-                    include_candidates,
-                    3,
-                    min(1500, mem_budget),
-                    software,
-                    mod,
-                )
-                mod_mem_args = mem_args | {"module": mod}
-                gates.observe(task_id, "fx_search_memory", mod_mem_args, mod_mem)
-                extra_module_memories[mod] = mod_mem
-            if extra_module_memories:
-                brief["module_memory_matches"] = extra_module_memories
+                args, matches = search(mod, include_candidates, 3)
+                if include("module_memory_matches", module_matches | {mod: matches}):
+                    module_matches[mod] = matches
+                    observe("fx_search_memory", args, matches)
+            include("template_library_hint", "需要现成工程时调用 fx_search_published_templates。")
 
-        brief["task_state"] = gates.get(task_id)
-        # Keep response within max_chars by trimming secondary preview fields first.
-        if len(compact(brief)) > max_chars:
-            for key in ("candidate_memories", "module_memory_matches", "context"):
-                if key in brief and len(compact(brief)) > max_chars:
-                    brief[key] = {"truncated": True, "omitted_for_budget": True}
-            if "module_knowledge" in brief and len(compact(brief)) > max_chars:
-                for mod, entry in brief["module_knowledge"].items():
-                    if isinstance(entry, dict) and isinstance(entry.get("content"), str):
-                        entry = dict(entry)
-                        entry["content"] = entry["content"][:400]
-                        entry["brief_trimmed"] = True
-                        brief["module_knowledge"][mod] = entry
-                        if len(compact(brief)) <= max_chars:
-                            break
+        context = Store(root).get_context(project_id, shot_id, "", min(2000, max(768, max_chars // 8)), software)
+        if not include("context", context):
+            deferred.append("fx_get_context")
+        if deferred:
+            brief["deferred_reads"] = deferred
+        for tool, args, result in receipts:
+            gates.observe(task_id, tool, args, result)
+        brief["task_state"] = brief_task_state(gates, task_id)
         return brief
 
     return await asyncio.to_thread(build)

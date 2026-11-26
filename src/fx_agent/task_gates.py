@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import ntpath
 import uuid
 from contextlib import contextmanager, suppress
@@ -86,6 +87,35 @@ def is_untitled_scene(path: str) -> bool:
     }
 
 
+VISUAL_TOOLS = {
+    "houdini": {"capture_screenshot", "render_viewport", "fx_render_view_save"},
+    "nuke": {"capture_nuke_viewer"},
+    "maya": {"render_maya_frame"},
+}
+
+
+def visual_evidence(tool, value, arguments):
+    if value.get("file_exists") is False or value.get("saved") is False:
+        return []
+    frame = value.get("frame", value.get("settings", {}).get("frame", arguments.get("frame")))
+    if type(frame) not in {int, float} or not math.isfinite(frame):
+        return []
+    paths = value.get("output_paths") or [value.get("path") or value.get("output_path")]
+    evidence = []
+    for path in paths:
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            continue
+        with suppress(OSError, ValueError):
+            file = Path(path)
+            stat = file.stat()
+            if file.is_file() and stat.st_size:
+                evidence.append({
+                    "tool": tool, "frame": frame, "path": path,
+                    "size": stat.st_size, "modified": stat.st_mtime_ns,
+                })
+    return evidence
+
+
 EVIDENCE_TOOLS = frozenset(
     {
         "fx_get_production_rules",
@@ -98,6 +128,7 @@ EVIDENCE_TOOLS = frozenset(
         "save_script",
         "verify_network",
         "find_broken_reads",
+        "fx_render_view_start",
     }
 )
 
@@ -186,13 +217,13 @@ class TaskGates:
             (task["task_id"], compact(task)),
         )
 
-    def _rules_hash(self, project_id):
+    def _rules_hash(self, project_id, software):
+        from fx_agent.learning import applicable_user_rules, rules_fingerprint
+        from fx_agent.production_rules import production_rules
+
         with self.store.connection() as db:
-            rows = db.execute(
-                "SELECT scope,rule_key,MAX(revision) FROM user_rules WHERE scope IN ('global',?) GROUP BY scope,rule_key ORDER BY scope,rule_key",
-                ("project:" + project_id,),
-            ).fetchall()
-        return hashlib.sha256(compact([list(r) for r in rows]).encode()).hexdigest()
+            rules = applicable_user_rules(db, project_id, software)
+        return rules_fingerprint(production_rules(software), rules)
 
     @staticmethod
     def _assets(spec):
@@ -220,7 +251,7 @@ class TaskGates:
             "case_id": "",
         }
         task["assets"] = self._assets(task)
-        task["rules_hash"] = self._rules_hash(task["project_id"])
+        task["rules_hash"] = self._rules_hash(task["project_id"], task["software"])
         with self.store.connection() as db:
             self._write(db, task)
         return self._summary(task)
@@ -252,7 +283,7 @@ class TaskGates:
     def _missing(self, task):
         receipts = list(task["receipts"].values())
         expected, complete, detail_keys = 0, False, set()
-        current_rules_hash = self._rules_hash(task["project_id"])
+        current_rules_hash = self._rules_hash(task["project_id"], task["software"])
         rules = [
             r
             for r in receipts
@@ -413,7 +444,7 @@ class TaskGates:
                 or task["software"] != new_spec["software"]
                 or (task["kind"] != new_spec["kind"] and not quick_tweak_upgrade)
             )
-            current_rules_hash = self._rules_hash(new_spec["project_id"])
+            current_rules_hash = self._rules_hash(new_spec["project_id"], new_spec["software"])
             rules_changed = task.get("rules_hash") and task.get("rules_hash") != current_rules_hash
             # Explicit re-check (identical spec) or scope change clears all receipts;
             # targeted updates preserve unaffected knowledge receipts.
@@ -424,7 +455,7 @@ class TaskGates:
                 kept_receipts = {}
                 for key, receipt in task.get("receipts", {}).items():
                     tool = receipt.get("tool", "")
-                    if tool in {"save_scene", "save_script", "verify_network", "find_broken_reads"}:
+                    if tool in {"save_scene", "save_script", "verify_network", "find_broken_reads", "fx_render_view_start"} or tool in VISUAL_TOOLS[task["software"]]:
                         continue
                     if rules_changed and tool in {"fx_get_production_rules", "fx_get_user_rule"}:
                         continue
@@ -496,7 +527,7 @@ class TaskGates:
                 },
                 revision=task["revision"] + 1,
                 state="ready",
-                rules_hash=self._rules_hash(task["project_id"]),
+                rules_hash=self._rules_hash(task["project_id"], task["software"]),
             )
             self._write(db, task)
         return self._summary(task)
@@ -583,7 +614,7 @@ class TaskGates:
         ):
             raise ValueError("Task target differs from the live software/endpoint/scene")
         if task["assets"] != self._assets(task) or task.get("rules_hash") != self._rules_hash(
-            task["project_id"]
+            task["project_id"], task["software"]
         ):
             raise ValueError("Task environment/rules changed; update task and recheck knowledge")
         if self._missing(task):
@@ -628,6 +659,9 @@ class TaskGates:
             ).fetchall():
                 other = json.loads(row[0])
                 other.update(saved_seq=-1, verified_seq=-1, case_id="")
+                other["receipts"] = {
+                    key: receipt for key, receipt in other["receipts"].items() if "visual" not in receipt and receipt["tool"] != "fx_render_view_start"
+                }
                 if other["state"] == "verified":
                     other["state"] = "ready" if other["plan"] else "needs_knowledge"
                 self._write(db, other)
@@ -663,7 +697,7 @@ class TaskGates:
         value = result if isinstance(result, dict) else {}
         if value.get("action") and value.get("message"):
             return
-        if tool not in EVIDENCE_TOOLS:
+        if tool not in EVIDENCE_TOOLS and not any(tool in tools for tools in VISUAL_TOOLS.values()):
             return
         with self.store.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -685,7 +719,10 @@ class TaskGates:
             if tool == "fx_get_production_rules":
                 if arguments.get("project_id", "") != task["project_id"]:
                     return
-                current_hash = self._rules_hash(task["project_id"])
+                current_hash = self._rules_hash(task["project_id"], task["software"])
+                read_hash = value.get("rules_hash", current_hash)
+                if read_hash != current_hash:
+                    return
                 receipt.update(
                     offset=arguments.get("offset", 0),
                     next_offset=value.get("next_offset", 0),
@@ -743,6 +780,23 @@ class TaskGates:
             ):
                 receipt["sources"] = ["memory:" + arguments["memory_id"]]
                 receipt["source_modules"] = value.get("modules", [])
+            if tool == "fx_render_view_start":
+                if task["software"] != "houdini" or not value.get("token"):
+                    return
+                receipt["render_token"] = value["token"]
+            if tool == "fx_render_view_save" and not any(
+                r["seq"] == task["edit_seq"] and r.get("render_token") == value.get("token")
+                for r in task["receipts"].values()
+                if r.get("render_token")
+            ):
+                return
+            if tool in VISUAL_TOOLS[task["software"]]:
+                images = visual_evidence(tool, value, arguments)
+                if not images:
+                    return
+                receipt["visual"] = images
+            elif tool not in EVIDENCE_TOOLS:
+                return
             questions: list[str] = []
             # Module-wide guides may contain unrelated historical disputes; only surface
             # blocking questions when reading an individual memory.
@@ -785,7 +839,10 @@ class TaskGates:
                 and not value["broken_reads"]
             ):
                 task["verified_seq"] = task["edit_seq"]
-            key = hashlib.sha256(compact([tool, arguments]).encode()).hexdigest()
+            identity = [tool, arguments]
+            if "visual" in receipt:
+                identity.append([(image["path"], image["frame"]) for image in receipt["visual"]])
+            key = hashlib.sha256(compact(identity).encode()).hexdigest()
             if len(task["receipts"]) >= 500 and key not in task["receipts"]:
                 raise ValueError("Task evidence budget reached; split the work into another task")
             task["receipts"][key] = receipt
@@ -812,33 +869,30 @@ class TaskGates:
                 raise ValueError("Unresolved question; ask the user and save the answer")
             if not verification_note.strip():
                 raise ValueError("Actual verification observation is required")
-            if task["kind"] == "quick_tweak":
-                if self._missing(task):
-                    raise ValueError("Task requires production rules check before completion")
-                self.authorize(
-                    task_id,
-                    task["software"],
-                    live_endpoint if live_endpoint is not None else task["endpoint"],
-                    live_scene_path if live_scene_path is not None else task["scene_path"],
-                    live_scene_context,
-                )
-                if task["saved_seq"] != task["edit_seq"]:
-                    raise ValueError("Current scene must be saved after the last edit")
-            else:
-                if not task["plan"] or self._missing(task):
-                    raise ValueError("Task needs a plan backed by current knowledge before completion")
-                if task["kind"] == "production":
-                    self.authorize(
-                        task_id,
-                        task["software"],
-                        live_endpoint if live_endpoint is not None else task["endpoint"],
-                        live_scene_path if live_scene_path is not None else task["scene_path"],
-                        live_scene_context,
-                    )
-                    if task["saved_seq"] != task["edit_seq"]:
-                        raise ValueError("Current scene must be saved after the last edit")
-                    if task["verified_seq"] != task["edit_seq"]:
-                        raise ValueError("Current scene requires actual structural verification")
+            if task["kind"] == "production" and not task["plan"]:
+                raise ValueError("Task needs a plan backed by current knowledge before completion")
+            self.authorize(
+                task_id,
+                task["software"],
+                live_endpoint if live_endpoint is not None else task["endpoint"],
+                live_scene_path if live_scene_path is not None else task["scene_path"],
+                live_scene_context,
+            )
+            if task["saved_seq"] != task["edit_seq"]:
+                raise ValueError("Current scene must be saved after the last edit")
+            if task["verified_seq"] != task["edit_seq"]:
+                raise ValueError("Current scene requires actual structural verification")
+            images = []
+            for receipt in task["receipts"].values():
+                if receipt["seq"] != task["edit_seq"]:
+                    continue
+                for image in receipt.get("visual", []):
+                    with suppress(OSError, ValueError):
+                        stat = Path(image["path"]).stat()
+                        if (stat.st_size, stat.st_mtime_ns) == (image["size"], image["modified"]):
+                            images.append(image)
+            if not images:
+                raise ValueError("Current scene requires a task-scoped preview image after the last edit")
             with self.store.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = self._read(db, task_id)
@@ -848,6 +902,7 @@ class TaskGates:
                     revision=current["revision"] + 1,
                     case_id=case_id,
                     verification_note=verification_note,
+                    reviewed_previews=images,
                 )
                 self._write(db, current)
         return self._summary(current)
@@ -874,7 +929,7 @@ def check_knowledge_gate(
             "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
         )
     task = gates.get(task_id, True)
-    if task["state"] != "verified" or task["kind"] != "production":
+    if task["state"] != "verified" or task["kind"] != "production" or not task.get("reviewed_previews"):
         raise ValueError(
             "Successful learning requires a verified production task and user acceptance"
         )

@@ -1,5 +1,6 @@
 """Dialogue rules, revisioned correction traces and reversible memory consolidation."""
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -14,6 +15,42 @@ from fx_agent.production_rules import production_rules
 from fx_agent.store import Identifier, compact, scope_id
 
 
+def rule_software(rule: dict) -> str:
+    """Resolve known legacy rules without rewriting their revision history."""
+    if "software" in rule:
+        return rule["software"]
+    key = rule["rule_key"]
+    prefix = key.split("-", 1)[0]
+    if prefix in {"houdini", "nuke", "maya"}:
+        return prefix
+    if key in {"abc-first-production-matching", "editable-fx-controls-no-hardcoded-shapes",
+               "study-rendering-and-rim-materials"}:
+        return "houdini"
+    if key == "compositing-shot-language-visual-design-review":
+        return "nuke"
+    return "all"
+
+
+def applicable_user_rules(db, project_id: str, software: str) -> list[dict]:
+    rows = db.execute(
+        "SELECT r.payload FROM user_rules r JOIN "
+        "(SELECT scope,rule_key,MAX(revision) AS rev FROM user_rules "
+        "WHERE scope IN ('global',?) GROUP BY scope,rule_key) x "
+        "ON r.scope=x.scope AND r.rule_key=x.rule_key AND r.revision=x.rev "
+        "ORDER BY r.scope,r.rule_key",
+        ("project:" + project_id if project_id else "",),
+    )
+    return [
+        rule | {"software": target}
+        for row in rows
+        if (target := rule_software(rule := json.loads(row[0]))) in {"all", software}
+    ]
+
+
+def rules_fingerprint(fixed_rules: dict, rules: list[dict]) -> str:
+    return hashlib.sha256(compact([fixed_rules, rules]).encode()).hexdigest()
+
+
 class UserRule(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     rule_key: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
@@ -23,6 +60,7 @@ class UserRule(BaseModel):
     source_ref: str = Field(min_length=1, max_length=512)
     scope: Literal["global", "project"] = "global"
     project_id: str = ""
+    software: Literal["all", "houdini", "nuke", "maya"] = "all"
     expected_revision: int = Field(ge=0)
 
 
@@ -70,13 +108,19 @@ class LearningStore(MemoryStore):
             scope = "global"
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            current = db.execute(
-                "SELECT COALESCE(MAX(revision),0) FROM user_rules WHERE scope=? AND rule_key=?",
+            previous = db.execute(
+                "SELECT revision,payload FROM user_rules WHERE scope=? AND rule_key=? "
+                "ORDER BY revision DESC LIMIT 1",
                 (scope, request.rule_key),
-            ).fetchone()[0]
+            ).fetchone()
+            current = previous["revision"] if previous else 0
             if current != request.expected_revision:
                 raise ValueError(f"Rule revision conflict: current {current}")
+            software = request.software
+            if "software" not in request.model_fields_set:
+                software = rule_software(json.loads(previous["payload"]) if previous else values)
             record = request.model_dump(exclude={"expected_revision"}) | {
+                "software": software,
                 "revision": current + 1,
                 "created_at": datetime.now(UTC).isoformat(),
             }
@@ -92,35 +136,28 @@ class LearningStore(MemoryStore):
         max_chars: int = 6000,
         offset: int = 0,
         software: str = "houdini",
+        *,
+        include_provenance: bool = True,
     ) -> dict:
         if not 1024 <= max_chars <= 12000 or offset < 0:
             raise ValueError("max_chars must be 1024..12000")
-        scope = "project:" + scope_id.validate_python(project_id) if project_id else ""
+        if project_id:
+            scope_id.validate_python(project_id)
         with self.connection() as db:
-            rows = db.execute(
-                "SELECT r.payload FROM user_rules r JOIN (SELECT scope,rule_key,MAX(revision) AS rev FROM user_rules WHERE scope IN ('global',?) GROUP BY scope,rule_key) x ON r.scope=x.scope AND r.rule_key=x.rule_key AND r.revision=x.rev ORDER BY r.scope,r.rule_key",
-                (scope,),
-            ).fetchall()
-        result = production_rules(software) | {
+            rows = applicable_user_rules(db, project_id, software)
+        fixed_rules = production_rules(software)
+        result = fixed_rules | {
+            "rules_hash": rules_fingerprint(fixed_rules, rows),
             "user_rules": [],
             "omitted_rules": max(0, len(rows) - offset),
             "budget_unit": "json_characters",
             "next_offset": offset,
         }
-        for index, row in enumerate(rows[offset:], start=offset):
-            rule = json.loads(row["payload"])
-            card = {
-                key: rule[key]
-                for key in (
-                    "rule_key",
-                    "title",
-                    "statement",
-                    "scope",
-                    "revision",
-                    "user_quote",
-                    "source_ref",
-                )
-            }
+        fields = ("rule_key", "title", "statement", "scope", "revision", "software")
+        if include_provenance:
+            fields += ("user_quote", "source_ref")
+        for index, rule in enumerate(rows[offset:], start=offset):
+            card = {key: rule[key] for key in fields}
             result["user_rules"].append(card)
             previous_offset = result["next_offset"]
             result["next_offset"] = index + 1
@@ -150,7 +187,8 @@ class LearningStore(MemoryStore):
             ).fetchone()
         if row is None:
             raise ValueError("Rule not found in this scope")
-        return json.loads(row["payload"])
+        rule = json.loads(row["payload"])
+        return rule | {"software": rule_software(rule)}
 
     def get_feedback(self, feedback_id: str, project_id: str) -> dict:
         with self.connection() as db:

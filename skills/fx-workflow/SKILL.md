@@ -21,7 +21,7 @@ description: 使用 FX Agent 操作 Houdini，读取纯文本规范与模块经�
      - **同场景局部调参 / 排查**：`kind="quick_tweak"`（保留端口锁、场景路径锁与 `$HIP`/File Cache 护栏，禁重型构建且上限 15 次编辑；需扩展时用 `fx_update_task` 升级 `production`）。
 
 2. **收集纯文本知识与检索模板（优先 `fx_prepare_task_brief`）**
-   - **优先调用 `fx_prepare_task_brief(task_id=...)`**：一次聚合读取 `production_rules`（自动展开 `detail_required`）、`context`、所选模块的纯文本手册 `module_knowledge`、`memory_matches`（含 `reference_hint` 自动补查），以及 Houdini 必需的 `get_workflow_guide("discipline")` 和模块上游指南，并自动记齐门禁凭据。
+   - **优先调用 `fx_prepare_task_brief(task_id=...)`**：一次聚合读取 `production_rules`（自动展开 `detail_required`）、`context`、所选模块的纯文本手册 `module_knowledge`、`memory_matches`（含 `reference_hint` 自动补查），以及 Houdini 必需的 `get_workflow_guide("discipline")` 和模块上游指南，并记录已返回的门禁凭据。根据 `deferred_reads`、`task_state.missing` 和 `next_offset` 补读。
    - 需要展开全文时携带同一 `fx_task_id` 调用 `fx_get_memory` / `fx_get_user_rule`。
    - 需要复用现成效果工程时，直接调用 `fx_search_published_templates` 检索外部特效模板库。
 
@@ -36,7 +36,7 @@ description: 使用 FX Agent 操作 Houdini，读取纯文本规范与模块经�
    - 查证后仍不理解时，调用 `fx_task_question` 登记具体问题并在对话中向用户提问，仅用真实答复解除。
 
 5. **验证、视觉审片与完成（`fx_finish_task`，免工程归档）**
-   - 修改后携带 `fx_task_id` 执行 `verify_network`；保存真实 HIP；实际查看多时间点截图或 Render View 预览，**并按配套 `fx-visual-critique`（及其 `references/houdini_fx_critique.md`）做结构化审片**（大中小尺度、剪影、密度梯度与动态节奏）。
+   - 修改后携带 `fx_task_id` 执行 `verify_network`；保存真实 HIP；使用同一 `fx_task_id` 获取并实际查看当前截图或 Render View 预览，动态效果检查多个时间点，**并按配套 `fx-visual-critique`（及其 `references/houdini_fx_critique.md`）做结构化审片**（大中小尺度、剪影、密度梯度与动态节奏）。
    - **无需归档工程或预览到 `data/`**；直接调用 `fx_finish_task` 提交当前 `revision` 和真实 `verification_note`（须包含审片观察结论，`case_id` 留空）。`fx_save_checkpoint` 仅用于记录阶段进度，不替代保存。
 
 6. **纯文本经验回写（配套 `fx-learning`）**

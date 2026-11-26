@@ -15,6 +15,7 @@ from fx_agent.nuke_sessions import list_sessions
 from fx_agent.nuke_viewer_tools import register as register_viewer_tools
 from fx_agent.task_tools import install_task_gates
 from fx_agent.tool_profiles import apply_tool_profile
+from fx_agent.workflow import HOST_STARTUP_INSTRUCTIONS
 
 
 class SerializedConnection:
@@ -115,7 +116,7 @@ def build_server(connection: SerializedConnection, handshake: dict | None = None
         )
     mcp = FastMCP(
         "FXNuke",
-        instructions="由当前宿主助手操作。先读真实工程，制作经验使用FX Agent纯文本共享记忆工具并指定software=nuke，不保存工程或贴图；素材问题通过渲染问题单反馈Houdini。用 fx_get_module_catalog 识别补光、分层、色彩等实际模块，按条写入对应经验手册。",
+        instructions=HOST_STARTUP_INSTRUCTIONS + "通过 fx-agent 读取工作流和共享经验，指定 software=nuke。素材问题可登记渲染问题单。",
     )
     state = SimpleNamespace(mcp=mcp, connection=connection, version=version, event_log=None)
     for module in (graph, script, comp, render, batch):

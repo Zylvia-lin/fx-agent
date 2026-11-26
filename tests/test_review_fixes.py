@@ -457,7 +457,15 @@ async def test_prepare_task_brief_auto_paginates_all_production_rules(tmp_path, 
             modules=["particles"],
         )
     )
-    brief = await fx_prepare_task_brief(task["task_id"], max_chars=6000)
+    from fx_agent.store import compact
+
+    tid = task["task_id"]
+    brief = await fx_prepare_task_brief(tid, max_chars=2048)
+    assert len(compact(brief)) <= 2048
+    assert "rules" in brief["task_state"]["missing"]
+    assert "fx_get_production_rules" in brief["deferred_reads"]
+    brief = await fx_prepare_task_brief(tid, max_chars=16000)
+    assert len(compact(brief)) <= 16000
     assert brief["production_rules"]["omitted_rules"] == 0
     assert len(brief["production_rules"]["user_rules"]) == 25
     assert "rules" not in brief["task_state"]["missing"]

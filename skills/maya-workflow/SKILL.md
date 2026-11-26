@@ -29,7 +29,7 @@ description: 使用 fx-maya 在指定 Maya 会话中完成 Arnold/Redshift 灯�
    - **灯光检查与编辑**：`list_maya_lights` / `inspect_maya_light` 获取真实节点类型与可读属性（使用完整 DAG 路径）；`create_maya_light` / `update_maya_light` 保留各渲染器原生参数单位。
    - **HDRI 绑定**：`set_maya_hdri` 仅接受已存在的绝对路径，先核对色彩空间名称。
    - **照明连接**：`set_maya_light_link` 修改后核对返回的实际连接并渲染确认。
-   - **单帧渲染与视觉审片**：`render_maya_frame` 输出单帧，仅认可返回的非空图像文件，并**按配套 `fx-visual-critique`（及其 `references/maya_lighting_critique.md`）做灯光审片**（黑白灰层级、Key/Fill/Rim 光比、冷暖色温对比、接触阴影与材质高光粗糙度）。
+   - **单帧渲染与视觉审片**：携带同一 `fx_task_id` 调用 `render_maya_frame` 输出单帧，仅认可返回的非空图像文件，并**按配套 `fx-visual-critique`（及其 `references/maya_lighting_critique.md`）做灯光审片**（黑白灰层级、Key/Fill/Rim 光比、冷暖色温对比、接触阴影与材质高光粗糙度）。
    - **断连与超时**：超时或断连后禁止自动重试；先检查现场，重新连接后用 `get_maya_render_status` 查询 `job_id`。
    - **Python 兜底**：`execute_maya_python` 仅作最后手段，不可绕过门禁。
 4. **保存、校验与纯文本学习（免工程归档）**

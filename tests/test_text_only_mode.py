@@ -101,12 +101,12 @@ def test_text_only_experience_admission_hygiene_and_auto_guide_sync(tmp_path):
         method="核对 /obj 内 HDA 的 displayNode 与 renderNode，将最终输出同时设双旗标并用 $HIP/geo/$OS/$OS.$F4.bgeo.sc 写盘验证。",
         reason="ROP 默认读取 Render 旗标而非 Display 旗标。",
         applies_when="SOP HDA 视口与缓存输出不一致时",
-        source_type="observed",
+        source_type="user",
         source_ref="现场核验通过",
     )
     assert admitted["decision"] == "admitted"
     assert admitted["status"] == "active"
-    assert admitted["evidence_status"] == "live_verified_text"
+    assert admitted["evidence_status"] == "user_reported"
     assert admitted["module_guides"]["state"] == "updated"
 
     # Module Markdown guide is automatically updated with clean source line (no empty feedback=/case=).
@@ -134,7 +134,7 @@ def test_text_only_experience_admission_hygiene_and_auto_guide_sync(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_text_only_production_task_and_learning_without_case_archive(tmp_path, monkeypatch):
+async def test_text_only_production_task_and_learning_without_case_archive(tmp_path, monkeypatch, record_preview):
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
     scene = tmp_path / "demo_v01.hip"
     scene.write_text("synthetic hip", encoding="utf-8")
@@ -172,6 +172,8 @@ async def test_text_only_production_task_and_learning_without_case_archive(tmp_p
     gates.edit(tid)
     gates.observe(tid, "save_scene", {}, {"saved": True})
     gates.observe(tid, "verify_network", {}, {"healthy": True})
+    for frame in (101, 125, 150):
+        record_preview(gates, tid, frame)
     finished = gates.finish(tid, planned["revision"], "", "已查看 101/125/150 三帧，光丝层次清晰")
     assert finished["state"] == "verified"
     assert finished["case_id"] == ""
@@ -260,13 +262,14 @@ async def test_prepare_task_brief_small_budget_four_modules_and_content_trimming
             modules=["sop", "particles", "pyro", "materials"],
         )
     )
-    # Previously crashed with ValueError for max_chars < 6144 and for 4 modules (1000 < 1024).
-    brief = await fx_prepare_task_brief(task_id=task["task_id"], max_chars=2048)
-    assert set(brief["module_knowledge"]) == {"sop", "particles", "pyro", "materials"}
-    assert any(
-        entry.get("brief_trimmed") and len(entry["content"]) <= 400
-        for entry in brief["module_knowledge"].values()
-    )
+    from fx_agent.store import compact
+
+    tid = task["task_id"]
+    brief = await fx_prepare_task_brief(task_id=tid, max_chars=2048)
+    assert len(compact(brief)) <= 2048
+    assert "fx_get_module_knowledge" in brief["deferred_reads"]
+    for mod in {"sop", "particles", "pyro", "materials"} - set(brief.get("module_knowledge", {})):
+        assert f"module:{mod}" in brief["task_state"]["missing"]
 
 
 @pytest.mark.asyncio

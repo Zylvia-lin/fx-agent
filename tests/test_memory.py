@@ -88,11 +88,11 @@ def test_non_reusable_output_is_rejected_without_inserting(tmp_path):
     assert store.search("广告A", "逆光", include_candidates=True)["items"] == []
 
 
-def test_observed_and_user_text_experiences_admit_directly_and_reject_absolute_paths(tmp_path):
+def test_unverified_observations_are_candidates_and_absolute_paths_are_rejected(tmp_path):
     store = memories(tmp_path)
     observed = store.submit(**experience(source_type="observed", project_dependent=True))
-    assert observed["decision"] == "admitted"
-    assert observed["evidence_status"] == "live_verified_text"
+    assert observed["decision"] == "candidate"
+    assert observed["evidence_status"] == "unverified"
     record = store.get(observed["memory_id"], "广告A")
     assert record["visual_verified"] is False
     assert record["reproduction_status"] == "not_tested"
@@ -270,3 +270,18 @@ async def test_memory_tools_return_summary_then_expand_on_request(tmp_path, monk
         "fx_get_memory", {"project_id": "广告A", "memory_id": memory_id}
     )
     assert json.loads(result[0].text)["reason"] == experience()["reason"]
+
+
+def test_natural_language_search_falls_back_within_dcc_and_module(tmp_path):
+    store = memories(tmp_path)
+    lesson = dict(
+        software="nuke", modules=["general"], title="Nuke 多窗口切换",
+        method="核对窗口工程路径再连接", reason="避免切错窗口", applies_when="存在三个窗口",
+        source_type="user",
+    )
+    saved = store.submit(**experience(**lesson))
+    store.submit(**experience(**(lesson | {"modules": ["color"]})))
+    query = "Nuke 里开了三个工程 想切到正确的窗口"
+    matches = store.search(query=query, software="nuke", module="general")["items"]
+    assert [item["memory_id"] for item in matches] == [saved["memory_id"]]
+    assert store.search(query=query, software="houdini")["items"] == []

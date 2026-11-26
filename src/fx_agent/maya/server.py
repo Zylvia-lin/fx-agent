@@ -16,6 +16,7 @@ from fx_agent.maya.launcher import start_maya as launch_maya
 from fx_agent.task_tools import GATE_TOOLS, install_task_gates
 from fx_agent.tool_profiles import apply_tool_profile
 from fx_agent.vfx_catalog import fx_search_published_templates
+from fx_agent.workflow import HOST_STARTUP_INSTRUCTIONS
 
 Renderer = Literal["arnold", "redshift"]
 
@@ -42,7 +43,10 @@ def register_shared_tools(mcp):
 
 def build_server(connection=None, ports=DEFAULT_PORTS):
     connection = connection or MayaConnection()
-    mcp = FastMCP("fx-maya", instructions="由当前宿主操作。显式选择Maya会话；读取真实灯光与渲染器状态。共用FX纯文本知识库，指定software=maya，只沉淀可复用的纯文本经验，不保存工程或贴图。修改前完成任务登记、知识读取与计划；超时后检查场景，不自动重试。用 fx_get_module_catalog 识别建模、动画、绑定、灯光等实际模块，按条写入对应经验手册。")
+    mcp = FastMCP(
+        "fx-maya",
+        instructions=HOST_STARTUP_INSTRUCTIONS + "显式选择 Maya 会话。超时先查现场，再决定后续动作。",
+    )
     register_shared_tools(mcp)
 
     @mcp.tool()

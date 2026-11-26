@@ -187,7 +187,7 @@ def _image_size(path):
 
 
 def capture_viewer(params):
-    _, viewer = _viewer(params["viewer_name"])
+    nuke, viewer = _viewer(params["viewer_name"])
     value = params.get("output_path")
     path = value or os.path.join(_capture_directory(), '{}-{}.jpg'.format(os.getpid(), uuid.uuid4().hex))
     if not os.path.isabs(path) or os.path.splitext(path)[1].lower() != ".jpg":
@@ -202,7 +202,10 @@ def capture_viewer(params):
         remove_file(path)
         raise
     result = get_viewer_state(params)["result"]
-    result.update({"path": path, "dimensions": dimensions,
+    frame = result["settings"].get("frame")
+    if frame is None and callable(getattr(nuke, "frame", None)):
+        frame = nuke.frame()
+    result.update({"path": path, "dimensions": dimensions, "frame": frame,
                    "capture_method": "nuke.Viewer.capture",
                    "render_complete": "not_guaranteed"})
     return {"status": "ok", "result": result}

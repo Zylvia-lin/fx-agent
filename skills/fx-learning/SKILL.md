@@ -22,7 +22,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 
 1. 区分长期规范与仅当前镜头的临时调整；只有明确要求才入规范库。
 2. 先读 `fx_get_production_rules`（有 `omitted_rules` 按 `next_offset` 翻页，`detail_required` 用 `fx_get_user_rule` 展开）。
-3. 调用 `fx_record_user_rule` 保存精炼规则、真实 `user_quote`、来源、作用域（默认 `global`）及 `expected_revision`。
+3. 调用 `fx_record_user_rule` 保存精炼规则、真实 `user_quote`、来源、作用域（默认 `global`）、适用软件（`all` / `houdini` / `nuke` / `maya`）及 `expected_revision`。
 4. 不覆盖更晚要求，不把模型建议伪装成用户原话。
 
 ## 2. 排错解决或现场验证出通用工艺（Recipe / Pitfall）
@@ -41,8 +41,8 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 1. 调用 `fx_submit_experience`（默认 `project_dependent=False`、`project_id="__global__"`、`case_id=""`、`reuse_scope="global"`）：
    - 明确填写 `software`（`houdini` / `nuke` / `maya`）与 `modules`（从 `fx_get_module_catalog` 选择 1–4 个，不用 `unclassified`）。
    - 选对 `kind`：`workflow`（通用工艺配方）、`troubleshooting`（排错避坑）、`compositing` / `lighting` / `render`（视觉平衡与管线策略）、`preference`（操作偏好）。
-   - 如实标注 `source_type`：用户明确提出用 `user`，现场实测验证用 `observed`（直接进入 `active` 并刷新本机模块手册），未经实测的推测用 `inferred`（保持 `candidate`，供待验证时查阅）。
-2. 检查返回的 `module_guides.state`，如出现 `pending_rebuild` 须报告并调用 `fx_refresh_module_guides` 修复。
+   - 如实标注 `source_type`：用户明确提出用 `user`，现场观察用 `observed`。带同一已验收任务的 `fx_task_id` 才标记为现场验证并刷新模块手册，其余观察与 `inferred` 推测先进入 `candidate`。同一观察可在任务验收后补交凭据。
+2. 正式入库后检查返回的 `module_guides.state`，如出现 `pending_rebuild` 须报告并调用 `fx_refresh_module_guides` 修复。
 
 ## 3. 制作过程中的纠错轨迹与最终确认
 

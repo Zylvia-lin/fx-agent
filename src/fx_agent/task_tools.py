@@ -4,10 +4,13 @@ import asyncio
 import copy
 from contextlib import nullcontext
 
+from fx_agent.data_api import brief_task_state
 from fx_agent.modules import HOUDINI, require_classified_modules
+from fx_agent.store import compact
 from fx_agent.task_gates import (
     HEAVY_BUILD_TOOLS,
     QUICK_TWEAK_MAX_EDITS,
+    VISUAL_TOOLS,
     SourceAdaptation,
     TaskGates,
     TaskSpec,
@@ -34,6 +37,7 @@ RENDER_VIEW_WRITES = {
 }
 # Preview renders read the current scene and write preview artifacts without mutating nodes.
 PREVIEW_JOBS = {
+    "render_maya_frame",
     "render_viewport",
     "render_quad_view",
     "render_sheet",
@@ -47,7 +51,6 @@ JOBS = {
     "cook_frame_range",
     "cook_top_node",
     "start_render",
-    "render_maya_frame",
     "render_frames",
 } | PREVIEW_JOBS
 # These alter inspection/session state, not production nodes. Cancellation must stay available.
@@ -194,6 +197,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
         """Verify current save and structural check for the target scene.
 
         No project file archive is required in text-only mode (case_id is optional).
+        Capture a current preview with fx_task_id before finishing. The
         verification_note must describe actually viewed results; user acceptance
         remains a separate requirement.
         """
@@ -235,6 +239,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
             if (
                 software == "houdini"
                 and isinstance(result, dict)
+                and result.get("software") == "houdini"
                 and result.get("kind") != "quick_tweak"
                 and manager.get_tool("get_workflow_guide") is not None
             ):
@@ -243,11 +248,12 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     {
                         HOUDINI[m][1]
                         for m in result.get("modules", [])
-                        if m in HOUDINI and HOUDINI[m][1]
+                        if m in HOUDINI and HOUDINI[m][1] not in {None, "", "discipline"}
                     }
                 )
                 guides_out: dict[str, str] = {}
                 gates = TaskGates(root_provider())
+                budget = arguments.get("max_chars", 16000)
                 for topic in topics:
                     guide_val = await original(
                         "get_workflow_guide",
@@ -255,19 +261,17 @@ def install_task_gates(mcp, software, root_provider, live_target):
                         context=context,
                         convert_result=False,
                     )
-                    await asyncio.to_thread(
-                        gates.observe,
-                        brief_task_id,
-                        "get_workflow_guide",
-                        {"topic": topic},
-                        guide_val,
-                    )
                     text = guide_val if isinstance(guide_val, str) else str(guide_val)
-                    guides_out[topic] = text[:1200]
-                result = result | {
-                    "workflow_guides": guides_out,
-                    "task_state": await asyncio.to_thread(gates.get, brief_task_id),
-                }
+                    candidate = guides_out | {topic: text}
+                    if len(compact(result | {"workflow_guides": candidate})) > budget - 60:
+                        continue
+                    await asyncio.to_thread(
+                        gates.observe, brief_task_id, "get_workflow_guide", {"topic": topic}, guide_val
+                    )
+                    guides_out[topic] = text
+                if guides_out:
+                    result["workflow_guides"] = guides_out
+                result["task_state"] = await asyncio.to_thread(brief_task_state, gates, brief_task_id)
             if convert_result:
                 result = manager.get_tool(name).fn_metadata.convert_result(result)
             return result
@@ -292,7 +296,8 @@ def install_task_gates(mcp, software, root_provider, live_target):
         task = await asyncio.to_thread(gates.get, task_id, True)
         # Only serialize exclusive endpoint mutations (scene writes, verifications, knowledge/finalization writes);
         # read-only evidence lookups do not block behind a running render/cook.
-        needs_lock = required or name in {"verify_network", "find_broken_reads"}
+        visual = name in VISUAL_TOOLS[software]
+        needs_lock = required or visual or name in {"verify_network", "find_broken_reads"}
         lock_ctx = endpoint_lock(gates.root, task["endpoint"]) if needs_lock else nullcontext()
         with lock_ctx:
             if needs_lock and (await asyncio.to_thread(gates.get, task_id, True))["endpoint"] != task["endpoint"]:
@@ -346,8 +351,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
                         saved=name in SAVES,
                         verified=name in JOBS and name not in PREVIEW_JOBS,
                     )
-            elif name in {"verify_network", "find_broken_reads"}:
-                await asyncio.to_thread(gates.invalidate, task_id, verified=True)
+            elif visual or name in {"verify_network", "find_broken_reads"}:
                 target = await live_target(context)
                 if (
                     task["software"] != software
@@ -357,6 +361,8 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     raise ValueError(
                         "Verification target differs from task; omit fx_task_id for unrelated read-only investigation"
                     )
+                if not visual:
+                    await asyncio.to_thread(gates.invalidate, task_id, verified=True)
             elif name == "fx_finalize_learning" or acceptance:
                 await asyncio.to_thread(
                     check_knowledge_gate,
@@ -365,7 +371,16 @@ def install_task_gates(mcp, software, root_provider, live_target):
                     tool_name=name,
                     arguments=arguments,
                 )
-            result = await original(name, arguments, context=context, convert_result=False)
+            viewport_capture = software == "houdini" and name in {"capture_screenshot", "render_viewport"}
+            before = None
+            if viewport_capture:
+                before = await original("get_frame", {}, context=context, convert_result=False)
+            call_args = arguments | {"fx_task_id": task_id} if name == "fx_submit_experience" else arguments
+            result = await original(name, call_args, context=context, convert_result=False)
+            if viewport_capture and isinstance(result, dict):
+                after = await original("get_frame", {}, context=context, convert_result=False)
+                frame = after.get("frame") if isinstance(after, dict) and before == after else None
+                result = result | {"frame": frame}
             await asyncio.to_thread(gates.observe, task_id, name, arguments, result)
             if isinstance(result, dict):
                 open_questions = [

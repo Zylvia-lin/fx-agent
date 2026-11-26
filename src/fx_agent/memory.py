@@ -30,6 +30,15 @@ def validate_text_only_hygiene(*fields: str) -> None:
             )
 
 
+def evidence_status(record: dict) -> str:
+    status = record.get("evidence_status", "unverified")
+    if status == "live_verified_text" and not (
+        record.get("verified_task_id") or record.get("origin_feedback_id")
+    ):
+        return "legacy_observation"
+    return status
+
+
 class Experience(BaseModel):
     """Codex supplies provenance and decision rationale at a production milestone."""
 
@@ -71,7 +80,7 @@ class MemoryStore(Store):
 
     def submit(
         self, *, _db: Connection | None = None, _origin_feedback_id: str = "",
-        _shared: bool = False, **values
+        _shared: bool = False, _task_id: str = "", **values
     ) -> dict:
         """Return an explainable admission decision and retain provenance."""
         request = Experience(**values)
@@ -89,9 +98,9 @@ class MemoryStore(Store):
             evidence = "user_reported"
             reason = "explicit_user_statement"
         elif request.source_type == "observed":
-            status = "active"
-            evidence = "live_verified_text"
-            reason = "observed_text_experience"
+            reason = "observation_requires_verified_task"
+            if _origin_feedback_id:
+                status, evidence, reason = "active", "live_verified_text", "accepted_feedback"
         if request.supersedes and (request.source_type != "user" or status != "active"):
             raise ValueError("Only an admitted explicit user correction can supersede a memory")
 
@@ -108,11 +117,30 @@ class MemoryStore(Store):
         with self.connection() if _db is None else nullcontext(_db) as db:
             if _db is None:
                 db.execute("BEGIN IMMEDIATE")
+            if _task_id and request.source_type == "observed":
+                row = db.execute("SELECT payload FROM task_gates WHERE task_id=?", (_task_id,)).fetchone()
+                task = json.loads(row[0]) if row else {}
+                if (
+                    task.get("state") != "verified"
+                    or task.get("software") != request.software
+                    or request.project_id not in {"__global__", task.get("project_id")}
+                    or (request.shot_id and request.shot_id != task.get("shot_id"))
+                    or not task.get("reviewed_previews")
+                ):
+                    raise ValueError("Observed experience requires a verified task in the same scope")
+                status, evidence, reason = "active", "live_verified_text", "verified_task_observation"
             duplicate = db.execute(
-                "SELECT memory_id,status FROM memories WHERE project_id=? AND content_hash=?",
+                "SELECT memory_id,status,payload FROM memories WHERE project_id=? AND content_hash=?",
                 (request.project_id, digest),
             ).fetchone()
-            if duplicate:
+            previous_record = json.loads(duplicate["payload"]) if duplicate else {}
+            attach_evidence = (
+                _task_id and status == "active" and duplicate
+                and (duplicate["status"] == "candidate" or (
+                    duplicate["status"] == "active" and evidence_status(previous_record) == "legacy_observation"
+                ))
+            )
+            if duplicate and not attach_evidence:
                 return {
                     "decision": "duplicate",
                     "memory_id": duplicate["memory_id"],
@@ -140,7 +168,7 @@ class MemoryStore(Store):
                     old.get(key) == value for key, value in content.items() if key != "supersedes"
                 ):
                     raise ValueError("Correction must contain a new, distinct replacement")
-            memory_id = uuid.uuid4().hex
+            memory_id = duplicate["memory_id"] if duplicate else uuid.uuid4().hex
             record = request.model_dump() | {
                 "memory_id": memory_id,
                 "created_at": datetime.now(UTC).isoformat(),
@@ -150,6 +178,11 @@ class MemoryStore(Store):
             }
             if _origin_feedback_id:
                 record["origin_feedback_id"] = _origin_feedback_id
+            if _task_id and request.source_type == "observed":
+                record["verified_task_id"] = _task_id
+                record["verified_task_revision"] = task["revision"]
+            if duplicate:
+                record["created_at"] = previous_record["created_at"]
             search_text = " ".join(
                 [
                     request.title,
@@ -161,7 +194,8 @@ class MemoryStore(Store):
                 ]
             ).casefold()
             db.execute(
-                "INSERT INTO memories VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO memories VALUES (?,?,?,?,?,?,?) ON CONFLICT(memory_id) "
+                "DO UPDATE SET status=excluded.status,payload=excluded.payload",
                 (
                     memory_id,
                     request.project_id,
@@ -209,6 +243,7 @@ class MemoryStore(Store):
             result = json.loads(row["payload"]) | {"status": row["status"]}
             result.setdefault("software", "houdini")
             result.setdefault("modules", ["unclassified"])
+            result["evidence_status"] = evidence_status(result)
             reuse_scope = result.get("reuse_scope", "shot" if row["shot_id"] else "global")
             if project_id and reuse_scope == "shot" and row["project_id"] != project_id:
                 raise ValueError("Memory does not belong to the requested project or does not exist")
@@ -320,38 +355,33 @@ class MemoryStore(Store):
                 + " ORDER BY rowid DESC",
                 [*base_params, *tokens],
             ).fetchall()
-            # CJK bigram fallback when an unspaced Chinese phrase misses literal instr().
-            if not rows and tokens and any(
-                any("\u4e00" <= ch <= "\u9fff" for ch in tok) and len(tok) >= 3 for tok in tokens
-            ):
-                candidates = db.execute(
-                    f"SELECT rowid,payload,status,search_text,{conflict_expr} FROM memories WHERE "
-                    + " AND ".join(clauses)
-                    + " ORDER BY rowid DESC LIMIT 200",
-                    base_params,
-                ).fetchall()
-                matched = []
-                for row in candidates:
-                    text = row["search_text"]
-                    all_ok = True
-                    score = 0.0
-                    for tok in tokens:
-                        if tok in text:
-                            score += 2.0
-                            continue
-                        cjk = [ch for ch in tok if "\u4e00" <= ch <= "\u9fff"]
-                        if len(cjk) >= 3:
-                            bigrams = ["".join(cjk[i : i + 2]) for i in range(len(cjk) - 1)]
-                            hits = sum(1 for bg in bigrams if bg in text)
-                            if hits / len(bigrams) >= 0.75:
-                                score += hits / len(bigrams)
-                                continue
-                        all_ok = False
-                        break
-                    if all_ok:
-                        matched.append((score, row["rowid"], row))
-                matched.sort(key=lambda item: (item[0], item[1]), reverse=True)
-                rows = [item[2] for item in matched]
+            # Relax to scoped keyword and CJK bigram matches when the full query misses.
+            fallback_scores = {}
+            if not rows and tokens:
+                words = set(re.findall(r"[a-z0-9_]{3,}", query.casefold())) - {
+                    "houdini", "nuke", "maya",
+                }
+                bigrams = set(
+                    re.findall(r"(?=([一-鿿]{2}))", query)
+                )
+                if words or bigrams:
+                    candidates = db.execute(
+                        f"SELECT rowid,payload,status,search_text,{conflict_expr} FROM memories WHERE "
+                        + " AND ".join(clauses)
+                        + " ORDER BY rowid DESC LIMIT 200",
+                        base_params,
+                    ).fetchall()
+                    for row in candidates:
+                        title = json.loads(row["payload"]).get("title", "").casefold()
+                        content = row["search_text"]
+                        word_hits = {term for term in words if term in content}
+                        bigram_hits = {term for term in bigrams if term in content}
+                        # A lone common pair is weak evidence for a short, otherwise exact query.
+                        minimum = 2 if len(tokens) == 1 and 3 <= len(bigrams) <= 5 else 1
+                        if word_hits or len(bigram_hits) >= minimum:
+                            score = sum(5 if term in title else 1 for term in word_hits | bigram_hits)
+                            fallback_scores[row["rowid"]] = score
+                            rows.append(row)
             # Optional hybrid semantic search when an embedding provider is configured.
             from fx_agent.embeddings import embedding_enabled, semantic_scores
 
@@ -406,7 +436,7 @@ class MemoryStore(Store):
                         score += 2
                     if tok in method:
                         score += 1
-                lex_scores.append(score)
+                lex_scores.append(score + fallback_scores.get(row["rowid"], 0))
             max_lex = max(lex_scores, default=0)
             ranked = []
             for row, lex, mid in zip(rows, lex_scores, parsed_ids, strict=True):
@@ -423,6 +453,7 @@ class MemoryStore(Store):
             record = json.loads(row["payload"]) | {"status": row["status"]}
             record.setdefault("software", "houdini")
             record.setdefault("modules", ["unclassified"])
+            record["evidence_status"] = evidence_status(record)
             card = {
                 key: record[key]
                 for key in (

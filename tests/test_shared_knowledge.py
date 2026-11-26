@@ -60,7 +60,7 @@ def test_export_only_admitted_global_summary_fields(tmp_path):
     export = runpy.run_path(str(script))["export_summaries"]
     store = MemoryStore(tmp_path)
     values = dict(kind="workflow", title="Portable method", method="Use a curve", reason="Editable",
-                  applies_when="Procedural motion", source_type="observed", source_ref="private reference")
+                  applies_when="Procedural motion", source_type="user", source_ref="private reference")
     active = store.submit(**values)
     candidate = store.submit(**(values | {"title": "Hypothesis", "source_type": "inferred"}))
     exported = export(store.path, [active["memory_id"]])

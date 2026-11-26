@@ -237,5 +237,29 @@
     "method": "每个 Nuke 实例绑定独占端口并原子发布含 PID、端口、随机会话 ID 和工程路径的心跳登记；列出会话时只读登记快照，不主动探测占用命令通道。切换目标时重新校验握手 PID、会话 ID 与 get_script_info 路径；新目标核验通过前保留原健康连接，将切换与工具派发放在同一串行锁内，连接超时立即断开并丢弃旧队列。",
     "reason": "防止多窗口并发切换时把节点操作误发到另一个打开的镜头工程。",
     "applies_when": "同一工作站运行多个 Nuke 实例，通过统一 MCP 列出并安全切换目标工程时。"
+  },
+  {
+    "software": "maya",
+    "modules": [
+      "lighting",
+      "troubleshooting"
+    ],
+    "kind": "troubleshooting",
+    "title": "Maya 灯光参数修改前核对实际渲染器与节点属性",
+    "method": "先读取场景已加载的渲染器和目标灯光 shape 的实际属性，再调整灯光。Redshift Dome 的强度与曝光分别检查 intensityMultiplier 和 exposure，属性不可用时停止并核对插件版本。渲染器未加载时保留现场并报告状态。",
+    "reason": "灯光创建命令可能返回 transform，各渲染器的曝光和强度属性也可能不同，写入前应核对真实 shape 和属性。",
+    "applies_when": "在 Maya 接手已有 Arnold 或 Redshift 灯光设置，发现曝光参数不生效或属性名不一致时。"
+  },
+  {
+    "software": "maya",
+    "modules": [
+      "rendering",
+      "troubleshooting"
+    ],
+    "kind": "troubleshooting",
+    "title": "Maya 单帧渲染以原生完成和图像可解码为准",
+    "method": "只提交一次渲染。用 job_id 查询 Maya 原生完成状态，继续确认返回的输出图像可解码。超时后保留 job_id 和输出目录，重新连接并核对现场、渲染器和许可证状态，再判断是否需要重做。",
+    "reason": "输出文件可能在渲染写入期间短暂停顿，文件存在或大小暂时稳定都不足以证明该帧已经完成。",
+    "applies_when": "Maya 单帧渲染后遗留部分写入文件、状态未完成，或工具等待结果超时时。"
   }
 ]

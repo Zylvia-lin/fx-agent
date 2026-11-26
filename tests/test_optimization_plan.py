@@ -87,7 +87,7 @@ async def test_phase1_prepare_task_brief_satisfies_houdini_gate_in_one_call(tmp_
 
 
 @pytest.mark.asyncio
-async def test_phase2_quick_tweak_allows_local_edits_and_enforces_hard_rails(tmp_path, monkeypatch):
+async def test_phase2_quick_tweak_allows_local_edits_and_enforces_hard_rails(tmp_path, monkeypatch, record_preview):
     data = tmp_path / "data"
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(data))
     scene = tmp_path / "shot.hip"
@@ -157,6 +157,12 @@ async def test_phase2_quick_tweak_allows_local_edits_and_enforces_hard_rails(tmp
 
     # Saving and finishing quick_tweak succeeds without archive, but cannot finalize learning.
     await mcp.call_tool("save_scene", {"file_path": str(scene), "fx_task_id": tid})
+    with pytest.raises(ValueError, match="structural verification"):
+        gates.finish(tid, task["revision"], "", "ok")
+    gates.observe(tid, "verify_network", {}, {"healthy": True})
+    with pytest.raises(ValueError, match="preview image"):
+        gates.finish(tid, task["revision"], "", "ok")
+    record_preview(gates, tid)
     finished = gates.finish(tid, task["revision"], "", "已调亮主光并核对渲染预览")
     assert finished["state"] == "verified"
 

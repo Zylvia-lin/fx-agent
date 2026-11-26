@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from pathlib import Path
 
 from fx_agent import __version__
 
@@ -12,6 +13,9 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=__version__)
     parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    from fx_agent.startup_update import restart_if_updated
+
+    restart_if_updated(Path(__file__).resolve().parents[2])
     from fx_agent.server import get_server
     from fx_agent.shared_knowledge import prepare_local_data
 

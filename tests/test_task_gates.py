@@ -216,7 +216,7 @@ async def test_tool_dispatch_is_guarded_without_changing_upstream_arguments(tmp_
     assert gates.get(task["task_id"], detail=True)["edit_seq"] == 1
 
 
-def test_completion_requires_saved_current_scene_and_verification(tmp_path):
+def test_completion_requires_saved_current_scene_and_verification(tmp_path, record_preview):
     gates, task = ready(tmp_path)
     path = Path(task["scene_path"])
     path.write_bytes(b"saved scene")
@@ -226,10 +226,14 @@ def test_completion_requires_saved_current_scene_and_verification(tmp_path):
     with pytest.raises(ValueError, match="verification"):
         gates.finish(task["task_id"], task["revision"], "", "已查看预览")
     gates.observe(task["task_id"], "verify_network", {}, {"valid": True})
+    with pytest.raises(ValueError, match="preview image"):
+        gates.finish(task["task_id"], task["revision"], "", "ok")
+    record_preview(gates, task["task_id"])
     done = gates.finish(
         task["task_id"], task["revision"], "", "已查看预览，贴合且运动连续"
     )
     assert done["state"] == "verified"
+    assert gates.get(task["task_id"], True)["reviewed_previews"][0]["frame"] == 101
     gates.edit(task["task_id"])
     assert gates.get(task["task_id"])["state"] == "ready"
 
@@ -482,6 +486,7 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     mcp = FastMCP("complete-journey")
     scene = tmp_path / "scene.hip"
     edits = []
+    frames = [101]
 
     @mcp.tool()
     def fx_get_production_rules(project_id: str) -> dict:
@@ -512,6 +517,16 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     @mcp.tool()
     def verify_network() -> dict:
         return {"healthy": True, "nodes": []}
+
+    @mcp.tool()
+    def get_frame() -> dict:
+        return {"frame": frames[-1]}
+
+    @mcp.tool()
+    def capture_screenshot() -> dict:
+        image = tmp_path / f"journey-{frames[-1]}.png"
+        image.write_bytes(b"test preview")
+        return {"output_path": str(image)}
 
     @mcp.tool()
     def fx_record_feedback(feedback: dict) -> dict:
@@ -551,6 +566,9 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     await mcp.call_tool("create_node", {"name": "draft"} | scope)
     await mcp.call_tool("verify_network", scope)
     await mcp.call_tool("save_scene", scope)
+    await mcp.call_tool("capture_screenshot", scope)
+    frames.append(125)
+    await mcp.call_tool("capture_screenshot", scope)
     task = await call(
         "fx_finish_task",
         {
@@ -561,6 +579,25 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
         },
     )
     assert task["state"] == "verified"
+    gates = TaskGates(tmp_path / "data")
+    finishes = gates.get(task["task_id"], True)["reviewed_previews"]
+    assert {image["frame"] for image in finishes} == {101, 125}
+    from fx_agent.memory import MemoryStore
+
+    memory = MemoryStore(gates.root)
+    lesson = dict(
+        project_id="p", software="houdini", modules=["particles"], kind="workflow",
+        title="可复用的粒子验证方法", method="先用低分辨率核对运动", reason="便于调参",
+        applies_when="需要连续运动", source_type="observed", source_ref="current result",
+    )
+    candidate = memory.submit(**lesson)
+    assert candidate["status"] == "candidate"
+    verified = memory.submit(_task_id=task["task_id"], **lesson)
+    assert verified["memory_id"] == candidate["memory_id"]
+    assert verified["evidence_status"] == "live_verified_text"
+    assert memory.get(verified["memory_id"], "p")["verified_task_id"] == task["task_id"]
+    with pytest.raises(ValueError, match="same scope"):
+        memory.submit(_task_id=task["task_id"], **(lesson | {"project_id": "other"}))
     feedback = {
         "outcome": "accepted",
         "project_id": "p",

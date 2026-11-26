@@ -25,6 +25,17 @@ def _isolate_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture
+def record_preview(tmp_path):
+    def record(gates, task_id, frame=101):
+        path = tmp_path / f"preview-{frame}.png"
+        path.write_bytes(b"test preview")
+        gates.observe(task_id, "capture_screenshot", {"output_path": str(path)},
+                      {"output_path": str(path), "frame": frame})
+        return path
+    return record
+
+
 class NukeKnob:
     def __init__(self, value):
         self.stored = value

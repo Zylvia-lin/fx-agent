@@ -172,7 +172,7 @@ def test_dream_refuses_a_stale_snapshot_and_never_mutates_another_project(tmp_pa
 
 @pytest.mark.asyncio
 async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, record_preview
 ):
     monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
     server = importlib.import_module("fx_agent.server").get_server()
@@ -187,6 +187,7 @@ async def test_learning_tools_preserve_quotes_and_produce_retrievable_success(
     gates, task = ready(tmp_path, root=tmp_path, scene_path=tmp_path / "draft.hip")
     gates.observe(task["task_id"], "save_scene", {}, {"success": True})
     gates.observe(task["task_id"], "verify_network", {}, {"healthy": True})
+    record_preview(gates, task["task_id"])
     gates.finish(task["task_id"], task["revision"], "", "测试中已核对渲染预览")
     result = await server.call_tool(
         "fx_record_feedback",
@@ -346,3 +347,23 @@ def test_schema_two_database_is_upgraded_without_losing_checkpoint(tmp_path):
     assert store.record_rule(**rule())["revision"] == 1
     with sqlite3.connect(store.path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION
+
+
+def test_rules_are_scoped_by_software_and_legacy_revisions_stay_readable(tmp_path):
+    store = learning(tmp_path)
+    store.record_rule(**rule(rule_key="abc-first-production-matching", statement="读取遵循$HIP"))
+    store.record_rule(**(rule(rule_key="color-scoped") | {"software": "nuke"}))
+    store.record_rule(**rule(rule_key="common"))
+    with store.connection() as db:
+        db.execute(
+            "UPDATE user_rules SET payload=json_remove(payload, '$.software') "
+            "WHERE rule_key='abc-first-production-matching'"
+        )
+    current = store.record_rule(**rule(rule_key="color-scoped", expected_revision=1))
+    assert current["software"] == "nuke"
+    def keys(software):
+        return {entry["rule_key"] for entry in store.get_rules(software=software)["user_rules"]}
+    assert keys("nuke") == {"common", "color-scoped"}
+    assert keys("maya") == {"common"}
+    assert keys("houdini") == {"abc-first-production-matching", "common"}
+    assert store.get_rule("abc-first-production-matching", revision=1)["statement"] == "读取遵循$HIP"
