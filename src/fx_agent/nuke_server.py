@@ -214,8 +214,6 @@ def _select_advertised_session(connection: SerializedConnection, target: dict) -
 
 
 def main() -> None:
-    from nukemcp.connection import NukeConnectionError
-
     from fx_agent.shared_knowledge import prepare_local_data
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -225,12 +223,6 @@ def main() -> None:
     prepare_local_data()
     connection = SerializedConnection(args.port)
     try:
-        sessions = list_sessions(session_root())
-        if len(sessions) == 1:
-            try:
-                _select_advertised_session(connection, sessions[0])
-            except (NukeConnectionError, OSError, RuntimeError, ValueError) as error:
-                logging.warning("Nuke startup target unavailable; a status check can reconnect: %s", error)
         server = build_server(connection)
         server.run(transport="stdio")
     finally:

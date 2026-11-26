@@ -165,8 +165,9 @@ async def fx_submit_experience(experience: Experience, fx_task_id: str = "") -> 
     """Admit a project-agnostic, text-only reusable experience with explicit provenance.
 
     Do not include local/UNC paths or archive project files/textures. Explicit user
-    statements and observations linked to a verified task enter active recall and
-    refresh module guides. Other observations and inferences stay candidates.
+    statements and observations linked to a verified production task with accepted
+    user feedback enter active recall and refresh module guides. Other observations
+    and inferences stay candidates.
     Choose specific modules for this lesson from fx_get_module_catalog.
     To correct an old entry, submit a distinct explicit user statement with supersedes.
     """
@@ -188,10 +189,12 @@ async def fx_search_memory(
     source_project: str = "",
     offset: int = 0,
 ) -> dict:
-    """Recall global experience cards within a JSON character budget.
+    """First lookup for FX questions. Search internal experience without a live DCC session.
 
-    Chinese/English literal terms are supported; space-separated terms must
-    all match. Project identifies context only; reusable knowledge crosses projects.
+    Search by software, module and symptom or technical term. If a full sentence
+    has no applicable match, retry focused terms. Read applicable hits with fx_get_memory.
+    Prefer applicable internal experience over external search results.
+    Project identifies context only; reusable knowledge crosses projects.
     Superseded entries never appear. Candidates are opt-in.
     """
     return await asyncio.to_thread(
@@ -239,7 +242,7 @@ async def fx_get_user_rule(
     )
 
 
-async def fx_record_feedback(feedback: Feedback) -> dict:
+async def fx_record_feedback(feedback: Feedback, fx_task_id: str = "") -> dict:
     """Keep the user's correction, change, reasoning and observed result as text history.
 
     Pending/improved/failed attempts are not successful workflow memories.
@@ -248,8 +251,10 @@ async def fx_record_feedback(feedback: Feedback) -> dict:
     Choose modules based on the technique actually changed.
     """
     require_classified_modules(feedback.modules)
+    if feedback.outcome == "accepted" and not fx_task_id:
+        raise ValueError("Accepted feedback requires fx_task_id for a verified production task")
     return await asyncio.to_thread(
-        lambda: LearningStore(data_root()).record_feedback(**feedback.model_dump())
+        lambda: LearningStore(data_root()).record_feedback(_task_id=fx_task_id, **feedback.model_dump())
     )
 
 
@@ -464,9 +469,9 @@ async def fx_prepare_task_brief(
 ) -> dict:
     """Aggregate scoped rules, context, module guides and memories in one read.
 
-    Automatically records verified task-gate receipts for every component fetched
-    so production or quick_tweak tasks avoid 6+ serial preflight tool calls.
-    For Houdini, the local MCP wrapper also loads required upstream workflow guides.
+    Both production and quick_tweak briefs recall past solutions and module guides.
+    Receipts only cover returned content. Follow deferred_reads to fetch omitted content.
+    The Houdini wrapper also loads required upstream guides for production tasks.
     """
     if not 2048 <= max_chars <= 32000:
         raise ValueError("max_chars must be between 2048 and 32000")
@@ -542,53 +547,52 @@ async def fx_prepare_task_brief(
             elif "fx_get_user_rule" not in deferred:
                 deferred.append("fx_get_user_rule")
 
-        if kind != "quick_tweak":
-            guides = ModuleGuides(root)
-            module_knowledge = {}
-            truncated_modules = []
-            per_module_budget = min(3600, max(1024, max_chars // (4 * len(modules))))
-            for mod in modules:
-                guide = guides.get(project_id, mod, software, per_module_budget, 0)
-                if include("module_knowledge", module_knowledge | {mod: guide}):
-                    module_knowledge[mod] = guide
-                    observe("fx_get_module_knowledge", rule_args | {"module": mod, "offset": 0}, guide)
-                    if guide.get("truncated"):
-                        truncated_modules.append(mod)
-                else:
+        guides = ModuleGuides(root)
+        module_knowledge = {}
+        truncated_modules = []
+        per_module_budget = min(3600, max(1024, max_chars // (4 * len(modules))))
+        for mod in modules:
+            guide = guides.get(project_id, mod, software, per_module_budget, 0)
+            if include("module_knowledge", module_knowledge | {mod: guide}):
+                module_knowledge[mod] = guide
+                observe("fx_get_module_knowledge", rule_args | {"module": mod, "offset": 0}, guide)
+                if guide.get("truncated"):
                     truncated_modules.append(mod)
-            if truncated_modules:
-                deferred.append("fx_get_module_knowledge")
-
-            mem_store = MemoryStore(root)
-            primary_mod = modules[0] if len(modules) == 1 else ""
-            mem_args = rule_args | {"shot_id": shot_id, "query": search_query}
-            mem_budget = min(4000, max(512, max_chars // 4))
-
-            def search(module, candidates, limit=5):
-                args = mem_args | {"module": module, "include_candidates": candidates}
-                result = mem_store.search(**args, limit=limit, max_chars=mem_budget)
-                return args, result
-
-            args, memories = search(primary_mod, include_candidates)
-            if include("memory_matches", memories):
-                observe("fx_search_memory", args, memories)
-                if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
-                    args, candidates = search(primary_mod, True)
-                    if include("candidate_memories", candidates):
-                        observe("fx_search_memory", args, candidates)
-                    else:
-                        deferred.append("fx_search_memory")
             else:
-                deferred.append("fx_search_memory")
-            module_matches = {}
-            for mod in truncated_modules:
-                if mod == primary_mod:
-                    continue
-                args, matches = search(mod, include_candidates, 3)
-                if include("module_memory_matches", module_matches | {mod: matches}):
-                    module_matches[mod] = matches
-                    observe("fx_search_memory", args, matches)
-            include("template_library_hint", "需要现成工程时调用 fx_search_published_templates。")
+                truncated_modules.append(mod)
+        if truncated_modules:
+            deferred.append("fx_get_module_knowledge")
+
+        mem_store = MemoryStore(root)
+        primary_mod = modules[0] if len(modules) == 1 else ""
+        mem_args = rule_args | {"shot_id": shot_id, "query": search_query}
+        mem_budget = min(4000, max(512, max_chars // 4))
+
+        def search(module, candidates, limit=5):
+            args = mem_args | {"module": module, "include_candidates": candidates}
+            result = mem_store.search(**args, limit=limit, max_chars=mem_budget)
+            return args, result
+
+        args, memories = search(primary_mod, include_candidates)
+        if include("memory_matches", memories):
+            observe("fx_search_memory", args, memories)
+            if not include_candidates and memories.get("reference_hint", {}).get("has_matches"):
+                args, candidates = search(primary_mod, True)
+                if include("candidate_memories", candidates):
+                    observe("fx_search_memory", args, candidates)
+                else:
+                    deferred.append("fx_search_memory")
+        else:
+            deferred.append("fx_search_memory")
+        module_matches = {}
+        for mod in truncated_modules:
+            if mod == primary_mod:
+                continue
+            args, matches = search(mod, include_candidates, 3)
+            if include("module_memory_matches", module_matches | {mod: matches}):
+                module_matches[mod] = matches
+                observe("fx_search_memory", args, matches)
+        include("template_library_hint", "需要现成工程时调用 fx_search_published_templates。")
 
         context = Store(root).get_context(project_id, shot_id, "", min(2000, max(768, max_chars // 8)), software)
         if not include("context", context):

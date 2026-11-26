@@ -1,6 +1,7 @@
 """Wait for native completion, never infer it from a paused file writer."""
 
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -72,3 +73,67 @@ def test_monitoring_exception_locks_unknown_operation(monkeypatch, tmp_path):
     with pytest.raises(PermissionError):
         tool('redshift', 'persp', 1, str(tmp_path), timeout=1)
     assert connection.failed
+
+
+@pytest.mark.asyncio
+async def test_render_keeps_its_maya_session_when_selection_changes(monkeypatch, tmp_path):
+    from fx_agent.maya import client, server
+    from fx_agent.task_gates import TaskSpec
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    first = {"port": 18770, "pid": 71, "session_id": "a", "scene_path": str(tmp_path / "a.ma")}
+    second = {"port": 18771, "pid": 72, "session_id": "b", "scene_path": str(tmp_path / "b.ma")}
+    sessions = {target["port"]: target for target in (first, second)}
+    monkeypatch.setattr(client, "registry", lambda _: {18770: {"a": "token-a"}, 18771: {"b": "token-b"}})
+    monkeypatch.setattr(client, "probe", lambda port, token, timeout: dict(sessions[port]))
+    selected_second = threading.Event()
+    first_poll = threading.Event()
+    image = tmp_path / "render.iff"
+    image.write_bytes(b"fixture image")
+    calls = []
+
+    def request(port, command, params, target, timeout, *, token):
+        assert target == sessions[port]
+        if command == "scene_info":
+            return {"scene_path": target["scene_path"]}
+        calls.append((port, command, token))
+        if command == "render_frame":
+            return {"job_id": "job-a", "output_dir": str(tmp_path)}
+        if port != first["port"]:
+            raise RuntimeError("Unknown render job")
+        first_poll.set()
+        if selected_second.is_set():
+            return {"success": True, "status": "complete", "frame": 1, "output_paths": [str(image)]}
+        return {"status": "rendering"}
+
+    monkeypatch.setattr(client, "request", request)
+    connection = client.MayaConnection(tmp_path)
+    connection.select(first["port"], first["pid"], first["session_id"], first["scene_path"])
+    mcp = server.build_server(connection)
+
+    async def call(name, args):
+        return json.loads((await mcp.call_tool(name, args))[0].text)
+
+    spec = TaskSpec(project_id="p", shot_id="s", software="maya", kind="quick_tweak",
+                    scene_path=first["scene_path"], endpoint="127.0.0.1:18770", goal="preview",
+                    acceptance=["visible"], budget="preview", modules=["lighting"])
+    task = await call("fx_begin_task", {"spec": spec.model_dump()})
+    await call("fx_prepare_task_brief", {"task_id": task["task_id"]})
+    render = asyncio.create_task(call("render_maya_frame", {
+        "renderer": "arnold", "camera": "persp", "frame": 1, "output_dir": str(tmp_path),
+        "fx_task_id": task["task_id"], "timeout": 5,
+    }))
+    try:
+        assert await asyncio.to_thread(first_poll.wait, 3)
+        await call("connect_maya", {"port": second["port"], "pid": second["pid"],
+                                   "session_id": second["session_id"], "expected_scene": second["scene_path"]})
+        selected_second.set()
+        assert (await render)["status"] == "complete"
+    finally:
+        if not render.done():
+            render.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await render
+    assert calls.count((first["port"], "render_frame", "token-a")) == 1
+    assert all(port == first["port"] and token == "token-a" for port, _, token in calls)
+    assert connection.target == second

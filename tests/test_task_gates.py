@@ -481,7 +481,7 @@ def test_real_conflict_shapes_create_questions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
+async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path, monkeypatch):
     """Real dispatcher/evidence/database, with a synthetic DCC only."""
     mcp = FastMCP("complete-journey")
     scene = tmp_path / "scene.hip"
@@ -528,9 +528,10 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
         image.write_bytes(b"test preview")
         return {"output_path": str(image)}
 
-    @mcp.tool()
-    def fx_record_feedback(feedback: dict) -> dict:
-        return feedback
+    from fx_agent.data_api import fx_record_feedback
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path / "data"))
+    mcp.tool()(fx_record_feedback)
 
     async def live(_context):
         return "127.0.0.1:18186", str(scene), {"fps": 24}
@@ -592,10 +593,7 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
     )
     candidate = memory.submit(**lesson)
     assert candidate["status"] == "candidate"
-    verified = memory.submit(_task_id=task["task_id"], **lesson)
-    assert verified["memory_id"] == candidate["memory_id"]
-    assert verified["evidence_status"] == "live_verified_text"
-    assert memory.get(verified["memory_id"], "p")["verified_task_id"] == task["task_id"]
+    assert memory.submit(_task_id=task["task_id"], **lesson)["status"] == "candidate"
     with pytest.raises(ValueError, match="same scope"):
         memory.submit(_task_id=task["task_id"], **(lesson | {"project_id": "other"}))
     feedback = {
@@ -603,10 +601,28 @@ async def test_full_mcp_journey_and_acceptance_revoke_after_edit(tmp_path):
         "project_id": "p",
         "shot_id": "s",
         "software": "houdini",
+        "modules": ["particles"],
+        "effect_type": "粒子",
+        "attempt_id": "draft",
+        "problem": "草稿运动需验证",
+        "change": "用低分辨率预览",
+        "reason": "方便比较运动",
+        "result": "运动符合要求",
+        "user_quote": "这个运动可以",
+        "source_ref": "test chat",
+        "expected_revision": 0,
     }
-    assert (await call("fx_record_feedback", {"feedback": feedback} | scope))[
-        "outcome"
-    ] == "accepted"
+    accepted = await call("fx_record_feedback", {"feedback": feedback} | scope)
+    assert accepted["outcome"] == "accepted"
+    verified = memory.submit(_task_id=task["task_id"], **lesson)
+    assert verified["memory_id"] == candidate["memory_id"]
+    assert verified["evidence_status"] == "live_verified_text"
+    record = memory.get(verified["memory_id"], "p")
+    assert record["verified_task_id"] == task["task_id"]
+    assert record["origin_feedback_id"] == accepted["feedback_id"]
     await mcp.call_tool("create_node", {"name": "new-draft"} | scope)
     with pytest.raises(ValueError, match="verified"):
         await mcp.call_tool("fx_record_feedback", {"feedback": feedback} | scope)
+    await call("fx_record_feedback", {"feedback": feedback | {"outcome": "failed", "expected_revision": 1}})
+    assert memory.get(verified["memory_id"], "p")["status"] == "needs_review"
+    assert not memory.search(query=lesson["title"], software="houdini", module="particles")["items"]

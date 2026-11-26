@@ -44,6 +44,19 @@ def test_quoted_old_server_header_is_removed(tmp_path):
     assert "fxhoudini" not in tomllib.loads(updated)["mcp_servers"]
 
 
+def test_upgrade_preserves_houdini_token_setting(tmp_path):
+    before = '''[mcp_servers.fx-agent]
+command = "old"
+[mcp_servers.fx-agent.env]
+FX_AGENT_HOUDINI_TOKEN = "test-token"
+'''
+    updated = installer.codex_config(before, ROOT, tmp_path, 8186)
+    agent = tomllib.loads(updated)["mcp_servers"]["fx-agent"]
+    assert agent["env"]["FX_AGENT_HOUDINI_TOKEN"] == "test-token"
+    assert "FX_AGENT_HOUDINI_TOKEN" in agent["env_vars"]
+    assert installer.codex_config(updated, ROOT, tmp_path, 8186) == updated
+
+
 def test_houdini_cannot_take_registered_nuke_port_even_when_not_listening(tmp_path):
     before = '[mcp_servers.fx-nuke]\nargs=["-m","fx_agent.nuke_server","--port","8187"]\n'
     with pytest.raises(ValueError, match="Nuke"):

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fx_agent.config import DEFAULT_HOUDINI_PORT, configured_data_root, data_root
 from fx_agent.houdini_runtime import prepare_runtime, runtime_path, upstream_plugin
-from fx_agent.install_config import install_junction, replace_servers
+from fx_agent.install_config import HOUDINI_ENVIRONMENT, install_junction, replace_servers
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,7 +56,8 @@ def obsolete_skill_links(skills_root: Path, repo_skills: Path, valid_names: set[
 
 def codex_config(original: str, root: Path, data: Path, port: int) -> str:
     """Replace only the two FX server tables; reject unsupported TOML layouts."""
-    nuke_args = tomllib.loads(original).get("mcp_servers", {}).get("fx-nuke", {}).get("args", [])
+    servers = tomllib.loads(original).get("mcp_servers", {})
+    nuke_args = servers.get("fx-nuke", {}).get("args", [])
     if isinstance(nuke_args, list):
         nuke_port = ""
         for index, argument in enumerate(nuke_args):
@@ -84,6 +85,10 @@ FXHOUDINIMCP_AUTO_LAYOUT = "0"
 NO_PROXY = "localhost,127.0.0.1,::1"
 PYTHONUTF8 = "1"
 '''
+    previous_env = servers.get("fx-agent", {}).get("env", {})
+    for name in HOUDINI_ENVIRONMENT:
+        if name in previous_env:
+            block += f"{name} = {json.dumps(previous_env[name], ensure_ascii=False)}\n"
     return replace_servers(original, {"fxhoudini", "fx-agent"}, block)
 
 

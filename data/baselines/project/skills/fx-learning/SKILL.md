@@ -41,7 +41,7 @@ description: 当用户在 FX 制作对话中提出长期规范、纠正结果、
 1. 调用 `fx_submit_experience`（默认 `project_dependent=False`、`project_id="__global__"`、`case_id=""`、`reuse_scope="global"`）：
    - 明确填写 `software`（`houdini` / `nuke` / `maya`）与 `modules`（从 `fx_get_module_catalog` 选择 1–4 个，不用 `unclassified`）。
    - 选对 `kind`：`workflow`（通用工艺配方）、`troubleshooting`（排错避坑）、`compositing` / `lighting` / `render`（视觉平衡与管线策略）、`preference`（操作偏好）。
-   - 如实标注 `source_type`：用户明确提出用 `user`，现场观察用 `observed`。带同一已验收任务的 `fx_task_id` 才标记为现场验证并刷新模块手册，其余观察与 `inferred` 推测先进入 `candidate`。同一观察可在任务验收后补交凭据。
+   - 如实标注 `source_type`：用户明确提出用 `user`，现场观察用 `observed`。正式任务通过 `fx_finish_task` 且用户明确认可后，先用同一 `fx_task_id` 记录 `accepted` 反馈，再用该 ID 提交现场观察并刷新模块手册。其余观察与 `inferred` 推测先进入 `candidate`。同一观察可在满足验收条件后补交。
 2. 正式入库后检查返回的 `module_guides.state`，如出现 `pending_rebuild` 须报告并调用 `fx_refresh_module_guides` 修复。
 
 ## 3. 制作过程中的纠错轨迹与最终确认

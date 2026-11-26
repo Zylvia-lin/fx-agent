@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
 
@@ -43,6 +44,7 @@ def register_shared_tools(mcp):
 
 def build_server(connection=None, ports=DEFAULT_PORTS):
     connection = connection or MayaConnection()
+    render_connection = ContextVar("maya_render_connection", default=None)
     mcp = FastMCP(
         "fx-maya",
         instructions=HOST_STARTUP_INSTRUCTIONS + "显式选择 Maya 会话。超时先查现场，再决定后续动作。",
@@ -127,9 +129,10 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
     @mcp.tool()
     async def render_maya_frame(renderer: Renderer, camera: str, frame: int, output_dir: str, width: int = 640, height: int = 480, timeout: float = 600) -> dict:
         """Render once, wait outside Maya for native completion and image decoding. Timeout never repeats the render; inspect the returned job ID after reconnecting."""
+        active = render_connection.get() or connection
         deadline = time.monotonic() + timeout
         receipt = await asyncio.to_thread(
-            connection.send,
+            active.send,
             "render_frame",
             {"renderer": renderer, "camera": camera, "frame": frame, "output_dir": output_dir, "width": width, "height": height},
             timeout,
@@ -139,7 +142,7 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
             while time.monotonic() < deadline:
                 remaining = max(0.01, deadline - time.monotonic())
                 result = await asyncio.to_thread(
-                    connection.send,
+                    active.send,
                     "render_status",
                     {"job_id": job_id},
                     min(10, remaining),
@@ -151,7 +154,7 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         except (TimeoutError, OSError, ValueError, KeyError):
             # Transport/timeout monitoring failures leave an uncertain native operation.
             # Application-level RuntimeErrors reported by Maya do not poison the connection.
-            connection.failed = True
+            active.failed = True
             raise
 
     @mcp.tool()
@@ -183,7 +186,8 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
         return connection.send("verify_network")
 
     async def live_target(_context):
-        info = connection.info()
+        active = render_connection.get() or connection
+        info = await asyncio.to_thread(active.info)
         return f"127.0.0.1:{info['port']}", info["scene_path"], {key: info[key] for key in ("pid", "session_id")}
 
     install_task_gates(mcp, "maya", data_root, live_target)
@@ -191,13 +195,18 @@ def build_server(connection=None, ports=DEFAULT_PORTS):
     original = manager.call_tool
     lock = asyncio.Lock()
 
-    async def serialized(name, *args, **kwargs):
-        # Do not hold the server-wide lock across long-running async render polling;
-        # MayaConnection.lock still serializes individual socket requests safely.
-        if name == "render_maya_frame":
-            return await original(name, *args, **kwargs)
+    async def serialized(name, arguments, *args, **kwargs):
+        # Bind before the task gate checks the target. Selection can then change
+        # without diverting the render, and polling does not hold the server lock.
+        if name == "render_maya_frame" and arguments.get("fx_task_id"):
+            pinned = await asyncio.to_thread(connection.pinned)
+            token = render_connection.set(pinned)
+            try:
+                return await original(name, arguments, *args, **kwargs)
+            finally:
+                render_connection.reset(token)
         async with lock:
-            return await original(name, *args, **kwargs)
+            return await original(name, arguments, *args, **kwargs)
 
     manager.call_tool = serialized
     apply_tool_profile(mcp, software="maya")

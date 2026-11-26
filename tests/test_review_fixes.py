@@ -469,6 +469,10 @@ async def test_prepare_task_brief_auto_paginates_all_production_rules(tmp_path, 
     assert brief["production_rules"]["omitted_rules"] == 0
     assert len(brief["production_rules"]["user_rules"]) == 25
     assert "rules" not in brief["task_state"]["missing"]
+    shorter = await fx_prepare_task_brief(tid, max_chars=2048)
+    assert shorter["production_rules"]["omitted_rules"] > 0
+    assert "rules" not in shorter["task_state"]["missing"]
+    gates.authorize(tid, "houdini", task["endpoint"], task["scene_path"])
 
 
 @pytest.mark.asyncio

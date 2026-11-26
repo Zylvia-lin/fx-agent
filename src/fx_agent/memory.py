@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules
 from fx_agent.store import Identifier, Store, compact, scope_id
+from fx_agent.task_gates import verified_production
 
 _LOCAL_ABS_PATH_RE = re.compile(
     r"(?:(?<![A-Za-z0-9_$])[A-Za-z]:[/\\]|\\\\[^\\\s]+\\[^\\\s]+|//[A-Za-z0-9_.-]+/[^\s/]+)"
@@ -98,7 +99,7 @@ class MemoryStore(Store):
             evidence = "user_reported"
             reason = "explicit_user_statement"
         elif request.source_type == "observed":
-            reason = "observation_requires_verified_task"
+            reason = "observation_requires_verified_production_and_acceptance"
             if _origin_feedback_id:
                 status, evidence, reason = "active", "live_verified_text", "accepted_feedback"
         if request.supersedes and (request.source_type != "user" or status != "active"):
@@ -114,6 +115,7 @@ class MemoryStore(Store):
         if _origin_feedback_id:
             content["origin_feedback_id"] = _origin_feedback_id
         digest = hashlib.sha256(compact(content).encode()).hexdigest()
+        observed_feedback_id = ""
         with self.connection() if _db is None else nullcontext(_db) as db:
             if _db is None:
                 db.execute("BEGIN IMMEDIATE")
@@ -128,16 +130,31 @@ class MemoryStore(Store):
                     or not task.get("reviewed_previews")
                 ):
                     raise ValueError("Observed experience requires a verified task in the same scope")
-                status, evidence, reason = "active", "live_verified_text", "verified_task_observation"
+                if verified_production(task):
+                    feedback = db.execute(
+                        "SELECT f.feedback_id FROM learning_feedback f WHERE f.project_id=? "
+                        "AND f.shot_id=? AND f.software=? AND json_extract(f.payload,'$.outcome')='accepted' "
+                        "AND json_extract(f.payload,'$.verified_task_id')=? "
+                        "AND json_extract(f.payload,'$.verified_task_revision')=? "
+                        "AND f.revision=(SELECT MAX(newer.revision) FROM learning_feedback newer "
+                        "WHERE newer.project_id=f.project_id AND newer.shot_id=f.shot_id "
+                        "AND newer.software=f.software AND newer.attempt_id=f.attempt_id) "
+                        "ORDER BY f.rowid DESC LIMIT 1",
+                        (task["project_id"], task["shot_id"], task["software"], _task_id, task["revision"]),
+                    ).fetchone()
+                    if feedback:
+                        observed_feedback_id = feedback["feedback_id"]
+                        status, evidence, reason = "active", "live_verified_text", "verified_task_observation"
             duplicate = db.execute(
                 "SELECT memory_id,status,payload FROM memories WHERE project_id=? AND content_hash=?",
                 (request.project_id, digest),
             ).fetchone()
             previous_record = json.loads(duplicate["payload"]) if duplicate else {}
             attach_evidence = (
-                _task_id and status == "active" and duplicate
+                observed_feedback_id and duplicate
                 and (duplicate["status"] == "candidate" or (
-                    duplicate["status"] == "active" and evidence_status(previous_record) == "legacy_observation"
+                    duplicate["status"] == "active"
+                    and previous_record.get("origin_feedback_id") != observed_feedback_id
                 ))
             )
             if duplicate and not attach_evidence:
@@ -176,9 +193,9 @@ class MemoryStore(Store):
                 "visual_verified": False,
                 "reproduction_status": "not_tested",
             }
-            if _origin_feedback_id:
-                record["origin_feedback_id"] = _origin_feedback_id
-            if _task_id and request.source_type == "observed":
+            if origin_feedback_id := (_origin_feedback_id or observed_feedback_id):
+                record["origin_feedback_id"] = origin_feedback_id
+            if observed_feedback_id:
                 record["verified_task_id"] = _task_id
                 record["verified_task_revision"] = task["revision"]
             if duplicate:

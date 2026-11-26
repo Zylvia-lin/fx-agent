@@ -234,8 +234,7 @@ def install_task_gates(mcp, software, root_provider, live_target):
             return await original(name, arguments, context=context, convert_result=convert_result)
         if name in BRIEF_TOOLS:
             result = await original(name, arguments, context=context, convert_result=False)
-            # For Houdini production/learning briefs, locally load required upstream workflow guides
-            # and record their receipts so a single brief satisfies the entire preflight gate.
+            # Record upstream Houdini guides that fit in the returned production brief.
             if (
                 software == "houdini"
                 and isinstance(result, dict)
@@ -375,7 +374,9 @@ def install_task_gates(mcp, software, root_provider, live_target):
             before = None
             if viewport_capture:
                 before = await original("get_frame", {}, context=context, convert_result=False)
-            call_args = arguments | {"fx_task_id": task_id} if name == "fx_submit_experience" else arguments
+            call_args = arguments
+            if name == "fx_submit_experience" or acceptance:
+                call_args = arguments | {"fx_task_id": task_id}
             result = await original(name, call_args, context=context, convert_result=False)
             if viewport_capture and isinstance(result, dict):
                 after = await original("get_frame", {}, context=context, convert_result=False)

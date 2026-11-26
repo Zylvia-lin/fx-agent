@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import time
 from unittest.mock import Mock
 
@@ -9,6 +10,23 @@ import pytest
 
 from fx_agent.nuke_server import SerializedConnection, build_server
 from fx_agent.nuke_sessions import list_sessions
+
+
+def test_nuke_mcp_startup_does_not_probe_registered_sessions(tmp_path, monkeypatch):
+    from fx_agent import nuke_server
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["fx-nuke"])
+    list_registered = Mock(return_value=[dict(port=8187, pid=42, session_id="new", script="A.nk")])
+    select = Mock()
+    server = Mock()
+    monkeypatch.setattr(nuke_server, "list_sessions", list_registered)
+    monkeypatch.setattr(nuke_server, "_select_advertised_session", select)
+    monkeypatch.setattr(nuke_server, "build_server", lambda _: server)
+    nuke_server.main()
+    list_registered.assert_not_called()
+    select.assert_not_called()
+    server.run.assert_called_once_with(transport="stdio")
 
 
 def test_registry_lists_current_and_ignores_expired_or_invalid_records(tmp_path):

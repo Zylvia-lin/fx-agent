@@ -55,8 +55,11 @@ def test_cli_dispatches_only_stdio(monkeypatch):
     monkeypatch.setattr("fx_agent.server.get_server", lambda: server)
     monkeypatch.setattr("fx_agent.shared_knowledge.prepare_local_data", lambda: None)
     monkeypatch.setattr(sys, "argv", ["fx-agent"])
+    run = Mock(side_effect=AssertionError("MCP startup must not start an updater"))
+    monkeypatch.setattr(subprocess, "run", run)
     main()
     server.run.assert_called_once_with(transport="stdio")
+    run.assert_not_called()
 
 
 def test_plugin_uses_local_project_and_a_bundled_skill():

@@ -1,6 +1,7 @@
 """Extend the pinned upstream server, preserving its tools and request context."""
 
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from importlib.metadata import version
 
@@ -15,12 +16,31 @@ from fx_agent.vfx_catalog import fx_search_published_templates
 from fx_agent.workflow import HOST_STARTUP_INSTRUCTIONS
 
 
+@asynccontextmanager
+async def houdini_lifespan(_server):
+    """Provide the bridge to tools and resources without a startup probe."""
+    from fxhoudinimcp import server as upstream_server
+
+    plugin_timeout = float(os.getenv("FXHOUDINIMCP_TIMEOUT", "120"))
+    bridge = ProductionBridge(
+        host=os.getenv("HOUDINI_HOST", "localhost"),
+        port=int(os.getenv("HOUDINI_PORT") or DEFAULT_HOUDINI_PORT),
+        timeout=float(os.getenv("HOUDINI_TIMEOUT", str(plugin_timeout + 15))),
+    )
+    upstream_server._bridge = bridge
+    try:
+        yield {"bridge": bridge}
+    finally:
+        upstream_server._bridge = None
+        await bridge.close()
+
+
 @lru_cache(maxsize=1)
 def get_server():
     """Register workstation tools once on the upstream server singleton.
 
-    Its lifespan, progress reporting, resources, prompts, validation and tool
-    signatures remain upstream-owned. The wire server identity stays FXHoudini
+    Progress reporting, resources, prompts, validation and tool signatures
+    remain upstream-owned. The wire server identity stays FXHoudini
     during this initial integration; the installed plugin identity is fx-agent.
     """
     os.environ.setdefault("HOUDINI_PORT", str(DEFAULT_HOUDINI_PORT))
@@ -31,9 +51,7 @@ def get_server():
     # MCP clients may repeat initialization instructions on every advertised tool.
     mcp._mcp_server.instructions = HOST_STARTUP_INSTRUCTIONS
 
-    # The pinned lifespan resolves this constructor at startup; progress and
-    # request-context behavior remain upstream-owned.
-    upstream_server.HoudiniBridge = ProductionBridge
+    mcp._mcp_server.lifespan = houdini_lifespan
     for function in shared_functions():
         mcp.tool()(function)
     mcp.tool()(fx_search_published_templates)

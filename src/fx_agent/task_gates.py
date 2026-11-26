@@ -205,7 +205,8 @@ class TaskGates:
         self.root = Path(root)
         self.store = Store(self.root)
 
-    def _read(self, db, task_id):
+    @staticmethod
+    def _read(db, task_id):
         row = db.execute("SELECT payload FROM task_gates WHERE task_id=?", (task_id,)).fetchone()
         if not row:
             raise ValueError("Unknown task_id; use fx_begin_task")
@@ -280,38 +281,29 @@ class TaskGates:
     def _available_sources(task) -> set[str]:
         return {s for r in task["receipts"].values() for s in r.get("sources", [])}
 
-    def _missing(self, task):
+    def _missing(self, task, rules_hash=None):
         receipts = list(task["receipts"].values())
         expected, complete, detail_keys = 0, False, set()
-        current_rules_hash = self._rules_hash(task["project_id"], task["software"])
+        current_rules_hash = rules_hash or self._rules_hash(task["project_id"], task["software"])
         rules = [
             r
             for r in receipts
             if r["tool"] == "fx_get_production_rules" and r.get("rules_hash") == current_rules_hash
         ]
-        # Deduplicate repeated reads at the same offset, preferring complete / furthest-advancing reads.
-        best_by_offset: dict[int, dict] = {}
-        for r in rules:
-            off = r.get("offset", 0)
-            prev = best_by_offset.get(off)
-            if prev is None or (
-                (r.get("omitted", 1) == 0, r.get("next_offset", 0))
-                > (prev.get("omitted", 1) == 0, prev.get("next_offset", 0))
-            ):
-                best_by_offset[off] = r
-        for off in sorted(best_by_offset):
-            r = best_by_offset[off]
-            if off != expected:
-                continue
-            expected = r["next_offset"]
+        # Reads at different budgets can cover overlapping portions of the same rules.
+        for r in sorted(rules, key=lambda receipt: receipt.get("offset", 0)):
+            if r.get("offset", 0) > expected:
+                break
+            expected = max(expected, r["next_offset"])
             detail_keys.update(r["detail_keys"])
-            complete = r["omitted"] == 0
+            complete |= r["omitted"] == 0
         expanded = {
             r["rule_key"]
             for r in receipts
             if r["tool"] == "fx_get_user_rule"
             and r.get("project_id", "") in {"", task["project_id"]}
         }
+        expanded.update(key for r in rules for key in r.get("full_rule_keys", []))
         missing = [] if complete and detail_keys <= expanded else ["rules"]
         if task.get("kind") == "quick_tweak":
             return missing
@@ -613,14 +605,14 @@ class TaskGates:
             or not same_path(task["scene_path"], scene_path)
         ):
             raise ValueError("Task target differs from the live software/endpoint/scene")
-        if task["assets"] != self._assets(task) or task.get("rules_hash") != self._rules_hash(
-            task["project_id"], task["software"]
-        ):
+        rules_hash = self._rules_hash(task["project_id"], task["software"])
+        if task["assets"] != self._assets(task) or task.get("rules_hash") != rules_hash:
             raise ValueError("Task environment/rules changed; update task and recheck knowledge")
-        if self._missing(task):
+        missing = self._missing(task, rules_hash)
+        if missing:
             raise ValueError(
                 "Task knowledge missing ("
-                + ",".join(self._missing(task))
+                + ",".join(missing)
                 + "); call fx_prepare_task_brief or read missing items"
             )
         if kind == "production":
@@ -723,15 +715,16 @@ class TaskGates:
                 read_hash = value.get("rules_hash", current_hash)
                 if read_hash != current_hash:
                     return
+                detail_keys, full_rule_keys = [], []
+                for rule in value.get("user_rules", []):
+                    key = compact([rule.get("scope", "global"), rule["rule_key"], rule.get("revision", 0)])
+                    (detail_keys if rule.get("detail_required") else full_rule_keys).append(key)
                 receipt.update(
                     offset=arguments.get("offset", 0),
                     next_offset=value.get("next_offset", 0),
                     omitted=value.get("omitted_rules", 1),
-                    detail_keys=[
-                        compact([r.get("scope", "global"), r["rule_key"], r.get("revision", 0)])
-                        for r in value.get("user_rules", [])
-                        if r.get("detail_required")
-                    ],
+                    detail_keys=detail_keys,
+                    full_rule_keys=full_rule_keys,
                     rules_hash=current_hash,
                 )
                 if task.get("kind") == "quick_tweak":
@@ -840,9 +833,20 @@ class TaskGates:
             ):
                 task["verified_seq"] = task["edit_seq"]
             identity = [tool, arguments]
+            if tool == "fx_get_production_rules":
+                identity = [tool, receipt["rules_hash"], receipt["offset"]]
             if "visual" in receipt:
                 identity.append([(image["path"], image["frame"]) for image in receipt["visual"]])
             key = hashlib.sha256(compact(identity).encode()).hexdigest()
+            if tool == "fx_get_production_rules" and (prior := task["receipts"].get(key)):
+                full_keys = set(prior["full_rule_keys"]) | set(receipt["full_rule_keys"])
+                pending_keys = set(prior["detail_keys"]) | set(receipt["detail_keys"])
+                receipt.update(
+                    next_offset=max(prior["next_offset"], receipt["next_offset"]),
+                    omitted=min(prior["omitted"], receipt["omitted"]),
+                    detail_keys=sorted(pending_keys - full_keys),
+                    full_rule_keys=sorted(full_keys),
+                )
             if len(task["receipts"]) >= 500 and key not in task["receipts"]:
                 raise ValueError("Task evidence budget reached; split the work into another task")
             task["receipts"][key] = receipt
@@ -908,6 +912,31 @@ class TaskGates:
         return self._summary(current)
 
 
+def verified_production(task):
+    return (
+        task["state"] == "verified"
+        and task["kind"] == "production"
+        and bool(task.get("reviewed_previews"))
+        and not any(not q.get("answer") for q in task["questions"])
+    )
+
+
+def require_verified_production(task):
+    if not verified_production(task):
+        raise ValueError("Successful learning requires a verified production task and user acceptance")
+
+
+def require_feedback_scope(task, feedback):
+    if any(
+        feedback.get(k, "houdini" if k == "software" else "") != task[k]
+        for k in ("project_id", "shot_id", "software", "case_id")
+    ) or (feedback.get("verified_task_id") and (
+        feedback["verified_task_id"] != task["task_id"]
+        or feedback.get("verified_task_revision") != task["revision"]
+    )):
+        raise ValueError("Accepted feedback must belong to the verified task")
+
+
 def check_knowledge_gate(
     gates: TaskGates,
     task_id: str,
@@ -929,12 +958,7 @@ def check_knowledge_gate(
             "Task gate requires fx_task_id; use fx_begin_task then read knowledge and save a plan"
         )
     task = gates.get(task_id, True)
-    if task["state"] != "verified" or task["kind"] != "production" or not task.get("reviewed_previews"):
-        raise ValueError(
-            "Successful learning requires a verified production task and user acceptance"
-        )
-    if any(not q.get("answer") for q in task["questions"]):
-        raise ValueError("Unresolved task questions; ask the user before finalizing")
+    require_verified_production(task)
     if acceptance:
         feedback = arguments["feedback"]
     elif feedback_loader is not None:
@@ -945,11 +969,7 @@ def check_knowledge_gate(
         feedback = LearningStore(gates.root).get_feedback(
             arguments["feedback_id"], arguments["project_id"]
         )
-    if any(
-        feedback.get(k, "houdini" if k == "software" else "") != task[k]
-        for k in ("project_id", "shot_id", "software", "case_id")
-    ):
-        raise ValueError("Accepted feedback must belong to the verified task")
+    require_feedback_scope(task, feedback)
 
 
 def install_task_gates(*args, **kwargs):

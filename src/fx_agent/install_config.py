@@ -19,6 +19,7 @@ DATA_ENVIRONMENT = (
     "FX_AGENT_EMBEDDING_API_KEY",
     "FX_MAYA_ENABLE_PYTHON",
 )
+HOUDINI_ENVIRONMENT = ("FX_AGENT_HOUDINI_TOKEN",)
 
 
 def install_junction(link: Path, target: Path) -> None:
@@ -46,7 +47,8 @@ def forward_data_environment(original: str, previous: dict | None = None) -> str
             continue
         names = list((previous or {}).get(name, {}).get("env_vars", []))
         names.extend(value for value in server.get("env_vars", []) if value not in names)
-        names.extend(value for value in DATA_ENVIRONMENT if value not in names)
+        environment = DATA_ENVIRONMENT + (HOUDINI_ENVIRONMENT if name == "fx-agent" else ())
+        names.extend(value for value in environment if value not in names)
         alternatives = "|".join(re.escape(value) for value in (name, '"' + name + '"', "'" + name + "'"))
         match = re.search(rf"(?m)^\[mcp_servers\.(?:{alternatives})\][^\r\n]*\r?\n", result)
         if not match:

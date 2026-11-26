@@ -141,6 +141,19 @@ def test_lost_reply_is_not_retried_and_connection_is_poisoned(bridges, tmp_path)
     assert state["edits"] == 1
 
 
+def test_pinned_connection_reports_failure_only_to_its_original_selection(bridges, tmp_path):
+    first, second = bridges(), bridges()
+    connection = client.MayaConnection(tmp_path)
+    select(connection, first)
+    pinned = connection.pinned()
+    pinned.failed = True
+    assert connection.failed
+    select(connection, second)
+    assert pinned.failed and not connection.failed
+    pinned.failed = True
+    assert not connection.failed
+
+
 def test_protocol_unicode_partial_reads_limits_and_eof():
     class Peer:
         def __init__(self, data):

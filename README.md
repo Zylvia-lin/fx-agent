@@ -49,9 +49,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 > 使用 fx-agent。先检查 Houdini 和 Nuke 的连接，读取制作规范与已有经验。项目名为“测试项目”，镜头为 sh010。
 
-`fx-agent` MCP 进程首次启动时检查官方 GitHub 的 `origin/main`。官方仓库的干净 `main` 可以自动快进，再按更新后的锁文件启动。离线、存在本地改动或分支分叉时使用当前版本。后续制作工具调用共用该进程，更新后的重启也会跳过重复检查。设置 `FX_AGENT_AUTO_UPDATE=0` 可关闭自动检查。
-
-更新涉及 DCC 启动配置或已复制的桥接文件时，关闭对应 DCC 后重新运行 **`Install-FX-Agent.bat`**，再重启宿主与 DCC。详见 [仓库更新后的升级流程](public-docs/一键安装.md#仓库更新后的升级流程)。
+FX Agent 启动时使用本机已安装的版本。升级时手动更新仓库并按需重新运行 **`Install-FX-Agent.bat`**，再重启宿主与对应的 DCC。详见 [仓库更新后的升级流程](public-docs/一键安装.md#仓库更新后的升级流程)。
 
 ### 可选：搭配 FX Template 模板库
 

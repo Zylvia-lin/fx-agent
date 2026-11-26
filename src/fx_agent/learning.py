@@ -13,6 +13,7 @@ from fx_agent.module_guides import refresh_guides
 from fx_agent.modules import MODULE_MATCH_SQL, normalize_modules, require_classified_modules
 from fx_agent.production_rules import production_rules
 from fx_agent.store import Identifier, compact, scope_id
+from fx_agent.task_gates import TaskGates, require_feedback_scope, require_verified_production
 
 
 def rule_software(rule: dict) -> str:
@@ -202,7 +203,7 @@ class LearningStore(MemoryStore):
         result.setdefault("modules", ["unclassified"])
         return result
 
-    def record_feedback(self, **values) -> dict:
+    def record_feedback(self, *, _task_id: str = "", **values) -> dict:
         request = Feedback(**values)
         attempt = request.attempt_id
         with self.connection() as db:
@@ -219,6 +220,11 @@ class LearningStore(MemoryStore):
                 "revision": current + 1,
                 "created_at": datetime.now(UTC).isoformat(),
             }
+            if request.outcome == "accepted" and _task_id:
+                task = TaskGates._read(db, _task_id)
+                require_verified_production(task)
+                require_feedback_scope(task, record)
+                record.update(verified_task_id=_task_id, verified_task_revision=task["revision"])
             db.execute(
                 "INSERT INTO learning_feedback VALUES (?,?,?,?,?,?,?)",
                 (

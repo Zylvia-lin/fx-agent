@@ -1,6 +1,6 @@
 ---
 name: nuke-workflow
-description: 由当前宿主助手通过 FX Agent 操作 Nuke 合成，读取纯文本规范与合成经验、完成多帧视觉审片，并沉淀纯文本通用经验与上游渲染问题反馈。
+description: Nuke 合成咨询、排错、现场检查与制作。优先查询 FX Agent 内部合成经验，按需读取 Nuke 会话，支持视觉审片和上游渲染问题反馈。
 ---
 
 # Nuke 合成与纯文本学习
@@ -8,6 +8,8 @@ description: 由当前宿主助手通过 FX Agent 操作 Nuke 合成，读取纯
 当前宿主助手负责规划、制作与判断；`fx-nuke` 是操作工具，不另起独立决策模型。全程使用中文，不提供任意 Python 执行工具。
 
 > **架构分工**：`fx-agent/data` 仅保存**纯文本通用规范与合成经验**，不保存 `.nk`、EXR 序列或截图归档；复用现成模板时通过 `fx-agent` 调用 `fx_search_published_templates` 检索外部模板库。
+
+Nuke 咨询先通过 `fx-agent` 调用 `fx_search_memory(software="nuke")`，再用 `fx_get_memory` 读适用经验或用 `fx_get_module_knowledge` 补读手册。适用的内部经验优先于任何外部搜索结果。一般问答直接回答。只问原因或做法时只查知识，用户要求看当前工程时才读取 Nuke 会话，实际制作进入下方门禁。
 
 ## 任务门禁顺序
 

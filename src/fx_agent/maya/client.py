@@ -114,8 +114,28 @@ class MayaConnection:
         self.root = root
         self.target = None
         self._token = None
-        self.failed = False
+        self._failure = threading.Event()
         self.lock = threading.RLock()
+
+    @property
+    def failed(self):
+        return self._failure.is_set()
+
+    @failed.setter
+    def failed(self, value):
+        if value:
+            self._failure.set()
+        else:
+            self._failure.clear()
+
+    def pinned(self):
+        """Keep one operation on its original session, scene, and credentials."""
+        with self.lock:
+            snapshot = MayaConnection(self.root)
+            snapshot.target = dict(self.target) if self.target is not None else None
+            snapshot._token = self._token
+            snapshot._failure = self._failure
+        return snapshot
 
     def select(self, port, pid, session_id, expected_scene):
         with self.lock:
@@ -129,7 +149,7 @@ class MayaConnection:
                 raise ValueError("Maya session/scene changed; refresh list_maya_sessions")
             self.target = candidate
             self._token = token
-            self.failed = False
+            self._failure = threading.Event()
             return dict(candidate)
 
     def send(self, command, params=None, timeout=10.0):
