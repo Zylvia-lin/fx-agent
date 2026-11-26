@@ -6,6 +6,7 @@ from pathlib import Path
 from fx_agent.config import CHECKOUT_DATA, data_root, database_path, local_data_root
 from fx_agent.memory import Experience, MemoryStore, usable_sql, validate_text_only_hygiene
 from fx_agent.migration import migrate_data
+from fx_agent.module_guides import refresh_guides
 from fx_agent.store import compact
 
 SHARED_PATH = Path(__file__).with_name("shared_experiences.json")
@@ -52,6 +53,32 @@ def load_shared_experiences(root: Path) -> None:
     normalized = [summary(item) for item in entries]
     entries = {compact(item): item for item in normalized}
     store = MemoryStore(root)
+    # Fast read-only check so concurrent MCP startups avoid taking a write lock when already synced.
+    with store.connection() as db:
+        imported = db.execute(
+            "SELECT memory_id,payload FROM memories WHERE project_id=? AND status='active' AND "
+            "json_extract(payload,'$.source_ref')=?",
+            (SHARED_PROJECT, SHARED_SOURCE),
+        ).fetchall()
+        withdraw_ids = [
+            row["memory_id"]
+            for row in imported
+            if compact(summary(json.loads(row["payload"]))) not in entries
+        ]
+        pending_entries = []
+        for entry in entries.values():
+            existing = db.execute(
+                "SELECT m.payload FROM memories m WHERE m.shot_id='' AND m.status='active' AND "
+                "COALESCE(json_extract(m.payload,'$.reuse_scope'),'global')='global' AND "
+                "json_extract(m.payload,'$.title')=? AND " + usable_sql("m"),
+                (entry["title"],),
+            )
+            if not any(summary(json.loads(row["payload"])) == entry for row in existing):
+                pending_entries.append(entry)
+    if not withdraw_ids and not pending_entries:
+        return
+
+    changed = False
     with store.connection() as db:
         db.execute("BEGIN IMMEDIATE")
         imported = db.execute(
@@ -59,11 +86,17 @@ def load_shared_experiences(root: Path) -> None:
             "json_extract(payload,'$.source_ref')=?",
             (SHARED_PROJECT, SHARED_SOURCE),
         ).fetchall()
-        db.executemany(
-            "UPDATE memories SET status='shared_withdrawn' WHERE memory_id=?",
-            [(row["memory_id"],) for row in imported
-             if compact(summary(json.loads(row["payload"]))) not in entries],
-        )
+        withdraw_rows = [
+            (row["memory_id"],)
+            for row in imported
+            if compact(summary(json.loads(row["payload"]))) not in entries
+        ]
+        if withdraw_rows:
+            db.executemany(
+                "UPDATE memories SET status='shared_withdrawn' WHERE memory_id=?",
+                withdraw_rows,
+            )
+            changed = True
         for entry in entries.values():
             existing = db.execute(
                 "SELECT m.payload FROM memories m WHERE m.shot_id='' AND m.status='active' AND "
@@ -82,6 +115,9 @@ def load_shared_experiences(root: Path) -> None:
                     "UPDATE memories SET status='active' WHERE memory_id=?",
                     (receipt["memory_id"],),
                 )
+            changed = True
+    if changed:
+        refresh_guides(root)
 
 
 if __name__ == "__main__":

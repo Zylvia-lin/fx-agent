@@ -234,7 +234,6 @@ def main() -> None:
         parser.error("Nuke端口与当前Houdini配置冲突。")
     if not port_available(args.port):
         parser.error("端口已占用；请选择其他端口或先停止已有桥接，不会自动切换。")
-    configured_data = shared_env.get("FX_AGENT_DATA_ROOT", "")
     configured_data = str(args.data_root) if args.data_root else shared_env.get("FX_AGENT_DATA_ROOT")
     if configured_data and not Path(configured_data).is_absolute():
         parser.error("数据目录必须为绝对路径。")

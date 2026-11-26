@@ -129,6 +129,25 @@ Write-Output ('FX_TEST_JSON:' + (ConvertTo-Json -InputObject $global:FxTestCalls
     assert calls[-1]["label"] == "安装Nuke插件"
 
 
+def test_default_upgrade_includes_maya_when_previously_installed(setup_paths):
+    root, _, _ = setup_paths
+    codex_cfg = root / "profile/.codex/config.toml"
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text('[mcp_servers.fx-maya]\ncommand = "python"\n', encoding="utf-8")
+    calls = run_ps(
+        harness(
+            setup_paths,
+            f"""
+Invoke-FxInstall @fxParams -MayaModulesDir {quote(root / "maya_modules")}
+Write-Output ('FX_TEST_JSON:' + (ConvertTo-Json -InputObject $global:FxTestCalls.ToArray() -Depth 5 -Compress))
+""",
+        )
+    )
+    labels = [call["label"] for call in calls]
+    assert "检查Maya配置" in labels
+    assert "安装Maya模块" in labels
+
+
 def test_discovery_uses_numeric_versions_including_nuke_patch(tmp_path):
     for folder, exe in (
         ("Nuke13.2v99", "Nuke13.2.exe"),

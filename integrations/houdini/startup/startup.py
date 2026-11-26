@@ -220,6 +220,40 @@ def _install_csrf_guard(hwebserver_app) -> None:
                 return "Missing or invalid X-FX-Houdini-Token"
         return None
 
+    orig_foreign = getattr(hwebserver_app, "_foreign_request_reason", None)
+    if callable(orig_foreign):
+        def _guarded_foreign(request, _orig=orig_foreign):
+            reason = _orig(request)
+            if reason is not None:
+                return reason
+            return _reject_browser_request(request)
+
+        with suppress(Exception):
+            hwebserver_app._foreign_request_reason = _guarded_foreign
+
+    reregister = getattr(hwebserver_app, "_api_function", None)
+    forbidden = getattr(hwebserver_app, "_forbidden", None)
+    for endpoint_name in ("session_info", "list_commands"):
+        fn = getattr(hwebserver_app, endpoint_name, None)
+        if callable(fn):
+            def _wrap_endpoint(original):
+                def _guarded(request, *args, **kwargs):
+                    reason = _reject_browser_request(request)
+                    if reason:
+                        if callable(forbidden):
+                            return forbidden(reason)
+                        raise PermissionError(reason)
+                    return original(request, *args, **kwargs)
+
+                _guarded.__name__ = original.__name__
+                return _guarded
+
+            wrapped = _wrap_endpoint(fn)
+            with suppress(Exception):
+                setattr(hwebserver_app, endpoint_name, wrapped)
+                if callable(reregister):
+                    reregister("mcp")(wrapped)
+
     for attr in dir(hwebserver_app):
         fn = getattr(hwebserver_app, attr, None)
         if callable(fn) and (attr in {"api", "handle_api", "api_handler"} or attr.endswith("_handler")):
@@ -377,6 +411,12 @@ def stop() -> None:
         if not _server_started and not _starting:
             return
         _server_started = False
+    with suppress(Exception):
+        import hwebserver
+
+        shutdown = getattr(hwebserver, "requestShutdown", None)
+        if callable(shutdown):
+            shutdown()
     print("[fxhoudinimcp] Server stopped")
 
 

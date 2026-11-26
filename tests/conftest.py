@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -116,7 +117,7 @@ def graph(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("graph_tool_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     parent = NukeParent()
     source = NukeNode(parent, "Source", x=0, y=0)
     target = NukeNode(parent, "Target", x=200, y=200)

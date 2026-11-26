@@ -188,6 +188,22 @@ async def guard_command(
 class ProductionBridge(HoudiniBridge):
     """Adapt the pinned upstream bridge without editing its installation."""
 
+    async def _get_client(self):
+        client = await super()._get_client()
+        token = os.environ.get("FX_AGENT_HOUDINI_TOKEN")
+        if token:
+            client.headers["X-FX-Houdini-Token"] = token
+        else:
+            client.headers.pop("X-FX-Houdini-Token", None)
+        return client
+
+    async def _reset_client(self):
+        client = await super()._reset_client()
+        token = os.environ.get("FX_AGENT_HOUDINI_TOKEN")
+        if token:
+            client.headers["X-FX-Houdini-Token"] = token
+        return client
+
     async def execute(self, command: str, params=None, timeout=None):
         prepared = await guard_command(command, params, super().execute)
         result = await super().execute(command, prepared, timeout)

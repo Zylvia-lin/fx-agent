@@ -1,8 +1,8 @@
 """Explicit orthogonal routing never rearranges unrelated production nodes."""
 
 import importlib.util
-import tempfile
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 

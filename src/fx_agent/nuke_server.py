@@ -38,7 +38,9 @@ class SerializedConnection:
 
     def disconnect(self) -> None:
         with self._lock:
-            sock = getattr(self._connection, "_sock", None)
+            sock = getattr(self._connection, "sock", None) or getattr(
+                self._connection, "_sock", None
+            )
             if sock is not None:
                 with suppress(OSError):
                     sock.shutdown(2)

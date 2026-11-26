@@ -422,3 +422,186 @@ def test_install_config_mcp_servers_json_and_nuke_menu_data_root(tmp_path):
     menu = inst.menu_content("", ROOT, 8187, data_root=tmp_path / "custom_data")
     assert "FX_AGENT_DATA_ROOT" in menu
     assert "custom_data" in menu
+
+
+@pytest.mark.asyncio
+async def test_prepare_task_brief_auto_paginates_all_production_rules(tmp_path, monkeypatch):
+    from fx_agent.data_api import fx_prepare_task_brief
+    from fx_agent.learning import LearningStore
+    from fx_agent.task_gates import TaskGates, TaskSpec
+
+    monkeypatch.setenv("FX_AGENT_DATA_ROOT", str(tmp_path))
+    store = LearningStore(tmp_path)
+    for i in range(25):
+        store.record_rule(
+            rule_key=f"rule-{i:02d}",
+            title=f"生产规范 {i:02d}",
+            statement=f"这是第 {i:02d} 条跨项目通用制作规范，要求明确核验节点参数与输出路径。" * 4,
+            user_quote=f"用户原话要求第 {i:02d} 条长期规范必须严格执行并保持一致。" * 3,
+            source_ref=f"chat:{i}",
+            scope="global",
+            expected_revision=0,
+        )
+    gates = TaskGates(tmp_path)
+    task = gates.begin(
+        TaskSpec(
+            project_id="proj",
+            shot_id="sh010",
+            software="houdini",
+            kind="quick_tweak",
+            scene_path="D:/work/sh010_v01.hip",
+            endpoint="127.0.0.1:18186",
+            goal="微调粒子速度",
+            acceptance=["速度更柔和"],
+            budget="快速微调",
+            modules=["particles"],
+        )
+    )
+    brief = await fx_prepare_task_brief(task["task_id"], max_chars=6000)
+    assert brief["production_rules"]["omitted_rules"] == 0
+    assert len(brief["production_rules"]["user_rules"]) == 25
+    assert "rules" not in brief["task_state"]["missing"]
+
+
+@pytest.mark.asyncio
+async def test_houdini_csrf_guard_protects_foreign_reason_endpoints_and_client_token(monkeypatch):
+    from fx_agent.production import ProductionBridge
+
+    spec = importlib.util.spec_from_file_location(
+        "houdini_startup_guard_test", ROOT / "integrations/houdini/startup/startup.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    registered = {}
+
+    class FakeUpstreamApp:
+        @staticmethod
+        def _foreign_request_reason(_request):
+            return None
+
+        @staticmethod
+        def _forbidden(reason):
+            return {"forbidden": reason}
+
+        @staticmethod
+        def _api_function(namespace):
+            def dec(fn):
+                registered[(namespace, fn.__name__)] = fn
+                return fn
+
+            return dec
+
+        @staticmethod
+        def session_info(_request):
+            return {"hip_file": "D:/secret.hip"}
+
+        @staticmethod
+        def list_commands(_request):
+            return {"commands": ["a"]}
+
+    app = FakeUpstreamApp()
+    monkeypatch.setenv("FX_AGENT_HOUDINI_TOKEN", "secret-token-123")
+    mod._install_csrf_guard(app)
+
+    # _foreign_request_reason rejects missing token and Sec-Fetch-Site: cross-site.
+    assert app._foreign_request_reason(SimpleNamespace(headers={})) is not None
+    assert (
+        app._foreign_request_reason(
+            SimpleNamespace(headers={"X-FX-Houdini-Token": "secret-token-123", "Sec-Fetch-Site": "cross-site"})
+        )
+        is not None
+    )
+    assert (
+        app._foreign_request_reason(
+            SimpleNamespace(headers={"X-FX-Houdini-Token": "secret-token-123"})
+        )
+        is None
+    )
+    # session_info and list_commands are guarded and re-registered.
+    assert "forbidden" in registered[("mcp", "session_info")](SimpleNamespace(headers={}))
+    assert registered[("mcp", "list_commands")](
+        SimpleNamespace(headers={"X-FX-Houdini-Token": "secret-token-123"})
+    ) == {"commands": ["a"]}
+
+    # ProductionBridge attaches X-FX-Houdini-Token when configured.
+    bridge = ProductionBridge(host="127.0.0.1", port=18186)
+    client = await bridge._get_client()
+    assert client.headers.get("X-FX-Houdini-Token") == "secret-token-123"
+    await client.aclose()
+
+    # stop() triggers hwebserver.requestShutdown() when available.
+    shutdown_called = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hwebserver",
+        SimpleNamespace(requestShutdown=lambda: shutdown_called.append(True)),
+    )
+    mod._server_started = True
+    mod.stop()
+    assert shutdown_called == [True]
+
+
+def test_nuke_disconnect_closes_upstream_sock_attribute(monkeypatch):
+    from fx_agent.nuke_server import SerializedConnection
+
+    events = []
+
+    class FakeSock:
+        def shutdown(self, how):
+            events.append(("shutdown", how))
+
+        def close(self):
+            events.append(("close",))
+
+    class FakeConn:
+        def __init__(self, host, port):
+            self.sock = FakeSock()
+
+        def disconnect(self):
+            events.append(("disconnect",))
+
+    monkeypatch.setitem(
+        sys.modules, "nukemcp.connection", SimpleNamespace(NukeConnection=FakeConn)
+    )
+    conn = SerializedConnection(8187)
+    conn.disconnect()
+    assert events == [("shutdown", 2), ("close",), ("disconnect",)]
+
+
+def test_nuke_bounded_client_socket_enforces_stop_and_frame_limits():
+    nuke_dir = str(ROOT / "integrations/nuke")
+    if nuke_dir not in sys.path:
+        sys.path.insert(0, nuke_dir)
+    import fx_agent_nuke as nuke_mod
+
+    timeouts = []
+
+    class FakeClient:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def settimeout(self, t):
+            timeouts.append(t)
+
+        def recv(self, _bufsize):
+            item = self._chunks.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    server = SimpleNamespace(_running=True)
+    # Upstream settimeout(None) is clamped to 1.0s; timeout while running retries, stop exits.
+    client = FakeClient([TimeoutError(), b'{"ok":1}\n'])
+    proxy = nuke_mod._BoundedClientSocket(client, server)
+    proxy.settimeout(None)
+    assert timeouts == [1.0]
+    assert proxy.recv(1024) == b'{"ok":1}\n'
+
+    server._running = False
+    assert proxy.recv(1024) == b""
+
+    # Oversized unterminated frame drops the connection to prevent OOM.
+    server._running = True
+    big = FakeClient([b"x" * (nuke_mod._MAX_FRAME_BYTES + 1)])
+    assert nuke_mod._BoundedClientSocket(big, server).recv(1024) == b""

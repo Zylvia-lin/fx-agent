@@ -12,8 +12,8 @@ try:
     from importlib import reload as reload_module
     text_type = str
 except ImportError:
-    reload_module = reload
-    text_type = unicode
+    reload_module = reload  # noqa: F821
+    text_type = unicode  # noqa: F821
 
     @contextmanager
     def suppress(*exceptions):

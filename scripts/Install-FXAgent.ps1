@@ -100,6 +100,15 @@ function Invoke-FxInstall {
     $withHoudini = $Components -in @('Both', 'Houdini', 'All')
     $withNuke = $Components -in @('Both', 'Nuke', 'All')
     $withMaya = $Components -in @('Maya', 'All')
+    $autoMaya = $false
+    if (-not $withMaya -and $Components -eq 'Both') {
+        $codexConfigPath = Join-Path $UserProfileRoot '.codex/config.toml'
+        if ((Test-Path -LiteralPath $codexConfigPath -PathType Leaf) -and
+            (Select-String -LiteralPath $codexConfigPath -Pattern '^\s*\[mcp_servers\.fx-maya\]' -Quiet)) {
+            $withMaya = $true
+            $autoMaya = $true
+        }
+    }
     if ($withMaya -and -not $MayaModulesDir) {
         $MayaModulesDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'maya/modules'
     }
@@ -118,7 +127,10 @@ function Invoke-FxInstall {
     Write-Host "工程：$AgentRoot`n组件：$Components`n本机缓存：$(Join-Path $UserProfileRoot '.fx-agent/cache')"
     if ($withHoudini) { Write-Host "Houdini 偏好：$HoudiniPrefDir；端口：$HoudiniPort" }
     if ($withNuke) { Write-Host "Nuke：$NukeExe；端口：$NukePort" }
-    if ($withMaya) { Write-Host "Maya 模块：$MayaModulesDir；默认端口：18770-18789" }
+    if ($withMaya) {
+        $mayaNote = if ($autoMaya) { '（检测到已安装 Maya，自动一并更新）' } else { '' }
+        Write-Host "Maya 模块：$MayaModulesDir；默认端口：18770-18789$mayaNote"
+    }
     if ($Plan) {
         Write-Host '仅预览：未安装依赖、未修改配置。实际安装前会检查端口。'
         return

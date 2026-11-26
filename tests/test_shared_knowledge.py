@@ -68,3 +68,26 @@ def test_export_only_admitted_global_summary_fields(tmp_path):
     assert "private reference" not in json.dumps(exported)
     with pytest.raises(ValueError, match="unsuitable"):
         export(store.path, [candidate["memory_id"]])
+
+
+def test_shared_sync_refreshes_module_guides_and_skips_redundant_writes(tmp_path, monkeypatch):
+    entries = json.loads(shared_knowledge.SHARED_PATH.read_text(encoding="utf-8"))[:1]
+    published = tmp_path / "shared.json"
+    published.write_text(json.dumps(entries), encoding="utf-8")
+    monkeypatch.setattr(shared_knowledge, "SHARED_PATH", published)
+    cache = tmp_path / "cache"
+
+    refreshes = []
+    real_refresh = shared_knowledge.refresh_guides
+
+    def tracked_refresh(root):
+        refreshes.append(root)
+        return real_refresh(root)
+
+    monkeypatch.setattr(shared_knowledge, "refresh_guides", tracked_refresh)
+    shared_knowledge.load_shared_experiences(cache)
+    assert len(refreshes) == 1
+    assert any((cache / "modules/global").rglob("*.md"))
+
+    shared_knowledge.load_shared_experiences(cache)
+    assert len(refreshes) == 1, "Unchanged shared experiences should not rewrite guides"

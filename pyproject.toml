@@ -75,10 +75,11 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-# These files deliberately run unchanged in Maya's Python 2.7 interpreter.
+# These files deliberately run unchanged in Maya/Nuke Python 2.7 interpreters.
 "integrations/maya/**/*.py" = ["UP", "SIM105"]
 "integrations/maya/shared/plug-ins/fx_maya_plugin.py" = ["E402", "UP", "SIM105"]
 "integrations/maya/verify_runtime.py" = ["E402", "UP"]
+"integrations/nuke/*.py" = ["UP", "B904", "B905", "SIM105"]
 "src/fx_agent/maya/protocol.py" = ["UP"]
 
 [tool.uv.sources]

@@ -49,6 +49,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-FXAgen
 
 > 使用 fx-agent。先检查 Houdini 和 Nuke 的连接，读取制作规范与已有经验。项目名为“测试项目”，镜头为 sh010。
 
+后续执行 `git pull` 更新仓库后，如涉及依赖、技能或桥接变更，关闭对应 DCC 软件重新运行 **`Install-FX-Agent.bat`**（已安装的 Maya 会自动一并更新）再重启宿主即可，详见 [仓库更新后的升级流程](public-docs/一键安装.md#仓库更新后的升级流程)。
+
 ### 可选：搭配 FX Template 模板库
 
 如果需要管理和复用现成的特效工程、HDA、贴图与视频预览，可配合安装 [FX Template](https://github.com/Zylvia-lin/FX-Template)。按其文档启动本地桌面端后，即可在对话中直接按名称或标签检索已发布的工程模板。

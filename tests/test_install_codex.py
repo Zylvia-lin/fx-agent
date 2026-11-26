@@ -186,12 +186,59 @@ def test_install_and_failure_restore_original_files(tmp_path, monkeypatch, fail_
             assert not os.path.lexists(home / ".agents/skills/fx-project-learn")
             installer.main()  # Reinstall uses the same targets without duplicating tools.
     finally:
-        for name in (
-            "fx-workflow",
-            "fx-learning",
-            "nuke-workflow",
-            "fx-visual-critique",
-        ):
+        for name in installer.discover_skills(ROOT):
             link = home / ".agents/skills" / name
+            if os.path.lexists(link):
+                os.rmdir(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction installer")
+def test_upgrade_retires_obsolete_repo_skill_junction_and_keeps_unrelated_skills(
+    tmp_path, monkeypatch
+):
+    from fx_agent.install_config import install_junction
+
+    # 1. Verify dangling junction detection on an isolated fake repo (target deleted after linking).
+    fake_repo_skills = tmp_path / "fake_repo/skills"
+    deleted_target = fake_repo_skills / "fx-project-learn"
+    deleted_target.mkdir(parents=True)
+    dangling = tmp_path / "dangling_skills/fx-project-learn"
+    install_junction(dangling, deleted_target)
+    deleted_target.rmdir()
+    try:
+        assert installer.obsolete_skill_links(dangling.parent, fake_repo_skills, {"fx-workflow"}) == [
+            dangling
+        ]
+    finally:
+        if os.path.lexists(dangling):
+            os.rmdir(dangling)
+
+    # 2. Verify preview preserves and --apply removes obsolete repo junctions without touching others.
+    home = tmp_path / "home"
+    skills_root = home / ".agents/skills"
+    obsolete = skills_root / "fx-project-learn"
+    unrelated = skills_root / "custom-other-skill"
+    unrelated.mkdir(parents=True)
+    install_junction(obsolete, ROOT / "skills/fx-workflow")
+
+    pref = home / "houdini22.0"
+    (pref / "packages").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    try:
+        monkeypatch.setattr(sys, "argv", ["install_codex.py", "--houdini-pref", str(pref)])
+        installer.main()
+        assert os.path.lexists(obsolete), "Preview must not remove obsolete junctions"
+
+        monkeypatch.setattr(
+            sys, "argv", ["install_codex.py", "--houdini-pref", str(pref), "--apply"]
+        )
+        installer.main()
+        assert not os.path.lexists(obsolete)
+        assert unrelated.is_dir()
+    finally:
+        if os.path.lexists(obsolete):
+            os.rmdir(obsolete)
+        for name in installer.discover_skills(ROOT):
+            link = skills_root / name
             if os.path.lexists(link):
                 os.rmdir(link)

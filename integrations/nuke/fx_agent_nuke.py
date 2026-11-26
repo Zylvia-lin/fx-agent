@@ -11,7 +11,12 @@ import uuid
 from importlib import import_module
 
 from fx_agent_nuke_compat import (
-    make_directory, reload_module, remove_file, replace_file, suppress, text_type,
+    make_directory,
+    reload_module,
+    remove_file,
+    replace_file,
+    suppress,
+    text_type,
 )
 
 
@@ -111,20 +116,70 @@ def _serve_with_cleanup(self):
         self._server_sock = None
 
 
+_MAX_FRAME_BYTES = 16 * 1024 * 1024
+_PARTIAL_FRAME_TIMEOUT = 30.0
+
+
+class _BoundedClientSocket(object):
+    """Keep upstream's long-lived NDJSON loop responsive to stop() and bounded against stalls/OOM."""
+
+    def __init__(self, client, server):
+        self._client = client
+        self._server = server
+        self._pending_bytes = 0
+        self._partial_since = None
+
+    def settimeout(self, timeout):
+        # Upstream _handle_client calls settimeout(None); keep a 1s poll timeout so stop()
+        # and partial-frame deadlines are enforced without dropping idle connections.
+        effective = 1.0 if timeout is None else min(float(timeout), 1.0)
+        return self._client.settimeout(effective)
+
+    def recv(self, bufsize, *args):
+        while self._server._running:
+            try:
+                chunk = self._client.recv(bufsize, *args)
+            except socket.timeout:
+                if (
+                    self._partial_since is not None
+                    and (time.time() - self._partial_since) >= _PARTIAL_FRAME_TIMEOUT
+                ):
+                    return b""
+                continue
+            if not chunk:
+                return chunk
+            if b"\n" in chunk:
+                tail = chunk.rsplit(b"\n", 1)[1]
+                self._pending_bytes = len(tail)
+                self._partial_since = time.time() if tail else None
+            else:
+                self._pending_bytes += len(chunk)
+                if self._partial_since is None:
+                    self._partial_since = time.time()
+            if self._pending_bytes > _MAX_FRAME_BYTES:
+                return b""
+            return chunk
+        return b""
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
 def _handle_client_with_cleanup(self, client):
     import fx_agent_nuke_addon as addon
 
+    proxy = _BoundedClientSocket(client, self)
     try:
         if self._running:
             with suppress(OSError, socket.error):
-                client.settimeout(30.0)
-            return self._fx_original_handle_client(client)
+                proxy.settimeout(1.0)
+            return self._fx_original_handle_client(proxy)
     finally:
         with suppress(OSError, socket.error):
             client.shutdown(socket.SHUT_RDWR)
         with suppress(OSError, socket.error):
             client.close()
-        if getattr(addon, "_event_client_socket", None) is client:
+        if getattr(addon, "_event_client_socket", None) in (client, proxy):
             addon._event_client_socket = None
 
 

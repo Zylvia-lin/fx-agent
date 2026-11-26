@@ -460,41 +460,62 @@ async def fx_prepare_task_brief(
         search_query = query.strip() or task["goal"]
 
         rules_budget = min(6000, max(1024, max_chars // 3))
+        expanded_rules: list[dict] = []
         if not database_path(root).exists():
             rules = production_rules(software) | {
                 "user_rules": [],
                 "omitted_rules": 0,
                 "next_offset": 0,
             }
+            gates.observe(
+                task_id,
+                "fx_get_production_rules",
+                {"project_id": project_id, "offset": 0, "software": software},
+                rules,
+            )
         else:
-            rules = LearningStore(root).get_rules(project_id, rules_budget, 0, software)
-        gates.observe(
-            task_id,
-            "fx_get_production_rules",
-            {"project_id": project_id, "offset": 0, "software": software},
-            rules,
-        )
-        # Auto-expand detail_required user rules so a single brief satisfies rules gate cleanly.
-        expanded_rules: list[dict] = []
-        for rule_card in rules.get("user_rules", []):
-            if rule_card.get("detail_required"):
-                r_scope = rule_card.get("scope", "global")
-                r_proj = project_id if r_scope == "project" else ""
-                full_rule = LearningStore(root).get_rule(
-                    rule_card["rule_key"], r_scope, r_proj, rule_card.get("revision", 0)
-                )
+            learning = LearningStore(root)
+            all_user_rules: list[dict] = []
+            offset = 0
+            rules = None
+            # Auto-paginate through all user rules so a single brief satisfies the rules gate.
+            for _ in range(20):
+                page = learning.get_rules(project_id, rules_budget, offset, software)
                 gates.observe(
                     task_id,
-                    "fx_get_user_rule",
-                    {
-                        "rule_key": rule_card["rule_key"],
-                        "scope": r_scope,
-                        "project_id": r_proj,
-                        "revision": rule_card.get("revision", 0),
-                    },
-                    full_rule,
+                    "fx_get_production_rules",
+                    {"project_id": project_id, "offset": offset, "software": software},
+                    page,
                 )
-                expanded_rules.append(full_rule)
+                page_rules = page.get("user_rules", [])
+                all_user_rules.extend(page_rules)
+                for rule_card in page_rules:
+                    if rule_card.get("detail_required"):
+                        r_scope = rule_card.get("scope", "global")
+                        r_proj = project_id if r_scope == "project" else ""
+                        full_rule = learning.get_rule(
+                            rule_card["rule_key"], r_scope, r_proj, rule_card.get("revision", 0)
+                        )
+                        gates.observe(
+                            task_id,
+                            "fx_get_user_rule",
+                            {
+                                "rule_key": rule_card["rule_key"],
+                                "scope": r_scope,
+                                "project_id": r_proj,
+                                "revision": rule_card.get("revision", 0),
+                            },
+                            full_rule,
+                        )
+                        expanded_rules.append(full_rule)
+                rules = page
+                next_offset = page.get("next_offset", offset)
+                if page.get("omitted_rules", 0) == 0 or next_offset <= offset:
+                    break
+                offset = next_offset
+            assert rules is not None
+            rules = dict(rules)
+            rules["user_rules"] = all_user_rules
 
         context_budget = min(2000, max(768, max_chars // 8))
         context = Store(root).get_context(project_id, shot_id, "", context_budget, software)

@@ -16,6 +16,44 @@ from fx_agent.install_config import install_junction, replace_servers
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def discover_skills(root: Path) -> list[str]:
+    """List repo skills managed by this installer (Maya installs maya-workflow separately)."""
+    skills_dir = root / "skills"
+    if not skills_dir.is_dir():
+        return []
+    return sorted(
+        entry.name
+        for entry in skills_dir.iterdir()
+        if entry.is_dir()
+        and (entry / "SKILL.md").is_file()
+        and entry.name != "maya-workflow"
+    )
+
+
+def obsolete_skill_links(skills_root: Path, repo_skills: Path, valid_names: set[str]) -> list[Path]:
+    """Find junctions in skills_root pointing into repo_skills that are no longer valid skills."""
+    if not skills_root.is_dir():
+        return []
+    repo_norm = os.path.normcase(str(repo_skills.resolve())) + os.sep
+    keep = valid_names | {"maya-workflow"}
+    obsolete: list[Path] = []
+    for entry in sorted(skills_root.iterdir(), key=lambda p: p.name):
+        if not entry.is_junction():
+            continue
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target.startswith("\\\\?\\"):
+            target = target[4:]
+        target_norm = os.path.normcase(os.path.normpath(target))
+        if target_norm.startswith(repo_norm) and (
+            entry.name not in keep or not Path(target).is_dir()
+        ):
+            obsolete.append(entry)
+    return obsolete
+
+
 def codex_config(original: str, root: Path, data: Path, port: int) -> str:
     """Replace only the two FX server tables; reject unsupported TOML layouts."""
     nuke_args = tomllib.loads(original).get("mcp_servers", {}).get("fx-nuke", {}).get("args", [])
@@ -107,20 +145,18 @@ def main() -> None:
             package if package.exists() else old_package if old_package.exists() else None,
         ),
     }
+    skills_root = Path.home() / ".agents/skills"
+    skill_names = discover_skills(ROOT)
     links = {}
-    for name in (
-        "fx-workflow",
-        "fx-learning",
-        "nuke-workflow",
-        "fx-visual-critique",
-    ):
-        link = Path.home() / ".agents/skills" / name
+    for name in skill_names:
+        link = skills_root / name
         target = ROOT / "skills" / name
         if os.path.lexists(link):
             if link.resolve() != target.resolve():
                 parser.error(f"技能路径已被其他内容占用：{link}")
         else:
             links[link] = target
+    retire_skills = obsolete_skill_links(skills_root, ROOT / "skills", set(skill_names))
     print(
         json.dumps(
             {
@@ -130,6 +166,7 @@ def main() -> None:
                 "write": [str(p) for p in writes],
                 "retire": str(old_package),
                 "skills": [str(p) for p in links],
+                "retire_skills": [str(p) for p in retire_skills],
                 "apply": args.apply,
             },
             ensure_ascii=False,
@@ -164,6 +201,9 @@ def main() -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
         old_package.unlink(missing_ok=True)
+        for obsolete in retire_skills:
+            if obsolete.is_junction():
+                os.rmdir(obsolete)  # Remove only the obsolete junction itself.
     except BaseException as error:
         recovery_errors = []
         for path, saved in snapshots.items():
